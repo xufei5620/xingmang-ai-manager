@@ -4127,6 +4127,32 @@ test('the WeChat block logs in through the QR dialog, asks for the number on the
   }
 })
 
+// 0.2.25 M1：填好飞书应用、只差文件夹时，「打开遥控」那行以前说「请先在上方选择工作文件夹。」，可文件夹那一行在下面
+// 「通用设置」里。现在说「请先选择工作文件夹。」，开关左边直接一颗「选择文件夹」，选好开关马上能打开，那颗也收起。
+test('the phone remote switch offers to choose the folder beside it when that is the only step left', async () => {
+  const page = await fixture('page=remote&remoteReady=1&remoteNoFolder=1')
+  try {
+    const card = page.getByTestId('settings-remote-card')
+    const toggle = card.getByRole('switch', { name: '打开飞书遥控', exact: true })
+    const row = card.getByTestId('settings-remote-feishu-enable')
+    await row.getByText('请先选择工作文件夹。', { exact: true }).waitFor()
+    assert.equal(await toggle.isDisabled(), true)
+    const choose = row.getByTestId('settings-remote-feishu-choose-workspace')
+    assert.equal(await choose.innerText(), '选择文件夹')
+    // 下面「通用设置」里那一行照旧在。
+    assert.equal(await card.getByTestId('settings-remote-workspace').count(), 1)
+    await choose.click()
+    await card.getByTestId('settings-remote-workspace-row').getByText('~/projects/demo', { exact: true }).waitFor()
+    await choose.waitFor({ state: 'detached' })
+    assert.equal(await toggle.isDisabled(), false)
+    assert.equal((await callsNamed(page, 'remote-workspace')).length, 1)
+    await toggle.click()
+    await card.getByTestId('settings-remote-feishu-state').getByText('已连接', { exact: true }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
 // YK-5：手机上收到「Codex 启动失败」，电脑卡片上也有一条黄条，点一下去首页；Codex 又起来了就收起。
 test('the phone remote card says Codex could not start and leads to the home page until Codex starts again', async () => {
   const page = await fixture('page=remote&remoteReady=1')

@@ -293,13 +293,28 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, navig
         title="打开遥控"
         description={remoteSwitchHint(snapshot, channel, definition.credentialHint, isMac)}
         control={
-          <Switch
-            checked={channel.enabled}
-            disabled={disabled || (!channel.enabled && !canEnable)}
-            onChange={(enabled) => void run(`${id}-switch`, () => api.setCodexRemoteChannelEnabled(id, enabled))}
-            aria-label={`打开${definition.title}遥控`}
-            testId={`settings-remote-${id}-switch`}
-          />
+          <>
+            {/* 0.2.25 M1：开关只差文件夹时，就在开关左边给一颗「选择文件夹」，不用往下找「通用设置」那一行。 */}
+            {channel.hasCredential && !channel.enabled && !snapshot.workspaceDirectory && (
+              <Button
+                size="sm"
+                icon={FolderOpen}
+                disabled={disabled}
+                loading={busy === 'workspace'}
+                onClick={() => void run('workspace', () => api.chooseCodexRemoteWorkspace())}
+                testId={`settings-remote-${id}-choose-workspace`}
+              >
+                {codexRemoteWorkspaceText.choose}
+              </Button>
+            )}
+            <Switch
+              checked={channel.enabled}
+              disabled={disabled || (!channel.enabled && !canEnable)}
+              onChange={(enabled) => void run(`${id}-switch`, () => api.setCodexRemoteChannelEnabled(id, enabled))}
+              aria-label={`打开${definition.title}遥控`}
+              testId={`settings-remote-${id}-switch`}
+            />
+          </>
         }
         testId={`settings-remote-${id}-enable`}
       />
