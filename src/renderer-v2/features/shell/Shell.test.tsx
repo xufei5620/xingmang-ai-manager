@@ -265,8 +265,9 @@ describe('renderer-v2 v4 status bar', () => {
     expect(bar({ accelerationLine: '东京 2' })).toContain('加速中 · 东京 2')
   })
 
-  it('shows 手机遥控中 only while a phone remote channel is on', () => {
-    expect(bar({ remoteActive: true })).toMatch(/data-testid="statusbar-remote"[^>]*>.*手机遥控中<\/button>/)
+  it('shows 遥控中 only while a phone remote channel is on', () => {
+    expect(bar({ remoteActive: true })).toMatch(/data-testid="statusbar-remote"[^>]*>.*遥控中<\/button>/)
+    expect(bar({ remoteActive: true })).not.toContain('手机遥控')
     expect(bar()).not.toContain('statusbar-remote')
   })
 })

@@ -2111,6 +2111,8 @@ describe('Home sections and balance labels', () => {
       return render({}, undefined, { snapshot: { ...base, platform } as ToolboxSnapshot })
     }
     expect(withFailures({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })).toContain('已安装的工具均已配置')
+    // 页头不替运行环境打包票：好不好看状态栏和「检查」页（yoyo 2026-11-26「页头不提环境」）。
+    expect(withFailures({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })).not.toContain('运行环境正常')
     const one = withFailures({ claude: cliStatus, codex: cliStatus, grok: failed, gemini: cliStatus })
     expect(one).toContain('1 个工具检测失败，请点击卡片上的「重新检测」。')
     expect(one).not.toContain('已安装的工具均已配置')
