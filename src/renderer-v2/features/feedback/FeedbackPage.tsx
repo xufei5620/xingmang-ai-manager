@@ -38,6 +38,7 @@ import {
   useResource,
 } from '../../business-common'
 import { feedbackTabs, type FeedbackTabValue } from '../../registry/business'
+import { useBackgroundWork } from '../../background-work'
 import { feedbackMessageTypes, isFeedbackMessageType, type FeedbackMessageType } from '../../../../electron/feedback-message'
 import { SupportIdentity } from '../app/SupportIdentity'
 import {
@@ -128,6 +129,10 @@ export function FeedbackPage({
   const [descriptionError, setDescriptionError] = useState('')
   const [contact, setContact] = useState('')
   const [attachReport, setAttachReport] = useState(true)
+  // 留言写了还没复制出去：窗口缩到托盘久了主进程会关掉界面省内存（renderer-release.ts），再叫出来字就没了。
+  // 登记成手上有事，界面就不关；复制出去以后没再改过的不算，免得一直占着内存。
+  const [copiedDescription, setCopiedDescription] = useState('')
+  useBackgroundWork('feedback-draft', description.trim() !== '' && description !== copiedDescription)
   const formRef = useRef<HTMLElement>(null)
   // 外面点名要看「运行日志」（错误框「查看日志」、顶部搜索、帮助弹窗）：页面早就挂着，只是藏着，换到那个页签；
   // 装工具没装上时来源先选好「安装与更新」。别的筛选条件清掉，免得刚出的那一条被筛走。
@@ -197,6 +202,7 @@ export function FeedbackPage({
         ...(support?.lastFailure ? { lastFailure: support.lastFailure } : {}),
         attachReport,
       })
+      setCopiedDescription(description)
       support?.open()
       if (reportMissing) toast.show('反馈报告生成失败，已复制您填写的内容，请发送给客服', 'warn')
       return reportMissing === true
@@ -501,7 +507,7 @@ export function FeedbackPage({
         onReveal={(path) => api.revealExportedFile(path)}
         target={exportTarget}
       />
-      {/* 两个页签都挂着、只藏不卸：留言写到一半去翻日志，回来字还在，关窗口时也照样提醒没复制出去。 */}
+      {/* 两个页签都挂着、只藏不卸：留言写到一半去翻日志，回来字还在。缩到托盘久了不丢字靠上面的 feedback-draft。 */}
       <div id="feedback-panel-form" role="tabpanel" aria-label="留言反馈" hidden={tab !== 'form'} data-testid="feedback-panel-form">{form}</div>
       <div id="feedback-panel-log" role="tabpanel" aria-label="运行日志" hidden={tab !== 'log'} data-testid="feedback-panel-log">{log}</div>
       <Dialog
