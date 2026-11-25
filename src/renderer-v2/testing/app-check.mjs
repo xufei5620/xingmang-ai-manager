@@ -4775,6 +4775,14 @@ test('a historical account gets conversations and canvas projects on the create 
     assert.equal(await videoMode.getAttribute('title'), '当前账号不支持生成视频')
     assert.equal(await page.getByTestId('create-card-video').count(), 0)
     assert.equal(await page.getByTestId('create-card-canvas').count(), 1)
+    // 只剩这一张时不拉满整行：跟三张并排时一张一样宽，放在中间（创作页复查第 6 条）。
+    const card = await page.getByTestId('create-card-canvas').evaluate((element) => {
+      const row = element.parentElement.getBoundingClientRect()
+      const box = element.getBoundingClientRect()
+      return { share: box.width / ((row.width - 20) / 3), left: box.left - row.left, right: row.right - box.right }
+    })
+    assert.ok(Math.abs(card.share - 1) < 0.01, `one third of the row, got ${card.share}`)
+    assert.ok(Math.abs(card.left - card.right) <= 1, `centered, got ${card.left} / ${card.right}`)
     await clean(page)
   } finally { await page.close() }
 })
