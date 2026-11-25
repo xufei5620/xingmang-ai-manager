@@ -538,7 +538,12 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
   function writeEnvironment(environment: AntigravityGatewayEnvironment, options: AntigravityEnvironmentWriteOptions = {}): Promise<AntigravityEnvironmentWriteOutcome> {
     return deps.serializeSettingsWrite(async (): Promise<AntigravityEnvironmentWriteOutcome> => {
       options.assertBeforeWrite?.()
-      if (platform === 'win32') return (deps.writeWindowsEnvironment ?? writeWindowsAntigravityEnvironment)(environment, { platform })
+      if (platform === 'win32') {
+        const outcome = await (deps.writeWindowsEnvironment ?? writeWindowsAntigravityEnvironment)(environment, { platform })
+        // 哪一步写的都记（安装、打开命令行、后台跟、打开桌面端）：开着的桌面端哪一次都拿不到（复查 A 第 3 轮）。
+        if (outcome === 'written') noteWindowsSettingsWritten()
+        return outcome
+      }
       const result = await (deps.writeMacosEnvironment ?? writeMacosAntigravityEnvironment)(environment, {
         platform,
         homeDirectory: userHome,
@@ -741,7 +746,6 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
       // 还没接上账号（通道还没注册、或者已经撤了）：要签密钥的这次不做，下次换账号、换线路再看。
       else if (resolveKey) outcome = (await configureNow(resolveKey, write)).outcome
       else return
-      if (outcome === 'written') noteWindowsSettingsWritten()
       log('info', 'antigravity.settings.followed', plan.action === 'move-route' ? 'Antigravity 的设置已换到当前连接线路' : 'Antigravity 的设置已换成当前账号', { ...detail, outcome })
       deps.onFollowed?.()
     } catch (error) {
@@ -749,8 +753,8 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     }
   }
 
-  // 改写那一刻记下来，开没开着到点「打开」时再看：那时开着的、起得比这早的拿不到新设置。写完才记，写的时候
-  // 系统已经通知完资源管理器（antigravity-windows-environment.ts），之后它开的都带着新设置。
+  // 改写那一刻记下来（writeEnvironment 里，不管是哪一步写的），开没开着到点「打开」时再看：那时开着的、起得比这早的
+  // 拿不到新设置。写完才记，写的时候系统已经通知完资源管理器（antigravity-windows-environment.ts），之后它开的都带着新设置。
   // Mac 上不用记：星芒起的那一份认设置的指纹（macSpawn），别处打开的本来就带不上设置。
   function noteWindowsSettingsWritten(): void {
     if (platform === 'win32') windowsSettingsWrittenAt = (deps.now ?? Date.now)()
@@ -819,10 +823,9 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     if (!executable) throw new Error(desktopNotInstalledMessage)
     // 先写设置再看开没开着：写完系统通知资源管理器换上新环境，之后它开的 Antigravity 带着新设置。
     const { outcome } = await configureNow(resolveKey, writeOptionsFor('desktop'))
-    if (outcome === 'written') noteWindowsSettingsWritten()
     const processes = await windowsDesktopProcesses(executable)
     const running = processes === null ? null : processes.length > 0
-    // 开着的里头有起得比最近一次改写早的（这次刚改的，或者后台跟的那次）：它拿的是旧的（或没有），请客户先关掉。
+    // 开着的里头有起得比最近一次改写早的（这次刚改的，或者之前装、打开命令行、后台跟时改的）：它拿的是旧的（或没有），请客户先关掉。
     // 启动时间读不出来的也算早。主程序和它的辅助进程同名同路径，只要主程序早就算早。
     // 看不出开没开着就照常打开：开着的话第二个自己退出、把原来的叫到前面，最坏是客户看到的还是旧设置，不会开出两个。
     const writtenAt = windowsSettingsWrittenAt

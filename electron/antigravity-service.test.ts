@@ -515,6 +515,18 @@ describe('createAntigravityService openDesktop on Windows', () => {
     expect(h.logs.map((entry) => entry.event)).toContain('antigravity.desktop.process-probe-failed')
   })
 
+  it('asks to close a running app when installing or opening the command line changed the settings behind it', async () => {
+    for (const change of ['install', 'open-cli'] as const) {
+      const h = harness({ files: [windowsCli, windowsDesktop], runningWindows: [windowsDesktop], writeOutcome: 'written' })
+      if (change === 'install') await h.service.install('cli', resolveKey)
+      else await h.service.openCli(windowsWorkspace, resolveKey)
+      // 点「打开」时设置已经是这一份（unchanged），开着的桌面端却早于命令行那一步的改写（复查 A 第 3 轮）。
+      h.deps.writeWindowsEnvironment = async () => 'unchanged'
+      await expect(h.service.openDesktop(resolveKey), change).resolves.toEqual({ opened: false, closeFirst: true })
+      expect(h.launches, change).toEqual([])
+    }
+  })
+
   it('does not open when the key cannot be resolved', async () => {
     const h = harness({ files: [windowsDesktop] })
     await expect(h.service.openDesktop(() => Promise.reject(new Error('服务暂时不可用')))).rejects.toThrow('服务暂时不可用')
