@@ -105,12 +105,13 @@ function twoDigits(value: number): string {
   return String(value).padStart(2, '0')
 }
 
-/** 「张三（尾号 a1b2），10 月 25 日 14:05 配对」。昵称只用来认人，平台编号的尾巴才对得上。 */
+/** 「张三（尾号 a1b2），10 月 25 日 14:05 配对。在手机上发送「帮助」可查看可用指令。」昵称只用来认人，平台编号的尾巴才对得上。 */
 export function boundPeerText(peer: CodexRemoteBoundPeerSnapshot): string {
   const date = new Date(peer.boundAt)
   const when = `${date.getMonth() + 1} 月 ${date.getDate()} 日 ${twoDigits(date.getHours())}:${twoDigits(date.getMinutes())}`
   const who = peer.displayName ? `${peer.displayName}（尾号 ${peer.userIdTail}）` : `尾号 ${peer.userIdTail} 的账号`
-  return `${who}，${when} 配对`
+  // 0.2.25 M2：手机上能发哪些指令只在配对成功那一刻说过一次，错过就不知道；这里补一句，用的是手机上那句的原话。
+  return `${who}，${when} 配对。在手机上发送「帮助」可查看可用指令。`
 }
 
 /** 「14:05」；不是今天的带上日期，「11 月 10 日 23:50」（遥控开着过了半夜）。 */

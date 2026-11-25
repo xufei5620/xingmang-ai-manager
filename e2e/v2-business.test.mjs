@@ -3976,7 +3976,7 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     await card.getByText('在飞书中打开您创建的机器人，私聊发送这 6 位数字。10 分钟内有效。', { exact: true }).waitFor()
     // 手机那头发对了配对码：主进程推一份新快照，卡上换成绑定用户。
     await page.evaluate(() => window.remoteHarness.pair('小明'))
-    await card.getByTestId('settings-remote-feishu-peer').getByText(/^小明（尾号 9f3c），10 月 25 日 \d\d:\d\d 配对$/).waitFor()
+    await card.getByTestId('settings-remote-feishu-peer').getByText(/^小明（尾号 9f3c），10 月 25 日 \d\d:\d\d 配对。在手机上发送「帮助」可查看可用指令。$/).waitFor()
     assert.equal(await card.getByTestId('settings-remote-feishu-pair').innerText(), '重新配对')
     assert.equal(await card.getByTestId('settings-remote-feishu-next').count(), 0)
     await card.getByTestId('settings-remote-feishu-guide').getByText('如何创建飞书机器人', { exact: true }).waitFor()
