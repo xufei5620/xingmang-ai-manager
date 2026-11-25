@@ -263,7 +263,7 @@ function remoteSnapshot(): RemoteSnapshot {
   return {
     revision: remoteRevision,
     available: !elevated,
-    ...(elevated ? { unavailableReason: '星芒正以管理员身份运行，为保障安全，此时无法开启手机遥控。请以普通方式重新打开星芒。' } : {}),
+    ...(elevated ? { unavailableReason: '星芒正以管理员身份运行，为保障安全，此时无法开启遥控。请以普通方式重新打开星芒。' } : {}),
     // 登录的 Windows 账号本身就带管理员权限（自带 Administrator、关了授权弹窗）：能开，卡上多一句提醒。
     ...(!elevated && query.has('remoteAdminAccount') ? { alwaysElevated: true } : {}),
     credentialPersistence: query.has('remoteSessionOnly') ? 'session-only' : 'durable',
@@ -391,7 +391,7 @@ const codexRemoteMethods = {
     record('remote-conversation', id)
     const target = id === null ? null : remoteConversations.find((entry) => entry.id === id) ?? null
     if (id !== null && !target) throw new Error('无法读取对话列表，请稍后重试。')
-    if (target?.id === remoteConversations[1].id && query.has('remoteConversationFolderRefused')) throw new Error('该对话所在的文件夹不允许用于手机遥控，请选择其他对话。')
+    if (target?.id === remoteConversations[1].id && query.has('remoteConversationFolderRefused')) throw new Error('该对话所在的文件夹不允许用于遥控，请选择其他对话。')
     remoteState.conversation = target
     if (target) {
       if (!remoteState.workspaces.includes(target.folder)) remoteState.workspaces.push(target.folder)
@@ -2008,6 +2008,8 @@ const renderFixture = (paymentReturn?: {
           openLogin={() => record('login')}
           switchAccount={openSwitcher}
           openHelp={query.has('help') ? () => record('open-help') : undefined}
+          // 设置 › 隐私数据的协议交给外壳那个弹窗：这里只记下要开哪一份。
+          openLegal={(kind) => record('open-legal', kind)}
           onRewriteKey={rewriteKey}
           openConfig={(provider) => record('openConfig', provider)}
           toolConfigConfirmed={toolConfigConfirmed}

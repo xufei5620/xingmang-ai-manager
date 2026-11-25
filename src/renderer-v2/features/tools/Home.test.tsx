@@ -2111,6 +2111,8 @@ describe('Home sections and balance labels', () => {
       return render({}, undefined, { snapshot: { ...base, platform } as ToolboxSnapshot })
     }
     expect(withFailures({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })).toContain('已安装的工具均已配置')
+    // 页头不替运行环境打包票：好不好看状态栏和「检查」页（yoyo 2026-11-26「页头不提环境」）。
+    expect(withFailures({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })).not.toContain('运行环境正常')
     const one = withFailures({ claude: cliStatus, codex: cliStatus, grok: failed, gemini: cliStatus })
     expect(one).toContain('1 个工具检测失败，请点击卡片上的「重新检测」。')
     expect(one).not.toContain('已安装的工具均已配置')
@@ -2416,9 +2418,13 @@ describe('renderer-v2 home Antigravity cards', () => {
     expect(cli).toContain('Antigravity 命令行')
     expect(cli).toContain('未安装')
     expect(cli).toContain('<span>安装</span></button>')
+    expect(cli).toContain('命令行编程助手')
     const desktop = row(markup, 'antigravity')
     expect(desktop).toContain('<span>打开</span></button>')
     expect(desktop).toContain('data-testid="tool-antigravity-source"')
+    // 装好以后中间那行不再是没装时的介绍（yoyo 2026-11-26「谷歌卡介绍改」）。
+    expect(desktop).toContain('打开时自动使用当前账号')
+    expect(desktop).not.toContain('可使用当前账号')
     expect(markup.indexOf('tool-row-codexDesktop')).toBeLessThan(markup.indexOf('tool-row-antigravityCli'))
     expect(markup.indexOf('tool-row-antigravity"')).toBeLessThan(markup.indexOf('tool-row-grok'))
   })
@@ -2427,6 +2433,7 @@ describe('renderer-v2 home Antigravity cards', () => {
     const desktop = row(render({}, undefined, { antigravity: { supported: true, cliInstalled: true, desktopInstalled: true, configured: false } }), 'antigravity')
     expect(desktop).toContain('待连接')
     expect(desktop).toContain('<span>打开</span></button>')
+    expect(desktop).toContain('打开时自动使用当前账号')
   })
 
   it('shows the install progress on the card that is installing', () => {

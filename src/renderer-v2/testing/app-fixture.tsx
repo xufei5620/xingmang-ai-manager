@@ -410,6 +410,11 @@ if (query.get('videoFilms') === 'library') {
     exported: { assetId: fixtureLibraryFilmId, thumbnailUrl: assetThumbnailUrl(fixtureLibraryFilmId, 'video'), width: 1280, height: 720, durationSeconds: 10 },
   } }
 }
+// ?videoFilms=pending：上次关软件时「橘猫回家」第一镜还在出，记着请求号；重开后去接回（resumeAiVideo），releaseChatVideo 才交出来。
+if (query.get('videoFilms') === 'pending') {
+  const cat = fixtureFilms[0].project
+  fixtureFilms[0] = { ...fixtureFilms[0], project: { ...cat, shots: cat.shots.map((shot, index) => index === 0 ? { ...shot, requestId: 'fixture-pending-clip' } : shot) } }
+}
 if (query.has('videoFilms')) videoProjectFiles.set(fixtureVideoScope, { index: null, projects: new Map(fixtureFilms.map((film) => { const file = serializeVideoStudioItem(film); return [file.key, file.content] })) })
 if (query.has('legacyVideoDrafts')) {
   // 照 0.2.24 的两格写：手头那一条没有时间，草稿箱里的带 savedAt。刷新页面时已经有了就不重写，同真机上「老版本留下的」。
@@ -1186,6 +1191,14 @@ const methods = {
     addFixtureLibraryEntry({ assetId, mediaType: 'video', createdAt: new Date().toISOString(), fileName: `${assetId}.mp4` })
     return { assetId, thumbnailUrl: assetThumbnailUrl(assetId, 'video'), width: 1280, height: 720, durationSeconds: 5 }
   },
+  resumeAiVideo: async (requestId) => {
+    if (query.get('videoFilms') !== 'pending') { window.v2Test.unexpected.push('resumeAiVideo'); throw new Error('Missing mock: resumeAiVideo') }
+    // StrictMode 把挂上时那一下跑两遍，同一个请求号会问两遍（主进程两遍接的是同一份）：一次放行两边都交。
+    await new Promise<void>((resolve) => { const earlier = releaseChatVideo; releaseChatVideo = () => { earlier(); resolve() } })
+    const assetId = requestId.replace(/[^A-Za-z0-9_-]/g, '').padEnd(43, 'c').slice(0, 43)
+    addFixtureLibraryEntry({ assetId, mediaType: 'video', createdAt: new Date().toISOString(), fileName: `${assetId}.mp4` })
+    return { assetId, thumbnailUrl: assetThumbnailUrl(assetId, 'video'), width: 1280, height: 720, durationSeconds: 5 }
+  },
   generateAiImage: async (input) => {
     // 没开 ?chatImage 的用例不该出图：照旧记成没 mock 的调用，clean() 会报出来。
     if (!query.has('chatImage')) { window.v2Test.unexpected.push('generateAiImage'); throw new Error('Missing mock: generateAiImage') }
@@ -1246,7 +1259,11 @@ const methods = {
     if (token !== 'fixture-works-token') throw new Error('请再次点击「导入」。')
     return { status: 'done' as const, added: 120, existing: 8, failed: 0, ...(query.has('transferCanvasProjects') ? { canvasProjects: { added: 3, existing: 1, full: 0, failed: 0 } } : {}) }
   },
-  getLegalDocument: async (kind) => ({ kind, markdown: '# 本地协议\n\n测试内容。', fetchedAt: '2026-09-07T00:00:00Z' }),
+  // 不带账号来源时主进程按当前账号读；历史账号那边没有协议，跟真的一样报「当前账号暂不支持此功能」。
+  getLegalDocument: async (kind, siteId) => {
+    if ((siteId ?? (session.authenticated && query.has('sub2api') ? 'solov-api' : 'solov')) !== 'solov') throw new Error('当前账号暂不支持此功能')
+    return { kind, markdown: '# 本地协议\n\n测试内容。', fetchedAt: '2026-09-07T00:00:00Z' }
+  },
   getAccountProfile: async () => ({ ...account, displayName: account.username, email: 'fixture@example.com', requestCount: 0, affCode: 'test', affCount: 0, affQuota: 0, affHistoryQuota: 0 }),
   getAccountLoginSessions: async () => [],
   listSavedAccounts: async () => query.has('crossSite') ? [{ id: 'saved-aa0017', origin: 'https://api.solov.cc', userId: 17, username: 'fixture-user', updatedAt: '2026-09-07T00:00:00Z' }] : query.has('savedAccount') ? [{ id: 'saved-18', origin: 'https://xm.solov.cc', userId: 18, username: 'saved-user', updatedAt: '2026-09-07T00:00:00Z' }] : [],

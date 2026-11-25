@@ -220,6 +220,7 @@ export function SettingsPage({
   api,
   navigate,
   onSettingsChanged,
+  openLegal,
   openGuide,
   replayTour,
   uiScale,
@@ -420,9 +421,6 @@ export function SettingsPage({
     }
   }, [api, resource.setData])
   const [saveError, setSaveError] = useState('')
-  const [legal, setLegal] = useState<Awaited<
-    ReturnType<V2Bridge['getLegalDocument']>
-  > | null>(null)
   const [shortcuts, setShortcuts] = useState(false)
   // 显示方式要重开软件才生效：改完就在这一行下面给「现在重开」「稍后」。
   const [displayRelaunch, setDisplayRelaunch] = useState(false)
@@ -1359,38 +1357,20 @@ export function SettingsPage({
           </Button>
         </>,
       ),
-      legal: row(
+      // 协议两个账号共用一份：交给 App 里欢迎页、登录框用的那个弹窗读（固定读星芒账号那一份、按排版显示、
+      // 有「重新读取」）。设置页以前自己按当前账号读，历史账号那边没有协议，点了只报「当前账号暂不支持此功能」。
+      legal: openLegal ? row(
         'legal',
         null,
         <>
-          <Button
-            size="sm"
-            onClick={() =>
-              void operation.execute(
-                'legal',
-                async () =>
-                  setLegal(await api.getLegalDocument('user-agreement')),
-                '',
-              )
-            }
-          >
+          <Button size="sm" onClick={() => openLegal('user-agreement')} testId="settings-legal-user-agreement">
             用户协议
           </Button>
-          <Button
-            size="sm"
-            onClick={() =>
-              void operation.execute(
-                'legal',
-                async () =>
-                  setLegal(await api.getLegalDocument('privacy-policy')),
-                '',
-              )
-            }
-          >
+          <Button size="sm" onClick={() => openLegal('privacy-policy')} testId="settings-legal-privacy-policy">
             隐私政策
           </Button>
         </>,
-      ),
+      ) : undefined,
       'update-check': row(
         'update-check',
         null,
@@ -1705,14 +1685,6 @@ export function SettingsPage({
       >
         <p data-testid="settings-transfer-works-summary">{exportAsk ? worksExportQuestion(exportAsk) : ''}</p>
         <p>{exportAsk ? worksExportNoteFor(exportAsk) : ''}</p>
-      </Dialog>
-      <Dialog
-        open={Boolean(legal)}
-        title={legal?.kind === 'privacy-policy' ? '隐私政策' : '用户协议'}
-        width={640}
-        onClose={() => setLegal(null)}
-      >
-        <pre className="v2-business-legal">{legal?.markdown}</pre>
       </Dialog>
       <Dialog
         open={shortcuts}

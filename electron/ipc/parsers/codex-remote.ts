@@ -48,7 +48,7 @@ export function parseRemoteConversationChoice(value: unknown): string | null {
 
 /** 只有两档，没有「完全访问」：多出来的值一律不收。 */
 export function parseRemotePermission(value: unknown): RemotePermission {
-  if (!isRemotePermission(value)) throw new Error('手机遥控权限参数无效')
+  if (!isRemotePermission(value)) throw new Error('遥控权限参数无效')
   return value
 }
 

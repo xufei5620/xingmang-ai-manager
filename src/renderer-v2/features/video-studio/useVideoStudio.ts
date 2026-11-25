@@ -11,6 +11,7 @@ import { useLatestRequest } from '../../latest-request'
 import { diagnosticFolderUnavailableMessage } from '../app/diagnostic-folder'
 import { inspectModel } from '../chat/api'
 import { pendingChatGroups, type ChatGroupPreparation, type ChatSite } from '../chat/state'
+import type { VideoStudioCatalogCache } from './catalog-cache'
 import { composeInVideoStudioWorker } from './compose-client'
 import { addVideoStudioClipBytes, videoStudioMusicUnreadableMessage, videoStudioTotalBytesLimit, type VideoStudioComposeProgress, type VideoStudioComposeRequest, type VideoStudioComposeResult } from './compose-protocol'
 import { VideoStudioError, describeVideoStudioFailure, isVideoStudioAbort } from './errors'
@@ -63,6 +64,8 @@ export type VideoStudioBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareA
 export interface VideoStudioOptions {
   /** 测试里换成在当前线程拼的那一份；缺省在后台线程拼。 */
   compose?: (request: VideoStudioComposeRequest, options: { signal: AbortSignal, onProgress(progress: VideoStudioComposeProgress): void }) => Promise<VideoStudioComposeResult>
+  /** 同一个账号里几条视频共用的模型表（「创作」页给）；不给就每次挂上都读一遍。 */
+  catalog?: VideoStudioCatalogCache
 }
 
 /** 这一处改动怎么存：缺省是客户动的（时间记成现在）、攒一会儿再交给主进程。 */
@@ -219,6 +222,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
       await Promise.all([worker(), worker(), worker()])
       if (!current()) return
       settleModels()
+      options.catalog?.save({ groups: groupsRef.current, preparations: preparationsRef.current })
       if (listed.length && listed.every((group) => preparationsRef.current[group.name]?.phase === 'error')) setCatalogError('未获取到模型，请点击「刷新模型」')
     } catch (reason) {
       if (current()) setCatalogError(videoStudioErrorMessage(reason, '未获取到模型，请点击「刷新模型」'))
@@ -229,8 +233,12 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
 
   useEffect(() => {
     if (!enabled) return
-    void refreshModels()
-    // 只在打开页面（或换了账号重新挂上）时读一次；之后靠「刷新模型」。
+    // 只在打开页面（或换了账号重新挂上）时读一次；之后靠「刷新模型」。同一个账号里刚读全过的就照用，换着开视频不再重读。
+    const cached = options.catalog?.fresh()
+    if (!cached) { void refreshModels(); return }
+    groupsRef.current = cached.groups; setGroups(cached.groups)
+    preparationsRef.current = cached.preparations; setPreparations(cached.preparations)
+    settleModels()
   }, [enabled])
 
   useEffect(() => bridge.onAiVideoProgress((event) => {

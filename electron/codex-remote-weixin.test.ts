@@ -371,10 +371,10 @@ describe('createWeixinRemoteChannel', () => {
     await sleepStarted
     channel.cancelPendingSends?.()
     await expect(pending).rejects.toThrow()
-    await channel.send({ channel: 'weixin', userId: owner }, { kind: 'text', text: '手机遥控已在电脑上关闭。' }, 'ctx')
+    await channel.send({ channel: 'weixin', userId: owner }, { kind: 'text', text: '遥控已在电脑上关闭。' }, 'ctx')
     expect(requests).toHaveLength(2)
     const msg = requests[1].body.msg as { item_list: Array<{ text_item: { text: string } }> }
-    expect(msg.item_list[0].text_item.text).toBe('手机遥控已在电脑上关闭。')
+    expect(msg.item_list[0].text_item.text).toBe('遥控已在电脑上关闭。')
     expect(logs).toContain('weixin-send-cancelled')
   })
 

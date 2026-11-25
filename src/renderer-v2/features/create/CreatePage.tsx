@@ -12,6 +12,7 @@ import { PageLoading } from '../app/PageLoading'
 import { ChatPage, type ChatPageCreate, type ChatPageProps, type ChatPageVideo } from '../chat/ChatPage'
 import type { ChatVideoFilm } from '../chat/ChatVideo'
 import { chatAssetSaveErrorMessage, type ChatSite } from '../chat/state'
+import { createVideoStudioCatalogCache } from '../video-studio/catalog-cache'
 import { cleanVideoStudioItemName, maxVideoStudioItemNameLength, maxVideoStudioProjects, videoStudioItemName, type VideoStudioItem } from '../video-studio/library'
 import { useVideoStudioPriceList, videoStudioPerCallUsd, videoStudioQuoteText } from '../video-studio/prices'
 import { appendVideoStudioClip, canAddVideoStudioShot, createVideoStudioProjectFromClip, createVideoStudioProjectFromClips, videoStudioDraftProgress, type VideoStudioClipSource } from '../video-studio/project'
@@ -122,6 +123,8 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
   const toast = useToast()
   const library = useVideoStudioLibrary(bridge, accountScope)
   const session = useVideoStudioSession(library)
+  // 换着开几条视频时共用一份模型表；这一层按账号挂（CreatePage 的 key），换账号自然丢掉。
+  const [studioOptions] = useState(() => ({ catalog: createVideoStudioCatalogCache() }))
   const canvas = useCanvasProjects(bridge, active)
   const canvasProjectsRef = useRef(canvas.projects)
   canvasProjectsRef.current = canvas.projects
@@ -307,6 +310,15 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
     else if (library.items[0]) showVideo(library.items[0].id)
     else if (videoAccess === 'ready') startVideo()
   }, [active, openVideo, library.status])
+  // 上次关软件、重启装更新时还在出的片段：工作台挂上才去接回，以前要客户点开那条视频才挂。读完列表、右边没开着视频时，
+  // 把有片段在出的那一条悄悄挂上（不切过去），同对话里出视频一开页面就接。只在读完的那一次看。
+  const resumeChecked = useRef(false)
+  useEffect(() => {
+    if (resumeChecked.current || library.status !== 'ready' || videoAccess !== 'ready') return
+    resumeChecked.current = true
+    const pending = session.openId ? null : library.items.find((item) => item.project.shots.some((shot) => shot.status === 'generating' && shot.requestId))
+    if (pending) session.open(pending.id)
+  }, [library.status, videoAccess])
   // 顶部搜索的「作品库」。
   useEffect(() => {
     if (!active || !openLibrary) return
@@ -331,7 +343,7 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
       </div></header>
       <div className="create-studio"><Suspense fallback={<PageLoading />}>
         <VideoStudioPage key={`${openItem.id}:${library.revision(openItem.id)}`} bridge={bridge} accountScope={accountScope} site={site} access={videoAccess} active={active && videoShown}
-          source={library.source(openItem.id)} onBusyChange={session.setBusy} onOpenAccount={chat.onOpenAccount} library={studioLibrary} />
+          source={library.source(openItem.id)} onBusyChange={session.setBusy} onOpenAccount={chat.onOpenAccount} library={studioLibrary} options={studioOptions} />
       </Suspense></div>
     </div>}
   </>
