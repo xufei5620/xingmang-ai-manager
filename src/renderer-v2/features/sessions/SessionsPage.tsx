@@ -460,7 +460,7 @@ export function SessionsPage({
     >
       <PageHead
         title="记录"
-        lead="通过首页打开工具产生的对话均在此处"
+        lead="本机各命令行工具的对话均在此处，可查看并继续对话。"
         actions={
           <Button
             variant="ghost"
