@@ -1313,8 +1313,9 @@ export interface XingmangInvokeContract {
   checkCodexDesktopUpdate: IpcInvokeDefinition<'desktop:check-update-codex', [], DesktopAppStatus>
   /**
    * mode 省略 = 开新对话(旧行为);resumeLast 由主进程按工具映射成固定参数。
-   * sessionId 只给 Codex 的 resumeLast:那条记录自己的 id(`codex:<UUID>`),主进程在
-   * 记录里核对过、且就在 workspace 里才按 id 接,否则照旧按目录找最近一条。
+   * sessionId 只给 Codex、Claude Code、Grok CLI 的 resumeLast:那条记录自己的 id(`codex:<UUID>`,
+   * `claude:` / `grok:` 加 64 位十六进制),主进程在记录里核对过、且就在 workspace 里,才按
+   * 记录里读出的编号接,否则照旧按目录找最近一条。
    */
   launchCli: IpcInvokeDefinition<
     'cli:launch',

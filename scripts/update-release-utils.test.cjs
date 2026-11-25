@@ -440,14 +440,14 @@ test('electron-builder production config requires signing and stays hardened', (
   const copyrightAfter = buildReleaseCopyright(new Date())
   const config = JSON.parse(result.stdout)
   assert.equal(config.package.name, 'xingmang-ai-manager')
-  assert.equal(config.package.author, '绍兴星芒文化传媒有限责任公司')
+  assert.equal(config.package.author, '星芒文化')
   assert.equal(config.package.description, '星芒AI管理工具')
   assert.equal(config.appId, 'com.xingmang.ai.manager')
   assert.equal(config.productName, '星芒AI管理工具')
   // D103: the year is the build's own, so the child may have read the clock on
   // either side of a Beijing new year's midnight.
   assert.ok([copyrightBefore, copyrightAfter].includes(config.copyright), config.copyright)
-  assert.match(config.copyright, /^Copyright © \d{4} 绍兴星芒文化传媒有限责任公司$/)
+  assert.match(config.copyright, /^Copyright © \d{4} 星芒文化$/)
   assert.equal(config.forceCodeSigning, true)
   assert.equal(config.win.requestedExecutionLevel, 'asInvoker')
   // electron-builder 26 起 publisherName 属于 publish 配置；只有它写进
