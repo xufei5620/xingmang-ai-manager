@@ -20,7 +20,9 @@ import { OfficialQuotaDialog } from './features/tools/OfficialQuotaDialog'
 import { Home, homeWalletEmpty } from './features/tools/Home'
 import { rescanFingerprint } from './features/tools/rescan-change'
 import { workspaceChoiceChanged } from './features/tools/recent-workspaces'
-import { externalClientReady, visibleExternalClients } from './features/tools/external-model'
+import { externalClientReady, presentExternalClients, visibleExternalClients } from './features/tools/external-model'
+import { presentAntigravity } from './features/tools/antigravity'
+import { installedToolCount } from './features/tools/installed-count'
 import { createToolsApi } from './features/tools/api'
 import { logoutJobsNote } from './features/tools/launch-notice'
 import { modelSwapConfirmLabel, modelSwapKeepLabel, modelSwapQuestion, modelSwapTitle } from './features/tools/model-check'
@@ -542,7 +544,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           remoteActive={remoteActive}
           tourOpen={tourOpen} onTourClose={() => { rememberTourSeen(scope); setTourOpen(false) }}
           environment={buildEnvironmentStatus(diagnosticsCounts, toolbox.snapshot?.system.runtime)} version={update?.currentVersion}
-          unread={unread} installedCount={toolbox.snapshot ? presentTools(toolbox.snapshot).filter((tool) => tool.status.installed).length + visibleExternalClients(os, toolbox.externalClients).filter((tool) => tool.installed).length : undefined}
+          unread={unread} installedCount={toolbox.snapshot ? installedToolCount(presentTools(toolbox.snapshot), presentExternalClients(visibleExternalClients(os, toolbox.externalClients)), presentAntigravity(toolbox.antigravity), toolbox.jobs) : undefined}
           updatableCount={toolUpdates.length}
           network={latestNetworkLocation(toolbox.snapshot?.system.network, networkLocation.snapshot.network)}
           networkRefreshing={networkLocation.snapshot.busy}
