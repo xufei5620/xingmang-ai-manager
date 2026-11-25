@@ -6242,6 +6242,33 @@ test('the renderer remembers its page for a reload and tells the host it is busy
   } finally { await page.close() }
 })
 
+// 设置客服反馈复查第 3 条：留言写了还没复制出去时，缩到托盘久了界面不能被收走，不然字就没了；复制出去以后没再改过的不算。
+test('an unsent feedback message keeps the renderer from being released until it has been copied', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => {
+      window.xingmang.getRuntimeLogs = async () => ({ generatedAt: new Date().toISOString(), directory: 'C:/logs', filePath: 'C:/logs/runtime.log', sizeBytes: 0,
+        total: 0, truncated: false, counts: { debug: 0, info: 0, warn: 0, error: 0 }, sources: [], currentProcessId: 4242, startedAt: '2026-10-06T00:00:00.000Z', entries: [] })
+      window.xingmang.copyFeedbackReport = async () => ({ entries: 0 })
+    })
+    const latestReport = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportWindowActivity').at(-1)?.args[0].busy)
+    await page.getByTestId('nav-feedback').click()
+    await page.getByTestId('page-feedback').waitFor()
+    await expect.poll(latestReport).toBe(false)
+    const description = page.getByTestId('feedback-description')
+    await description.fill('打开 Codex 时提示无法连接')
+    await expect.poll(latestReport).toBe(true)
+    await page.getByTestId('feedback-send').click()
+    await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'copyFeedbackReport').length)).toBe(1)
+    await expect.poll(latestReport).toBe(false)
+    await description.fill('打开 Codex 时提示无法连接，重启后依旧')
+    await expect.poll(latestReport).toBe(true)
+    await description.fill('   ')
+    await expect.poll(latestReport).toBe(false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('startup environment findings are a notice with a way in, not an error and not a dialog', async () => {
   const page = await open('diagnostics=1&diagnosticIssues=2&diagnosticWarnings=3')
   try {
