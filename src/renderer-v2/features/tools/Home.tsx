@@ -1331,7 +1331,6 @@ export function Home(props: HomeProps) {
   const unrecognizedNames = tools.filter((tool) => !jobs[tool.id] && !tool.error && isUnrecognizedInstall(tool.status)).map((tool) => tool.name)
   const unconnected = [...cliStates.filter((entry) => entry.status === 'unconfigured').map((entry) => entry.tool.name),
     ...installedExternal.filter((tool) => tool.status.installed && tool.configurationStatus === 'unconfigured' && !tool.status.detectionError).map((tool) => tool.name)]
-  const nodeReady = Boolean(snapshot && (snapshot.system.runtime.node.installed || nodeOptional) && !nodeInstallerPartMissing(snapshot.system.runtime))
   const lead = cachedPhase ? <span data-testid="home-cached-scan">正在检测本机工具，当前显示上次结果。</span>
     : loading || props.externalLoading && !external.length ? '正在检测本机工具和运行环境…'
     : offline ? '网络未连接，已安装的工具仍可正常使用。'
@@ -1342,7 +1341,8 @@ export function Home(props: HomeProps) {
     // 检测失败的卡不算装着（installed 为假），不先拦下来就会落到「还没装工具」或「都配好了」，跟下面红着的卡对不上（D12）。
     : undetectedCount > 0 ? `${undetectedCount} 个工具检测失败，请点击卡片上的「重新检测」。`
     : installedCount === 0 ? '尚未安装工具，请从下方选择。'
-    : nodeReady && !runtimeUndetected ? '已安装的工具均已配置，运行环境正常。' : '已安装的工具均已配置。'
+    // 运行环境好不好只看状态栏和「检查」页：页头原来写「运行环境正常」只看了装没装，状态栏还灰着「环境待检测」，两处各说各的（yoyo 2026-11-26「页头不提环境」）。
+    : '已安装的工具均已配置。'
 
   // 余额卡：金额、订阅、按最近用量还能用几天、近 7 天花费。
   const runwayLine = props.supportsUsage === false ? '请在官方网站查看消费记录。'
