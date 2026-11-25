@@ -682,6 +682,31 @@ test('installing the Antigravity command line connects it, opens it in a chosen 
   } finally { await running.close() }
 })
 
+// 记住的项目文件夹被删掉以后点 Antigravity 命令行的「打开」：跟 Claude Code、Codex 那几张卡一样提示一句再弹选择窗口，
+// 不弹「操作没有完成」；选好的那个记下了，再点直接进它，不再提示、不再弹。
+test('the Antigravity command line says the remembered folder is gone, asks for another one, and keeps it', async () => {
+  const page = await open('antigravity=installed&antigravityWorkspaceGone=1')
+  const opens = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openAntigravityCli').map((entry) => entry.args))
+  const choices = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'chooseWorkspace').length)
+  try {
+    const primary = page.getByTestId('tool-antigravityCli-primary')
+    await expect(primary).toHaveText('打开')
+    await primary.click()
+    await waitForToast(page, '上次使用的目录已不存在，请重新选择。')
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'openAntigravityCli').length === 2)
+    assert.deepEqual(await opens(), [['C:\\work\\deleted-project'], ['C:\\Selected Project']])
+    assert.equal(await choices(), 1)
+    assert.equal(await page.getByRole('dialog', { name: '操作未完成' }).count(), 0)
+    await expect(primary).toHaveText('打开')
+    await expect(primary).toBeEnabled()
+    await primary.click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'openAntigravityCli').length === 3)
+    assert.deepEqual((await opens())[2], ['C:\\Selected Project'])
+    assert.equal(await choices(), 1)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 换账号、换线路以后主进程替 Antigravity 改完设置叫的那一声：只重读这两张卡，三个外部客户端不跟着重新检测、
 // 设置和配置也不重读（复查 A 第 2 轮第 2 条；原来借的是线路那一声）。
 test('when the main process moves Antigravity onto the new account, home rereads only its two cards', async () => {
@@ -5250,8 +5275,9 @@ test('a picture is added to a canvas project the user picks, or to a new one, fr
     await add.waitFor()
     assert.equal((await add.textContent()).trim(), '添加到画布')
     assert.equal(await add.getAttribute('title'), '将此图添加到画布项目的素材库')
-    assert.deepEqual(await page.locator('.chat-asset-actions').first().locator('button').evaluateAll((buttons) => buttons.map((button) => button.getAttribute('data-testid'))),
-      ['chat-asset-reuse', 'chat-asset-animate', 'chat-asset-canvas', 'chat-asset-copy', 'chat-asset-save', 'chat-asset-menu'])
+    // 0.2.25 C2：这条回复只有一张图，「重新生成」「删除消息」接在这一排最后（testid 带消息 id，这里只比前缀）。
+    assert.deepEqual(await page.locator('.chat-asset-actions').first().locator('button').evaluateAll((buttons) => buttons.map((button) => button.getAttribute('data-testid').replace(/^(chat-message-(?:retry|delete))-.+$/, '$1'))),
+      ['chat-asset-reuse', 'chat-asset-animate', 'chat-asset-canvas', 'chat-asset-copy', 'chat-asset-save', 'chat-asset-menu', 'chat-message-retry', 'chat-message-delete'])
     assert.deepEqual(await fixtureCalls(page, 'addImageToCanvasProject'), [])
 
     // 菜单：标题、「新建画布项目」、左边那一列里的画布项目和各自什么时候改的。

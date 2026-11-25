@@ -62,7 +62,12 @@ function timelineFixture() {
 // The Chinese runtime patch defaults to an answered 'enabled' here: an
 // ordinary launch must not be interrupted by the one-time question, which
 // `chineseAsk` exercises on its own.
-let settings: AppSettingsV2 = { version: 2, workspace: 'C:\\Fixture', theme: query.get('theme') === 'dark' ? 'dark' : 'light', runDiagnosticsOnStartup: query.has('diagnostics'), checkUpdatesOnStartup: query.has('startupUpdate'),
+// ?antigravityWorkspaceGone：主进程记着的项目文件夹（上次选的）已经被删了，打开 Antigravity 命令行时报
+// 「项目文件夹不存在」（antigravity-service.ts 的 openCli）。这时 getConfig 同主进程，回的是记着的那个
+// （rememberedWorkspaceFor），选过新的以后回新选的那个（launch.ts 的 rememberWorkspace）。
+const fixtureGoneWorkspace = 'C:\\work\\deleted-project'
+const rememberStoredWorkspace = query.has('antigravityWorkspaceGone')
+let settings: AppSettingsV2 = { version: 2, workspace: rememberStoredWorkspace ? fixtureGoneWorkspace : 'C:\\Fixture', theme: query.get('theme') === 'dark' ? 'dark' : 'light', runDiagnosticsOnStartup: query.has('diagnostics'), checkUpdatesOnStartup: query.has('startupUpdate'),
   ...(query.has('crashNotice') ? {} : { crashReportingNoticeShown: true as const }),
   ...(query.has('chineseAsk') ? {} : { codexDesktopChineseRuntimePatch: 'enabled' as const }) }
 // ?longUsername：历史账号没有用户名时界面上写的是邮箱，用一个真实长度的（42 字）。
@@ -675,6 +680,7 @@ const methods = {
   },
   getConfig: async () => {
     const result = structuredClone(config)
+    if (rememberStoredWorkspace) result.rememberedWorkspace = settings.workspace
     if (launchedWorkspace) result.rememberedWorkspace = launchedWorkspace
     // 同主进程（isUntouchedStarterWorkspace）：夹具里替用户建的那个文件夹一直空着。
     if (launchedWorkspace === fixtureStarterWorkspace) result.rememberedWorkspaceFresh = true
@@ -729,7 +735,10 @@ const methods = {
     antigravityStatus.configured = true
     return antigravityMode === 'closeFirst' ? { opened: false, closeFirst: true as const } : { opened: true }
   },
-  openAntigravityCli: async () => { antigravityStatus.configured = true },
+  openAntigravityCli: async (workspace) => {
+    if (workspace === fixtureGoneWorkspace) throw new Error('项目文件夹不存在，请重新选择')
+    antigravityStatus.configured = true
+  },
   installExternalClient: async (tool) => {
     window.v2Test.emit('onExternalClientInstallProgress', { tool, phase: 'downloading', message: '正在下载安装包', percent: 36 })
     if (query.has('externalInstallPending')) await new Promise<void>((resolve, reject) => { releaseLaunch = resolve; cancelExternalInstall = reject })
