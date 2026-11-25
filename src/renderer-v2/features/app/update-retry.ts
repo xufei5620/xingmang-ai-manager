@@ -33,12 +33,18 @@ export async function redownloadUpdate(api: UpdateRetryApi): Promise<UpdateSnaps
 }
 
 /**
- * Mac 校验新版本签名没通过（主进程 updater.ts 的 updateSignatureRejectedCode，两边字面量
- * 要一致）：同一个包装多少遍都一样，「重新安装」是死路，版本更新卡和首页气泡都改给「打开下载页」，
- * 让客户手动装一次。按错误代码判断而不看 failedStep，哪一步报上来的都一样处理。
+ * 同一个包装多少遍都一样、「重新安装」是死路的两种，版本更新卡和首页气泡都改给「打开下载页」，
+ * 让客户手动装一次。按错误代码判断而不看 failedStep，哪一步报上来的都一样处理。两个代码都跟主进程
+ * updater.ts 的字面量一致：
+ * - Mac 校验新版本签名没通过（updateSignatureRejectedCode）。
+ * - Windows 上 PowerShell 不让安装脚本运行，授权窗口根本不弹（updateHandoffBlockedCode）：开了应用管控的
+ *   公司电脑，受限语言模式或组策略只许运行签了名的脚本。
  */
+const manualReinstallCodes: readonly string[] = ['UPDATE_SIGNATURE_REJECTED', 'UPDATE_HANDOFF_BLOCKED']
+
 export function updateNeedsManualReinstall(update: Pick<UpdateSnapshot, 'error'> | null | undefined): boolean {
-  return update?.error?.code === 'UPDATE_SIGNATURE_REJECTED'
+  const code = update?.error?.code
+  return code !== undefined && manualReinstallCodes.includes(code)
 }
 
 /**

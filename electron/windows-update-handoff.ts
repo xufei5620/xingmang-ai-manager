@@ -47,6 +47,8 @@ export type WindowsUpdateHandoffOutcome =
   | { kind: 'verified' }
   | { kind: 'mismatch' }
   | { kind: 'cancelled' }
+  /** 这台电脑的 PowerShell 不让安装脚本运行，授权窗口根本没弹：再点多少次都一样，只能去下载页手动装一次。 */
+  | { kind: 'blocked'; reason: string }
   | { kind: 'failed'; reason: string }
 
 export interface WindowsUpdateHandoffCommandInput {
@@ -145,10 +147,23 @@ export function parseWindowsUpdateHandoffStatus(content: string | null, nonce: s
   return { state, exitCode }
 }
 
-/** 以普通权限跑的那一份脚本（-Relaunch）的退出码：0 是提权那一份起来了，1223 是授权窗口里点了「否」。 */
-export function classifyWindowsHandoffLaunchExit(code: number | null): 'launched' | 'cancelled' | 'failed' {
+/**
+ * PowerShell 自己拦下脚本时的退出码。脚本从不以 1 退出（verified-install.ps1 开头那张表），所以看到 1 就是脚本
+ * 没跑到请授权那一步。2026-11-25 在 Windows CI 上实测（运行 45648962353）：机器级 __PSLockdownPolicy=4 的
+ * 受限语言模式下，脚本在开头第一处 [IO.Path]::Combine 就停；组策略把执行策略定成只许运行签了名的脚本
+ * （AllSigned）时，-ExecutionPolicy Bypass 压不过，脚本一行都不跑。两种都约 300 毫秒以 1 退出、不写状态、
+ * 不弹授权窗口。这类电脑上每次都一样，重试没用。
+ */
+export const windowsHandoffBlockedExitCode = 1
+
+/**
+ * 以普通权限跑的那一份脚本（-Relaunch）的退出码：0 是提权那一份起来了，1223 是授权窗口里点了「否」，
+ * 1 是 PowerShell 不让脚本运行（见上）。
+ */
+export function classifyWindowsHandoffLaunchExit(code: number | null): 'launched' | 'cancelled' | 'blocked' | 'failed' {
   if (code === 0) return 'launched'
   if (code === 1223) return 'cancelled'
+  if (code === windowsHandoffBlockedExitCode) return 'blocked'
   return 'failed'
 }
 
@@ -161,6 +176,8 @@ export interface WindowsUpdateHandoffPaths {
 export interface WindowsUpdateHandoffAttempt {
   nonce: string
   version: string
+  /** 这一次 PowerShell 不让脚本运行（blocked）。退出时自动装碰上它时星芒已经退了，下次打开靠它认出来。 */
+  blocked?: true
 }
 
 export interface WindowsUpdateHandoffDependencies {
@@ -239,6 +256,14 @@ export function createWindowsUpdateHandoff(dependencies: WindowsUpdateHandoffDep
       }
       const exit = classifyWindowsHandoffLaunchExit(exitCode)
       if (exit === 'cancelled') return { kind: 'cancelled' }
+      if (exit === 'blocked') {
+        try {
+          await dependencies.rememberAttempt?.({ nonce, version: updatePackage.version, blocked: true })
+        } catch {
+          // 只影响下次打开时那句话说得准不准，这次照样报出来。
+        }
+        return { kind: 'blocked', reason: `PowerShell 未运行安装脚本（退出码 ${exitCode}）` }
+      }
       if (exit === 'failed') return { kind: 'failed', reason: `提权请求退出码 ${exitCode ?? '未知'}` }
       const startedAt = now()
       let started = false
@@ -336,7 +361,7 @@ export function parseWindowsUpdateHandoffRecord(content: string | null): Windows
   const { nonce, targetVersion: version } = value
   if (typeof nonce !== 'string' || !/^[0-9a-f]{32}$/.test(nonce)) return null
   if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) return null
-  return { nonce, version }
+  return value.blocked === true ? { nonce, version, blocked: true } : { nonce, version }
 }
 
 export function createWindowsUpdateHandoffRecordStore(options: { filePath: string }): WindowsUpdateHandoffRecordStore {
@@ -351,29 +376,31 @@ export function createWindowsUpdateHandoffRecordStore(options: { filePath: strin
     },
     async write(attempt) {
       ensureSafeDataDirectory(path.dirname(options.filePath), recordLabel)
-      await writeAtomicSafeUtf8File(options.filePath, `${JSON.stringify({ version: 1, nonce: attempt.nonce, targetVersion: attempt.version })}\n`, recordLabel)
+      await writeAtomicSafeUtf8File(options.filePath, `${JSON.stringify({ version: 1, nonce: attempt.nonce, targetVersion: attempt.version, ...(attempt.blocked ? { blocked: true } : {}) })}\n`, recordLabel)
     },
   }
 }
 
 /**
- * 下次打开时问一句：上次交给安装程序的是不是这一版、安装程序有没有报失败。只认脚本写下的
- * install-failed：授权窗口被关、没核对过、星芒没退出这几种上次那一刻已经说过了，不再重复。
+ * 下次打开时问一句：上次交给安装程序的是不是这一版、安装程序有没有报失败（install-failed），或者 PowerShell
+ * 根本没让脚本运行（blocked）。后一种说的是去下载页手动装，跟前一种不是一句话。授权窗口被关、没核对过、
+ * 星芒没退出这几种上次那一刻已经说过了，不再重复。
  */
 export function resolvePreviousWindowsHandoffFailure(
   record: WindowsUpdateHandoffAttempt | null,
   version: string,
   currentVersion: string,
   readStatus: (nonce: string) => string | null,
-): boolean {
-  if (!record || record.version !== version || version === currentVersion) return false
+): 'install-failed' | 'blocked' | null {
+  if (!record || record.version !== version || version === currentVersion) return null
+  if (record.blocked) return 'blocked'
   let content: string | null = null
   try {
     content = readStatus(record.nonce)
   } catch {
-    return false
+    return null
   }
-  return parseWindowsUpdateHandoffStatus(content, record.nonce)?.state === 'install-failed'
+  return parseWindowsUpdateHandoffStatus(content, record.nonce)?.state === 'install-failed' ? 'install-failed' : null
 }
 
 export function readWindowsUpdateHandoffStatusFileSync(filePath: string): string | null {

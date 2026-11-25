@@ -22,6 +22,11 @@ import { fileURLToPath } from 'node:url'
 // this proves the script still does what they assume. It runs after
 // `npm run compile` and drives the compiled modules the app ships.
 //
+// Then the same handoff once under a machine-wide ConstrainedLanguage lockdown and
+// once under an AllSigned execution policy from Group Policy, where PowerShell stops
+// the script before it asks for elevation: the app must read that as blocked (the
+// customer is sent to the download page), not as a consent prompt that was closed.
+//
 // With --packaged <resources directory of a built package> only the digest
 // mismatch and the whole chain run, with that package's own copy of the script.
 //
@@ -46,7 +51,7 @@ function compiled(name) {
   return require(path.join(repo, 'dist-electron', `${name}.js`))
 }
 const {
-  buildWindowsUpdateHandoffCommand, classifyWindowsHandoffLaunchExit, runHiddenWindowsProcess, parseWindowsUpdateHandoffStatus,
+  buildWindowsUpdateHandoffCommand, classifyWindowsHandoffLaunchExit, createWindowsUpdateHandoff, runHiddenWindowsProcess, parseWindowsUpdateHandoffStatus,
   readWindowsUpdateHandoffStatusFile, resolveWindowsUpdateHandoffStatusPath,
 } = compiled('windows-update-handoff')
 const { resolveWindowsPowerShellExecutable } = compiled('windows-elevation')
@@ -255,6 +260,64 @@ async function runElevatedHalf(input) {
   return { ...result, status, statusPath }
 }
 
+// Machines with application control on (WDAC, AppLocker) run PowerShell in
+// ConstrainedLanguage, and Group Policy can pin the execution policy to AllSigned,
+// which -ExecutionPolicy Bypass does not override. On both the script never gets
+// to ask for elevation: PowerShell stops it and exits 1 (Windows CI, 2026-11-25,
+// run 45648962353). Machine-wide __PSLockdownPolicy=4 is the lockdown PowerShell
+// itself honours, the same switch the probes smoke was checked against; the
+// policy key is what Group Policy writes. Each is undone before the next step.
+async function withMachineLockdown(action) {
+  const set = await powershellCommand("[Environment]::SetEnvironmentVariable('__PSLockdownPolicy', '4', 'Machine')")
+  assert.equal(set.code, 0, set.stderr)
+  try {
+    const mode = await powershellCommand('$ExecutionContext.SessionState.LanguageMode')
+    assert.equal(mode.stdout.trim(), 'ConstrainedLanguage', `the lockdown did not take: ${mode.stdout}${mode.stderr}`)
+    return await action()
+  } finally {
+    const cleared = await run(path.join(machinePaths.system32, 'reg.exe'), ['delete', 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment', '/v', '__PSLockdownPolicy', '/f'])
+    assert.equal(cleared.code, 0, cleared.stderr)
+    const mode = await powershellCommand('$ExecutionContext.SessionState.LanguageMode')
+    assert.equal(mode.stdout.trim(), 'FullLanguage', 'the lockdown must be lifted again')
+  }
+}
+
+async function withAllSignedPolicy(action) {
+  const key = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\PowerShell'
+  const set = await powershellCommand(`New-Item -Path '${key}' -Force | Out-Null; New-ItemProperty -Path '${key}' -Name EnableScripts -PropertyType DWord -Value 1 -Force | Out-Null; New-ItemProperty -Path '${key}' -Name ExecutionPolicy -PropertyType String -Value AllSigned -Force | Out-Null`)
+  assert.equal(set.code, 0, set.stderr)
+  try {
+    return await action()
+  } finally {
+    const cleared = await powershellCommand(`Remove-Item -Path '${key}' -Recurse -Force`)
+    assert.equal(cleared.code, 0, cleared.stderr)
+  }
+}
+
+// The app's own handoff, as bootstrap/updates.ts builds it, on such a machine.
+async function handoffAsTheAppOnABlockedMachine(installer, label) {
+  const updatePackage = packageFrom(installer, `XingMang-AI-Manager-9.9.9-Setup-${label}.exe`)
+  const nonce = nextNonce()
+  const remembered = []
+  const before = stagingDirectories()
+  const handoff = createWindowsUpdateHandoff({
+    parentPid: process.pid,
+    resolvePaths: () => ({ powershell, script, windowsDirectory: machinePaths.systemRoot }),
+    launch: (file, args) => runHiddenWindowsProcess(file, args, trustedCommandEnvironment()),
+    readStatus: readWindowsUpdateHandoffStatusFile,
+    rememberAttempt: async (attempt) => { remembered.push(attempt) },
+    createNonce: () => nonce,
+  })
+  const started = Date.now()
+  const outcome = await handoff.start({ path: updatePackage.packagePath, sha512: updatePackage.sha512, size: updatePackage.size, version: '9.9.9' })
+  console.log(`  ${label}: ${JSON.stringify(outcome)} after ${Date.now() - started}ms`)
+  assert.deepEqual(outcome, { kind: 'blocked', reason: 'PowerShell 未运行安装脚本（退出码 1）' })
+  assert.deepEqual(remembered, [{ nonce, version: '9.9.9' }, { nonce, version: '9.9.9', blocked: true }])
+  await delay(2_000)
+  assert.equal(fs.existsSync(resolveWindowsUpdateHandoffStatusPath(machinePaths.systemRoot, nonce)), false, 'no elevated copy may have written a status')
+  assert.deepEqual([...stagingDirectories()].filter((name) => !before.has(name)), [], 'no elevated copy may have started')
+}
+
 function readReport(report) {
   return Object.fromEntries(fs.readFileSync(report, 'utf8').trim().split(/\r?\n/).map((line) => {
     const index = line.indexOf('=')
@@ -379,6 +442,13 @@ async function main() {
       if (ace[5] === 'BU') assert.ok(['FR', '0x120089'].includes(ace[2]), `Users may only read the status file, got ${ace[2]}`)
     }
     fs.rmSync(passing.report, { force: true })
+  }
+
+  if (!packagedResources) {
+    console.log('where PowerShell stops the script before it asks for elevation, the app reads it as blocked and sends the customer to the download page')
+    await withMachineLockdown(() => handoffAsTheAppOnABlockedMachine(passing.output, 'constrained-language'))
+    await withAllSignedPolicy(() => handoffAsTheAppOnABlockedMachine(passing.output, 'allsigned-policy'))
+    assert.equal(fs.existsSync(passing.report), false, 'the installer must not run')
   }
   console.log(packagedResources
     ? 'PASS: the packaged script relaunches itself elevated and installs only the package it was given the digest of'

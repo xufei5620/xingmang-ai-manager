@@ -24,7 +24,7 @@ import { shouldVerifyUpdateSignature, verifyUpdateEntrySignature } from '../upda
 import { createUpdateRequestGuard } from '../update-request-guard'
 import { buildUpdateDownloadMeasureLog } from '../update-state-log'
 import { installStrictUpdateCodeSignatureVerifier } from '../update-signature'
-import { createSharedDirectRetry, createUpdaterService, updatePreviousInstallFailedMessage, type UpdaterRuntime } from '../updater'
+import { createSharedDirectRetry, createUpdaterService, updateHandoffBlockedCode, updateHandoffBlockedMessage, updatePreviousInstallFailedMessage, type UpdaterRuntime } from '../updater'
 import { resolveWindowsPowerShellExecutable } from '../windows-elevation'
 import { resolveWindowsMachinePaths } from '../windows-machine-paths'
 import { createWindowsUpdateHandoff, createWindowsUpdateHandoffRecordStore, readWindowsUpdateHandoffStatusFile, readWindowsUpdateHandoffStatusFileSync, resolvePreviousWindowsHandoffFailure, resolveWindowsUpdateHandoffStatusPath, runHiddenWindowsProcess, windowsUpdateHandoffParentWaitMs, windowsUpdateHandoffScriptRelativePath, type WindowsUpdateHandoffRecordStore } from '../windows-update-handoff'
@@ -80,6 +80,8 @@ function createWindowsInstallHandoff(
     const outcome = await handoff.start(updatePackage)
     if (outcome.kind === 'failed') {
       runtimeLog.log('warn', 'updater', 'install.handoff.failed', `${updatePackage.version} 没有交给安装程序`, { reason: outcome.reason })
+    } else if (outcome.kind === 'blocked') {
+      runtimeLog.log('warn', 'updater', 'install.handoff.blocked', `这台电脑的 PowerShell 不让安装脚本运行，${updatePackage.version} 要去下载页手动装`, { reason: outcome.reason })
     } else {
       runtimeLog.log(outcome.kind === 'verified' ? 'info' : 'warn', 'updater', `install.handoff.${outcome.kind}`, `${updatePackage.version} 交接结果：${outcome.kind}`)
     }
@@ -194,12 +196,19 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
       previousAutoInstallFailure: (version, rollback) => {
         if (previousAutoInstallFailureReported) return null
         // 上次交给安装程序的就是这一版、安装程序自己报了失败（S01）。授权窗口被关这类上次当场已经说过。
-        if (windowsHandoffRecords && resolvePreviousWindowsHandoffFailure(
+        // PowerShell 没让脚本运行的（退出时自动装碰上的，那时星芒已经退了）这次直接说去下载页。
+        const previousHandoff = windowsHandoffRecords ? resolvePreviousWindowsHandoffFailure(
           windowsHandoffRecords.read(),
           version,
           app.getVersion(),
           (nonce) => readWindowsUpdateHandoffStatusFileSync(resolveWindowsUpdateHandoffStatusPath(resolveWindowsMachinePaths().systemRoot, nonce)),
-        )) {
+        ) : null
+        if (previousHandoff === 'blocked') {
+          previousAutoInstallFailureReported = true
+          runtimeLog.log('warn', 'updater', 'install.handoff.previous-blocked', `上次 PowerShell 没让安装脚本运行，${version} 要去下载页手动装`)
+          return { code: updateHandoffBlockedCode, message: updateHandoffBlockedMessage }
+        }
+        if (previousHandoff === 'install-failed') {
           previousAutoInstallFailureReported = true
           runtimeLog.log('warn', 'updater', 'install.handoff.previous-failed', `上次交给安装程序的 ${version} 没有装完`)
           return rollback ? previousAutoInstallFailureMessage(process.platform, version) : updatePreviousInstallFailedMessage

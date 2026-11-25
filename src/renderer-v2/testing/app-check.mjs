@@ -7136,18 +7136,21 @@ test('an automatic update check that fails stays off the home bubble but shows o
   } finally { await page.close() }
 })
 
-// Mac 校验新版本签名没通过时，同一个包装多少遍都一样：版本更新卡和首页气泡都不再给
-//「重新安装」，改给「打开下载页」，让客户手动装一次。
-test('a Mac signature rejection offers the download page instead of reinstalling', async () => {
+// Mac 校验新版本签名没通过，或者 Windows 上 PowerShell 不让更新安装脚本运行（受限语言模式、组策略只许
+// 运行签名脚本，授权窗口根本不弹）时，同一个包装多少遍都一样：版本更新卡和首页气泡都不再给「重新安装」，
+// 改给「打开下载页」，让客户手动装一次。右上角也不再说「重启后生效」。两个代码跟主进程 updater.ts 一致。
+for (const [label, code, reason] of [
+  ['a Mac signature rejection', 'UPDATE_SIGNATURE_REJECTED', '新版本已下载，但未通过本机系统校验，无法自动安装，重试也无法解决。请点击「打开下载页」下载新版本安装包，安装后打开即可。'],
+  ['a Windows update handoff PowerShell refused to run', 'UPDATE_HANDOFF_BLOCKED', '新版本已下载，但本机的安全设置不允许自动安装，重试也无法解决。请点击「打开下载页」下载新版本安装包，安装后打开即可。'],
+]) test(`${label} offers the download page instead of reinstalling`, async () => {
   const page = await open('updateCheckFail=1')
   try {
     const updates = await openVersionCard(page)
-    const reason = '新版本已下载，但未通过本机系统校验，无法自动安装，重试也无法解决。请点击「打开下载页」下载新版本安装包，安装后打开即可。'
-    await page.evaluate((message) => window.v2Test.emit('onUpdateState', {
+    await page.evaluate(([errorCode, message]) => window.v2Test.emit('onUpdateState', {
       phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
       checkedAt: new Date().toISOString(), progress: null, failedStep: 'install',
-      error: { code: 'UPDATE_SIGNATURE_REJECTED', message }, development: true,
-    }), reason)
+      error: { code: errorCode, message }, development: true,
+    }), [code, reason])
     const notice = updates.getByTestId('updates-failure-install')
     await notice.getByText('安装更新失败', { exact: true }).waitFor()
     await notice.getByText(reason, { exact: true }).waitFor()
@@ -7155,6 +7158,8 @@ test('a Mac signature rejection offers the download page instead of reinstalling
     assert.equal(await notice.getByRole('button', { name: '重新安装', exact: true }).count(), 0)
     // 卡底那颗「重启并安装」是同一条死路，也不能留。
     assert.equal(await updates.getByRole('button', { name: '重启并安装', exact: true }).count(), 0)
+    await updates.getByText('更新已下载', { exact: true }).waitFor()
+    assert.equal(await updates.getByText('已下载，重启后生效', { exact: true }).count(), 0)
     const bubble = page.getByRole('alert').filter({ hasText: '安装更新失败' })
     await bubble.getByRole('button', { name: '查看更新', exact: true }).waitFor()
     assert.equal(await bubble.getByRole('button', { name: '重新安装', exact: true }).count(), 0)

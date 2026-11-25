@@ -452,9 +452,10 @@ export interface UpdaterRuntime {
    * （见 auto-update-install.ts 的 resolvePreviousAutoInstallFailure）。返回给用户看的
    * 那句话时，这个版本停在「安装失败」，只留「重新安装」按钮，不再自动装；返回 null
    * 照常。不传＝旧行为。`rollback` 跟快照里的 `rollback` 同一个算法：这一版比本机旧，
-   * 那句话要说「建议退回的 X 版」（D11）。
+   * 那句话要说「建议退回的 X 版」（D11）。也可以连错误代码一起给：Windows 上次是 PowerShell 不让安装脚本
+   * 运行（updateHandoffBlockedCode）时，界面按代码把「重新安装」换成「打开下载页」。
    */
-  previousAutoInstallFailure?: (version: string, rollback: boolean) => string | null
+  previousAutoInstallFailure?: (version: string, rollback: boolean) => string | { code: string; message: string } | null
   /**
    * 下载前读更新包落地那块盘的剩余字节数。读不到返回 null，照常下载（宁可让一次下载
    * 自己失败，也不因一个查不到的数字把更新拦死）。不传＝旧行为，不做预检。
@@ -1005,6 +1006,12 @@ export const updatePackageChangedMessage = '安装包在安装前发生变化，
 export const updateInstallNotQuitMessage = '安装程序已准备就绪，但星芒未能自动关闭。请稍后点击「重新安装」重试。'
 export const updatePreviousInstallFailedMessage = '新版本上次未能安装完成。请点击「重新安装」重试；如仍失败，请联系客服。'
 const windowsInstallLaunchFailedMessage = '新版本安装失败：安装程序未能启动，可能是 Windows 授权窗口被关闭。请点击「重新安装」重试，授权窗口弹出时请点击「是」。'
+// 开了应用管控、PowerShell 被限制的电脑（受限语言模式，或组策略只许运行签了名的脚本）上，安装脚本一行没跑
+// 就被拦下，授权窗口根本不弹，重试永远一样（windows-update-handoff.ts 的 windowsHandoffBlockedExitCode）。
+// 装法和核对都不放宽，只让客户手动装一次。渲染层 features/app/update-retry.ts 按这个代码把「重新安装」
+// 换成「打开下载页」，两边字面量要一致。字 2026-11-25 贴给 yoyo 确认。
+export const updateHandoffBlockedCode = 'UPDATE_HANDOFF_BLOCKED'
+export const updateHandoffBlockedMessage = '新版本已下载，但本机的安全设置不允许自动安装，重试也无法解决。请点击「打开下载页」下载新版本安装包，安装后打开即可。'
 const updatePackageMissingMessage = '未找到已下载的安装包，可能已被清理软件删除。请点击「重新下载」重试。'
 
 const updateSignatureRejectedMessage = '新版本已下载，但未通过本机系统校验，无法自动安装，重试也无法解决。请点击「打开下载页」下载新版本安装包，安装后打开即可。'
@@ -1625,6 +1632,10 @@ export function createUpdaterService(
         return
       }
       // 取消和失败都留着这一份：再点「重新安装」从头再核、再交一次。
+      if (outcome.kind === 'blocked') {
+        failInstall({ code: updateHandoffBlockedCode, message: updateHandoffBlockedMessage, detail: outcome.reason.slice(0, 500) })
+        return
+      }
       if (outcome.kind === 'cancelled') {
         failInstall({ code: 'UPDATE_INSTALL_CANCELLED', message: updateInstallCancelledMessage })
         return
@@ -1676,10 +1687,10 @@ export function createUpdaterService(
       withdrawOffer()
       return
     }
-    let previousFailure: string | null = null
+    let previousFailure: string | { code: string; message: string } | null = null
     try { previousFailure = runtime.previousAutoInstallFailure?.(info.version, isOlderVersion(info.version, runtime.currentVersion)) ?? null } catch { previousFailure = null }
     applyInfo('downloaded', info, previousFailure
-      ? { error: { code: 'UPDATE_PREVIOUS_AUTO_INSTALL_FAILED', message: previousFailure }, failedStep: 'install' }
+      ? { error: typeof previousFailure === 'string' ? { code: 'UPDATE_PREVIOUS_AUTO_INSTALL_FAILED', message: previousFailure } : previousFailure, failedStep: 'install' }
       : {})
   }
 
