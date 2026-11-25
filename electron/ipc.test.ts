@@ -5131,6 +5131,21 @@ describe('registerIpcHandlers', () => {
     expect(electronMocks.writeText).toHaveBeenCalledWith('sanitized report\n')
   })
 
+  // 设置客服反馈复查第 2 条：反馈页「复制这一条」原样复制列表里的那一条，个人文件夹要在列表这条路上就换掉。
+  it('hides the home folder in the runtime log entries it lists', async () => {
+    const { runtimeLog } = register()
+    const project = path.join(os.homedir(), 'project')
+    const entry = { id: '1-1', timestamp: '2026-11-26T00:00:00.000Z', level: 'error', source: 'system', event: 'workspace.failed', message: `打不开 ${project}`, detail: { cwd: project, nested: [project], code: 5 } }
+    runtimeLog.snapshot.mockResolvedValueOnce({ ...(await runtimeLog.snapshot()), total: 1, entries: [entry] } as never)
+
+    const listed = await electronMocks.handlers.get('runtime-logs:list')!(trustedEvent(), 500) as { total: number; entries: { message: string; detail: { cwd: string; nested: string[]; code: number } }[] }
+    expect(listed.total).toBe(1)
+    expect(JSON.stringify(listed.entries)).not.toContain(JSON.stringify(os.homedir()).slice(1, -1))
+    expect(listed.entries[0].message).toMatch(/^打不开 (?:%USERPROFILE%|~)[\\/]project$/)
+    expect(listed.entries[0].detail.code).toBe(5)
+    expect(runtimeLog.snapshot).toHaveBeenLastCalledWith(500)
+  })
+
   // 0.2.24 性能深查 R4：开机界面每次都把深浅色发一遍。先换窗口颜色再记；记不进去（C 盘满、杀毒锁住
   // 文件）只记一条日志，标题栏和页面照样换上，不再弹「系统外观没有同步」。
   it('applies window:set-theme before saving it, and keeps the applied theme when the save fails', async () => {

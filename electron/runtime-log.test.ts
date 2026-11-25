@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import fc from 'fast-check'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError } from './command-runner'
 import {
@@ -8,7 +9,9 @@ import {
   describeRuntimeLogWriteFailure,
   formatFeedbackLocalTime,
   redactHomeDirectory,
+  redactRuntimeLogEntriesHome,
   RuntimeLogStore,
+  type RuntimeLogEntry,
   summarizeRuntimeLogFile,
 } from './runtime-log'
 import { recordStartupFailure } from './startup-log'
@@ -137,6 +140,50 @@ describe('RuntimeLogStore', () => {
 
     expect(redacted.toLowerCase()).not.toContain('users')
     expect(redacted.match(/%USERPROFILE%/g)).toHaveLength(3)
+  })
+
+  // 设置客服反馈复查第 2 条：反馈页「复制这一条」复制的是列表里那一条，以前带着完整的个人文件夹（Windows 用户名）。
+  it('redacts the home folder in each listed entry, in the message and anywhere in the detail', () => {
+    const [entry] = redactRuntimeLogEntriesHome([{
+      id: '1-1',
+      timestamp: '2026-11-26T00:00:00.000Z',
+      level: 'error',
+      source: 'system',
+      event: 'install.failed',
+      message: '写入 C:\\Users\\Peaker\\.codex\\config.toml 失败',
+      detail: { path: 'c:/users/peaker/.claude', attempts: 2, ok: false, missing: null, nested: { files: ['C:\\Users\\Peaker\\a.txt', 3] } },
+    }], 'C:\\Users\\Peaker', 'win32')
+
+    expect(entry).toEqual({
+      id: '1-1',
+      timestamp: '2026-11-26T00:00:00.000Z',
+      level: 'error',
+      source: 'system',
+      event: 'install.failed',
+      message: '写入 %USERPROFILE%\\.codex\\config.toml 失败',
+      detail: { path: '%USERPROFILE%/.claude', attempts: 2, ok: false, missing: null, nested: { files: ['%USERPROFILE%\\a.txt', 3] } },
+    })
+  })
+
+  it('redacts a macOS home folder and keeps an entry without detail as it was', () => {
+    const entry: RuntimeLogEntry = { id: '1-2', timestamp: '2026-11-26T00:00:00.000Z', level: 'info', source: 'main', event: 'app.started', message: '启动于 /Users/alex/Applications', detail: null }
+    expect(redactRuntimeLogEntriesHome([entry], '/Users/alex', 'darwin')).toEqual([{ ...entry, message: '启动于 %USERPROFILE%/Applications' }])
+  })
+
+  it('leaves no home folder in listed entries with random inputs', () => {
+    const home = 'C:\\Users\\Peaker'
+    const spelling = fc.constantFrom(home, 'c:\\users\\peaker', 'C:/Users/Peaker', 'C:\\\\Users\\\\Peaker')
+    const filler = fc.string({ unit: 'binary', maxLength: 20 }).filter((text) => !/peaker/i.test(text))
+    const withHome = fc.tuple(filler, spelling, filler).map((parts) => parts.join(''))
+    const value = fc.oneof(withHome, fc.integer(), fc.boolean(), fc.constant(null), fc.array(withHome, { maxLength: 3 }), fc.dictionary(filler, withHome, { maxKeys: 3 }))
+    fc.assert(fc.property(withHome, fc.dictionary(filler, value, { maxKeys: 4 }), (message, detail) => {
+      const [entry] = redactRuntimeLogEntriesHome([{ id: '1-3', timestamp: '2026-11-26T00:00:00.000Z', level: 'warn', source: 'system', event: 'x', message, detail }], home, 'win32')
+      expect(JSON.stringify(entry).toLowerCase()).not.toContain('peaker')
+      expect(Object.keys(entry.detail ?? {})).toEqual(Object.keys(detail))
+      for (const [key, original] of Object.entries(detail)) {
+        if (typeof original !== 'string' && !Array.isArray(original) && (original === null || typeof original !== 'object')) expect(entry.detail?.[key]).toBe(original)
+      }
+    }), { numRuns: 300 })
   })
 
   it('resolves idle only after every queued entry has reached the file', async () => {

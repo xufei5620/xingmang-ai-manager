@@ -2,9 +2,11 @@
 // #1070 第 7 步从 ipc.ts 原样搬来：按域一个文件，ipc.ts 只管组装，各域共用的东西在 context.ts。
 import { clipboard, dialog, shell } from 'electron'
 import { randomUUID } from 'node:crypto'
+import os from 'node:os'
 import { ensureSafeDataDirectory, writeAtomicSafeUtf8File } from '../../safe-local-data'
 import { resolveRevealableExportedFile } from '../../exported-file'
 import { buildFeedbackMessage } from '../../feedback-message'
+import { redactRuntimeLogEntriesHome } from '../../runtime-log'
 import { isRecord } from '../../input-guards'
 import type { FeedbackMessageCopyRequest, FeedbackReportCopyResult } from '../../ipc-contract'
 import { requiredString } from '../parsers/common'
@@ -17,11 +19,13 @@ const FEEDBACK_REPORT_MAX_LENGTH = 2_000_000
 export function registerRuntimeLogHandlers(ctx: IpcHandlerContext): () => void {
   const { options, registerTrustedHandler, externalShell, exportedFiles, rememberExportedFile } = ctx
   const revealInFolder = options.revealInFolder ?? ((filePath: string) => shell.showItemInFolder(filePath))
-  registerTrustedHandler('runtime-logs:list', (_event, limit: unknown) => {
+  registerTrustedHandler('runtime-logs:list', async (_event, limit: unknown) => {
     if (limit !== undefined && (typeof limit !== 'number' || !Number.isInteger(limit) || limit < 1 || limit > 2_000)) {
       throw new Error('日志数量格式错误')
     }
-    return options.runtimeLog.snapshot(limit as number | undefined)
+    const snapshot = await options.runtimeLog.snapshot(limit as number | undefined)
+    // 反馈页「复制这一条」原样复制列表里的那一条：个人文件夹在这里就换成 %USERPROFILE%，跟反馈报告一样。
+    return { ...snapshot, entries: redactRuntimeLogEntriesHome(snapshot.entries, os.homedir()) }
   })
   const feedbackPreviews = new Map<number, { id: string; text: string; entries: number; selfChecked?: boolean; expiresAt: number }>()
   const captureFeedbackPreview = async (senderId: number) => {
