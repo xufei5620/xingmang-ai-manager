@@ -309,7 +309,7 @@ const homeNoticeLimit = 2
 // 卡片「改用…」统一不带用户名（批 04 字表）：长邮箱会把按钮撑出卡片。
 const useAccountLabel = '改用当前账号'
 /** 首页 Codex CLI 卡片「…」菜单里去手机遥控那张卡的那一项（YF-6）。 */
-export const remoteMenuLabel = '手机遥控'
+export const remoteMenuLabel = '遥控'
 
 /** npm 是随 Node.js 一起装的：Node.js 在、它却确实不在（不是没查出来）才算缺。 */
 export function nodeInstallerPartMissing(runtime: ToolboxSnapshot['system']['runtime'] | undefined) {

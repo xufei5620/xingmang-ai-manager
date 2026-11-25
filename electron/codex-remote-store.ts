@@ -17,8 +17,8 @@ import { isCodexThreadId, isRemoteChannelId, isRemoteIdleCloseHours, isRemoteMod
 const settingsFileName = 'settings.json'
 const maxSettingsBytes = 64 * 1024
 const maxCredentialBytes = 64 * 1024
-const settingsLabel = '手机遥控设置'
-const credentialLabel = '手机遥控凭据'
+const settingsLabel = '遥控设置'
+const credentialLabel = '遥控凭据'
 const maxDisplayNameLength = 64
 const maxUserIdLength = 256
 const maxAccountLabelLength = 128
@@ -35,7 +35,7 @@ export const maxRemoteWorkspaces = 5
  * 设置文件在、这会儿却读不出来（比如 Windows 上杀毒软件正占着它）时，改设置那一下上屏这句，文件不动（M09）。
  * 以前读不出来就当没设过，下一次改开关拿空设置整份写回，加过的文件夹、绑定的人、自动关的时长全没了。
  */
-export const settingsUnreadableMessage = '本次修改未生效：暂时无法读取本机保存的手机遥控设置，为避免原有设置丢失，未做任何改动。请稍后重试。'
+export const settingsUnreadableMessage = '本次修改未生效：暂时无法读取本机保存的遥控设置，为避免原有设置丢失，未做任何改动。请稍后重试。'
 
 /** 「退出登录」删不掉凭据文件时上屏那句（#1407 P3-6）。比如 Windows 上文件正被杀毒软件占着，重启后再删一般就行。 */
 export const credentialRemoveFailedMessage = '未能删除已保存的登录信息，请重启星芒后再次点击「退出登录」。'

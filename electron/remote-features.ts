@@ -74,7 +74,7 @@ function possessive(name: string): string {
 
 // 客户看得到的这几句是 yoyo 2026-10-28 回「停用改」批的，改字要先问他。
 export const videoStudioOffMessage = `视频剪辑暂时停用了，${remoteFeatureOffMarker}。`
-export const codexRemoteOffMessage = `手机遥控暂时停用了，${remoteFeatureOffMarker}。`
+export const codexRemoteOffMessage = `遥控暂时停用了，${remoteFeatureOffMarker}。`
 export const accelerationOffMessage = `网络加速暂时停用了，${remoteFeatureOffMarker}。`
 export const codexDesktopChineseOffMessage = `Codex 已经打开，中文界面暂时停用了，这次先用英文界面，${remoteFeatureOffMarker}。`
 

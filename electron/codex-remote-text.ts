@@ -21,9 +21,9 @@ export const remoteMessages = {
   // 语音、文件这些（YF-14，yoyo 2026-11-11「图片改」）：图片能发了，这句跟着改。
   unsupported: '目前仅支持文字和图片，暂不支持语音和文件，请改用文字发送。',
   help: '直接发送消息即可让 Codex 执行任务。\n可用指令：新对话、对话、停止、状态、文件夹、关闭遥控、重试、帮助。\nCodex 执行需要您确认的操作前会先询问，请回复「同意」或「拒绝」。',
-  closedOnComputer: '手机遥控已在电脑上关闭。',
+  closedOnComputer: '遥控已在电脑上关闭。',
   // 手机上发「关闭遥控」（Fable 手机遥控 YF-17，yoyo 2026-11-11「第三批改」）：开着的渠道都收到这一句。
-  closedFromPhone: '手机遥控已关闭。如需继续使用，请在电脑端的星芒中重新开启。',
+  closedFromPhone: '遥控已关闭。如需继续使用，请在电脑端的星芒中重新开启。',
   quitting: '电脑端的星芒已退出，遥控已停止。请重新打开星芒并开启遥控后继续使用。',
   // 开了「打开星芒时自动打开遥控」（YF-9）时退出说的这句（手机遥控深查 YR-8，yoyo 2026-11-18「这些都按照你的推荐」）：
   // 再打开星芒就会自己连上，不用再去设置里开。
@@ -39,7 +39,7 @@ export const remoteMessages = {
   codexStarting: '电脑正在启动 Codex，请稍候；如需取消，请发送「停止」。',
   threadReset: '当前为新对话，Codex 无法读取此前的对话内容。',
   unbound: '您已在电脑端被解绑，此后发送的消息将不再执行。',
-  idleClosingSoon: '手机遥控将在 10 分钟后自动关闭，如需继续使用，请回复任意消息。',
+  idleClosingSoon: '遥控将在 10 分钟后自动关闭，如需继续使用，请回复任意消息。',
   // 手机上发「重试」、这次打开以后还没交给 Codex 过一句时（Fable 手机遥控 YF-22，yoyo 2026-11-11「状态重试改」）。
   nothingToRetry: '暂无可重新发送的上一条消息，请直接发送需要执行的任务。',
   // 点的是上一轮留下的进度卡上的「停止」（YF-15，yoyo 2026-11-11「进度改」）：这一轮不停。
@@ -105,8 +105,8 @@ export function conversationListMessage(conversations: readonly RemoteConversati
 export function conversationSwitchedMessage(title: string, lowered: 'default' | 'readOnly' | null): string {
   const level = lowered === 'readOnly' ? '只读' : '默认'
   return [
-    `已切换到对话「${title}」，请发送消息继续。手机遥控的规则（不发送密钥和密码、回复简洁等）将保留在该对话中，在电脑端继续时同样生效。`,
-    ...(lowered ? [`该对话原有权限超出手机遥控允许的范围，已调整为「${level}」，在电脑端继续时也将保持「${level}」。`] : []),
+    `已切换到对话「${title}」，请发送消息继续。遥控的规则（不发送密钥和密码、回复简洁等）将保留在该对话中，在电脑端继续时同样生效。`,
+    ...(lowered ? [`该对话原有权限超出遥控允许的范围，已调整为「${level}」，在电脑端继续时也将保持「${level}」。`] : []),
     remoteMessages.conversationKeepApart,
   ].join('\n')
 }
@@ -159,8 +159,8 @@ export function retryMessage(text: string): string {
  */
 export function idleClosedMessage(hours: number, autoStart = false): string {
   return autoStart
-    ? `${hours} 小时内无新消息，手机遥控已自动关闭。星芒下次打开时将自动连接；如需立即使用，请在电脑端重新开启。`
-    : `${hours} 小时内无新消息，手机遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。`
+    ? `${hours} 小时内无新消息，遥控已自动关闭。星芒下次打开时将自动连接；如需立即使用，请在电脑端重新开启。`
+    : `${hours} 小时内无新消息，遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。`
 }
 
 /** 遥控开着时发的、到电脑时已超过 10 分钟的消息照旧不执行，只给绑定的人回这一句（D66 / YKS-9）。 */
@@ -289,7 +289,7 @@ export interface RemoteStatusSummary {
  * workspace 是已换成 ~ 的工作文件夹，跟「状态」里那行同一种写法。
  */
 export function remoteOpenedMessage(workspace: string): string {
-  return `电脑端已开启手机遥控，现在可以发送消息。工作文件夹：${workspace}`
+  return `电脑端已开启遥控，现在可以发送消息。工作文件夹：${workspace}`
 }
 
 /** 「状态」里「已经多久」那种写法（YF-18）：已经不到 1 分钟、已经 6 分钟、已经 1 小时 5 分钟。 */

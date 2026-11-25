@@ -12,7 +12,7 @@
 | canvas | 画布 ↗（2026-11-20 并进「创作」，侧栏不出；`navigate('canvas')` 照旧开画布窗口） | infinity | daily | 独立窗口 | 不出页面结果；常用操作里有「打开画布窗口」 | —（`nav-canvas` 随侧栏那一项撤了） |
 | video | 视频剪辑（2026-10-25 新增；2026-11-20 并进「创作」，侧栏不出；`navigate('video')` 落到「创作」并接着最近那条视频，没有就新开一条） | clapperboard | daily | T1 | 不出 | —（工作台在 `create-video-pane` 里） |
 | acceleration | 网络加速（2026-10-21 前叫游戏加速） | globe-2 | daily | T5 | 跳转 | page-acceleration |
-| remote | 手机遥控（0.2.25 新增，原来是设置 › 工具管理的整卡；侧栏排在「插件」前面） | smartphone | daily | T1 | 跳转 | page-remote |
+| remote | 遥控（0.2.25 新增，2026-11-26 前叫「手机遥控」；原来是设置 › 工具管理的整卡；侧栏排在「插件」前面） | smartphone | daily | T1 | 跳转 | page-remote |
 | extensions | 插件（0.2.25 起精选、外接工具、技能、插件四页合成这一页，侧栏接在第一组最后） | puzzle | extend | 专用 | 跳转 | page-extensions |
 | featured | 精选（0.2.25 起别名，落「插件」那一栏） | star | — | — | 不出 | page-featured |
 | mcp | 外接工具（0.2.25 起别名，落「插件」那一栏） | plug | — | — | 不出 | page-mcp |
