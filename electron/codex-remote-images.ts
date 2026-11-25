@@ -16,7 +16,7 @@ export type RemoteImageType = 'png' | 'jpeg' | 'gif' | 'webp'
 
 const storedImagePattern = /^[0-9a-f]{32}\.(png|jpg|gif|webp)$/
 const extensions: Record<RemoteImageType, string> = { png: 'png', jpeg: 'jpg', gif: 'gif', webp: 'webp' }
-const label = '手机遥控的图片'
+const label = '遥控的图片'
 
 function asciiAt(bytes: Uint8Array, start: number, end: number): string {
   return String.fromCharCode(...bytes.subarray(start, end))

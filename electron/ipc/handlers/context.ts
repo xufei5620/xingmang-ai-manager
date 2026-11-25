@@ -286,7 +286,7 @@ export function createIpcHandlerContext(
     return secret
   }
   const codexRemote = (): CodexRemoteService => {
-    if (!options.codexRemote) throw new Error('手机遥控暂未准备好，请稍后再试。')
+    if (!options.codexRemote) throw new Error('遥控暂未准备好，请稍后再试。')
     return options.codexRemote
   }
   return {

@@ -33,7 +33,7 @@ export interface ApplicationTraySnapshot {
 }
 
 /** 托盘里点「打开手机遥控」一个都没打开时那条系统通知的标题；正文是打不开的原因原句（YF-8）。 */
-export const trayRemoteControlOpenFailedTitle = '手机遥控开启失败'
+export const trayRemoteControlOpenFailedTitle = '遥控开启失败'
 
 export interface TrayKeepAwakeState {
   /** 终端里正在干活的工具名（Claude Code、Gemini CLI、Grok CLI）。 */
@@ -53,7 +53,7 @@ export interface TrayKeepAwakeState {
 export function trayKeepAwakeLabel(state: TrayKeepAwakeState): string | null {
   if (state.tools.length === 1) return `${state.tools[0]} 正在运行，已暂停系统自动睡眠`
   if (state.tools.length > 1) return 'AI 工具正在运行，已暂停系统自动睡眠'
-  if (state.remoteControl) return '手机遥控已开启，已暂停系统自动睡眠'
+  if (state.remoteControl) return '遥控已开启，已暂停系统自动睡眠'
   if (state.installing) return '正在安装，已暂停系统自动睡眠'
   if (state.downloadingUpdate) return '正在下载星芒新版本，已暂停系统自动睡眠'
   return null
@@ -320,8 +320,8 @@ export function buildApplicationTrayMenu(
   return [
     { label: `打开${appName}`, click: () => run(actions.onOpen) },
     ...(keepAwake ? [{ label: keepAwake, enabled: false }] : []),
-    ...(remoteOff ? [{ label: '关闭手机遥控', click: () => run(remoteOff) }] : []),
-    ...(remoteOn ? [{ label: '开启手机遥控', click: () => run(remoteOn) }] : []),
+    ...(remoteOff ? [{ label: '关闭遥控', click: () => run(remoteOff) }] : []),
+    ...(remoteOn ? [{ label: '开启遥控', click: () => run(remoteOn) }] : []),
     { type: 'separator' },
     { label: menuLabel(snapshot.accountLabel, '未登录'), enabled: false },
     { label: `余额：${trayBalanceText(snapshot, now)}`, enabled: false },
