@@ -426,6 +426,13 @@ test('image controls use real model capabilities and asset actions use opaque id
     assert.equal(request.imageResolution, '2K')
     await page.evaluate((id) => window.chatHarness.completeImage(id), request.requestId)
     await page.getByRole('button', { name: '查看生成图片' }).waitFor()
+    // 0.2.25 C2：「重新生成」「删除」接在图片那排按钮后面（细竖线隔开），尺寸仍在最右；没有文字说明的出图回复不再另起一排。
+    const reply = page.locator('.chat-message[data-role="assistant"]').last()
+    const row = reply.locator('.chat-asset-actions')
+    assert.equal(await row.getByRole('button', { name: '重新生成' }).count(), 1)
+    assert.equal(await row.getByRole('button', { name: '删除消息' }).count(), 1)
+    assert.deepEqual(await row.evaluate((element) => Array.from(element.children).slice(-4).map((child) => child.getAttribute('aria-label') || child.className || child.tagName.toLowerCase())), ['chat-asset-divider', '重新生成', '删除消息', 'small'])
+    assert.equal(await reply.locator('.chat-message-tools').count(), 0)
     await page.getByTestId('chat-asset-copy').click()
     await page.getByTestId('chat-asset-save').click()
     await page.getByTestId('chat-asset-menu').click()
