@@ -193,7 +193,7 @@ function codexMcpServers(authStatus: string) {
 }
 // 手机遥控 Codex：一份可变的状态，操作改它、回整份快照（revision 每次加一），和主进程一个样子。
 // remoteReady：已经选好文件夹、填好飞书应用；remoteElevated：星芒以管理员身份在跑；
-// remoteFolders：电脑上已经加了三个工作文件夹（YF-19）。
+// remoteFolders：电脑上已经加了三个工作文件夹（YF-19）；remoteNoFolder：飞书应用填好了、还没选文件夹（0.2.25 M1）。
 type RemoteSnapshot = Awaited<ReturnType<V2Bridge['getCodexRemoteState']>>
 const remoteReady = query.has('remoteReady')
 const remoteState: {
@@ -213,8 +213,8 @@ const remoteState: {
   permission: 'default' | 'readOnly'
   conversation: RemoteConversation | null
 } = {
-  workspaceDirectory: remoteReady ? '~/projects/demo' : null,
-  workspaces: query.has('remoteFolders') ? ['~/projects/demo', '~/projects/blog', '~/projects/shop'] : remoteReady ? ['~/projects/demo'] : [],
+  workspaceDirectory: remoteReady && !query.has('remoteNoFolder') ? '~/projects/demo' : null,
+  workspaces: query.has('remoteFolders') ? ['~/projects/demo', '~/projects/blog', '~/projects/shop'] : remoteReady && !query.has('remoteNoFolder') ? ['~/projects/demo'] : [],
   accountLabel: remoteReady ? 'cli_a1b2c3d4e5' : null,
   enabled: query.has('remotePaired'),
   pairing: null,
