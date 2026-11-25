@@ -535,7 +535,7 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
         </div>
         {draftTooLong && <p className="chat-message-error" id="chatInTooLong" role="status" data-testid="chat-draft-too-long">{draftTooLong}</p>}
         {showSizeRule && <p className="chat-message-error" id="chatImageSizeRule" role="status" data-testid="chat-image-size-rule">{chat.sizeRule}</p>}
-        <div className="chat-compose-foot">{videoMode ? <span data-testid="chat-cost-note">生成一段视频需要几分钟，按段计费，发送前将显示预计费用。</span> : <span>回答由模型生成，可能有误，重要内容请核对。<span data-testid="chat-cost-note">{draftImages.length ? textMode ? '按实际用量计费，带图片的提问会更贵一些。' : '按实际用量计费，带参考图的会更贵一些。' : textMode ? '按实际用量计费，回复越长花得越多。' : '按实际用量计费。'}</span></span>}{pending && <Pill tone="accent">正在生成</Pill>}</div>
+        <div className="chat-compose-foot">{videoMode ? <span data-testid="chat-cost-note">生成一段视频需要几分钟，按段计费，发送前将显示预计费用。</span> : <span data-testid="chat-compose-note">{textMode ? '回答由模型生成，可能有误，重要内容请核对。' : '图片由模型生成，'}<span data-testid="chat-cost-note">{draftImages.length ? textMode ? '按实际用量计费，带图片的提问会更贵一些。' : '按实际用量计费，带参考图的会更贵一些。' : textMode ? '按实际用量计费，回复越长花得越多。' : '按实际用量计费。'}</span></span>}{pending && <Pill tone="accent">正在生成</Pill>}</div>
       </div>
     </div>
     {confirmation && <Confirm title={confirmTitle} body={confirmation.kind === 'video' ? <><p>{videoAskLine}</p><p>{videoWaitNote}</p></>
