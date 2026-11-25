@@ -3,6 +3,7 @@ import { ArrowRight, BookOpen, Check, ChevronRight, Download, FolderOpen, Info, 
 import type { AccountBalance, AccountProfile, AccountSourceTarget, AntigravityStatus, AntigravityTarget, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount, ProviderId, WindowsRestartResult } from '../../../../electron/ipc-contract'
 import { presentExternalClients } from './external-model'
 import { presentAntigravity, type AntigravityPresentation } from './antigravity'
+import { installedToolCount } from './installed-count'
 import { desktopUpdateFailedLine, externalUpdateTarget, type DesktopUpdateTool } from './desktop-update'
 import { useSharedBalanceSelector, useSharedBalanceStore } from '../app/balance-context'
 import { sameFlatRecord, subscribeBalanceReads } from '../app/balance-store'
@@ -655,7 +656,7 @@ export function Home(props: HomeProps) {
   const undetectedExternal = (tool: ExternalPresentation) => !tool.status.installed && !jobs[tool.id] && Boolean(tool.status.detectionError)
   const installedExternal = external.filter((tool) => tool.status.installed || jobs[tool.id])
   const antigravityCards = presentAntigravity(props.antigravity ?? null)
-  const installedCount = installed.length + installedExternal.length + antigravityCards.filter((card) => card.installed || jobs[card.id]).length
+  const installedCount = installedToolCount(tools, external, antigravityCards, jobs)
   const undetectedCount = tools.filter(undetected).length + external.filter(undetectedExternal).length
   // 第一次检测还没回来：工具区只放灰色占位。
   const firstScan = loading && !snapshot
