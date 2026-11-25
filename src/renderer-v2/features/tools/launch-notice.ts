@@ -33,7 +33,8 @@ export function launchDeclined(result: CodexDesktopLaunchResult | CliLaunchResul
  */
 export function resumeSessionNotice(result: CliLaunchResult | void | undefined, toolName: string, cwd: string): string | null {
   if (launchDeclined(result)) return null
-  const opened = `已打开${toolName}，继续 ${cwd} 中最近的一条对话`
+  // 记录页上点哪条接哪条（0.2.25 S1），不再说「最近的一条」。
+  const opened = `已打开${toolName}，在 ${cwd} 中继续这次对话`
   const warning = launchWarning(result)
   return warning ? `${opened}。${warning}` : opened
 }

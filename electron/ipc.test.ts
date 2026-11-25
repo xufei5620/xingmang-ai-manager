@@ -338,6 +338,7 @@ function register(
     detail: vi.fn(),
     exportMarkdown: vi.fn(),
     resolveWorkspace: vi.fn(),
+    resolveResumeTarget: vi.fn(),
     invalidateListCache: vi.fn(),
   }
   const runtimeLog = {
@@ -4574,15 +4575,15 @@ describe('registerIpcHandlers', () => {
     // 不靠前后两个账号的编号对不对得上。
     it('does not resume a conversation once an account change has started during the record lookup', async () => {
       const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => undefined })
-      const lookup = pending<string>()
+      const lookup = pending<{ workspace: string; sessionId: string | null }>()
       const service = serviceStub()
       const launched = launchThroughQueue(service)
       const { providerSessionsService } = register(service, undefined, undefined, undefined, undefined, undefined, { accountWork })
-      providerSessionsService.resolveWorkspace.mockReturnValueOnce(lookup.promise)
+      providerSessionsService.resolveResumeTarget.mockReturnValueOnce(lookup.promise)
 
       const result = electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', nativeFolder('C:\\projects\\demo'), 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
       accountWork.abortQueued()
-      lookup.resolve(nativeFolder('C:\\projects\\demo'))
+      lookup.resolve({ workspace: nativeFolder('C:\\projects\\demo'), sessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })
 
       await expect(result).rejects.toThrow('账号刚刚切换，请重试')
       expect(service.launchProvider).not.toHaveBeenCalled()
@@ -6857,22 +6858,22 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
   describe('Codex resume by record id (cli:launch fourth argument)', () => {
     it('resumes by the bare id once the record is found in the same folder', async () => {
       const { service, providerSessionsService } = register()
-      providerSessionsService.resolveWorkspace.mockResolvedValueOnce(nativeFolder('C:\\projects\\demo'))
+      providerSessionsService.resolveResumeTarget.mockResolvedValueOnce({ workspace: nativeFolder('C:\\projects\\demo'), sessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })
 
       await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', nativeFolder('C:\\projects\\demo'), 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
 
-      expect(providerSessionsService.resolveWorkspace).toHaveBeenCalledWith('codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+      expect(providerSessionsService.resolveResumeTarget).toHaveBeenCalledWith('codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
       expect(service.launchProvider).toHaveBeenCalledWith('codex', nativeFolder('C:\\projects\\demo'), 'resumeLast', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
     })
 
     it('falls back to the latest one in the folder when the record is gone or elsewhere', async () => {
       const { service, providerSessionsService } = register()
       const handler = electronMocks.handlers.get('cli:launch')!
-      providerSessionsService.resolveWorkspace.mockRejectedValueOnce(new Error('未找到这条记录'))
+      providerSessionsService.resolveResumeTarget.mockRejectedValueOnce(new Error('未找到这条记录'))
       await handler(trustedEvent(), 'codex', nativeFolder('C:\\projects\\demo'), 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
       expect(service.launchProvider).toHaveBeenLastCalledWith('codex', nativeFolder('C:\\projects\\demo'), 'resumeLast')
 
-      providerSessionsService.resolveWorkspace.mockResolvedValueOnce(nativeFolder('C:\\projects\\other'))
+      providerSessionsService.resolveResumeTarget.mockResolvedValueOnce({ workspace: nativeFolder('C:\\projects\\other'), sessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })
       await handler(trustedEvent(), 'codex', nativeFolder('C:\\projects\\demo'), 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
       expect(service.launchProvider).toHaveBeenLastCalledWith('codex', nativeFolder('C:\\projects\\demo'), 'resumeLast')
     })
@@ -6886,7 +6887,60 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       for (const bad of ['0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b', 'codex:--last', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b --yolo', 'claude:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b', ['codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b']]) {
         expect(() => handler(trustedEvent(), 'codex', nativeFolder('C:\\w'), 'resumeLast', bad)).toThrow('会话 ID 格式错误')
       }
-      expect(providerSessionsService.resolveWorkspace).not.toHaveBeenCalled()
+      expect(providerSessionsService.resolveResumeTarget).not.toHaveBeenCalled()
+      expect(service.launchProvider).not.toHaveBeenCalled()
+    })
+  })
+
+  // 0.2.25 S1：记录页上 Claude Code、Grok CLI 的每一条也都能接，编号从主进程自己读出的记录里取。
+  describe('Claude Code and Grok CLI resume by record id (cli:launch fourth argument)', () => {
+    const claudeRecord = `claude:${'0123456789abcdef'.repeat(4)}`
+    const grokRecord = `grok:${'fedcba9876543210'.repeat(4)}`
+
+    it('resumes by the id read from the record once it is found in the same folder', async () => {
+      const { service, providerSessionsService } = register()
+      const handler = electronMocks.handlers.get('cli:launch')!
+      providerSessionsService.resolveResumeTarget.mockResolvedValueOnce({ workspace: nativeFolder('C:\\projects\\demo'), sessionId: '6b1f3c2a-0d4e-4f5a-9b8c-7d6e5f4a3b2c' })
+      await handler(trustedEvent(), 'claude', nativeFolder('C:\\projects\\demo'), 'resumeLast', claudeRecord)
+      expect(providerSessionsService.resolveResumeTarget).toHaveBeenLastCalledWith(claudeRecord)
+      expect(service.launchProvider).toHaveBeenLastCalledWith('claude', nativeFolder('C:\\projects\\demo'), 'resumeLast', '6b1f3c2a-0d4e-4f5a-9b8c-7d6e5f4a3b2c')
+
+      providerSessionsService.resolveResumeTarget.mockResolvedValueOnce({ workspace: nativeFolder('C:\\projects\\demo'), sessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })
+      await handler(trustedEvent(), 'grok', nativeFolder('C:\\projects\\demo'), 'resumeLast', grokRecord)
+      expect(providerSessionsService.resolveResumeTarget).toHaveBeenLastCalledWith(grokRecord)
+      expect(service.launchProvider).toHaveBeenLastCalledWith('grok', nativeFolder('C:\\projects\\demo'), 'resumeLast', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+    })
+
+    it('falls back to the latest one in the folder when the record is gone, elsewhere or has no usable id', async () => {
+      const { service, providerSessionsService } = register()
+      const handler = electronMocks.handlers.get('cli:launch')!
+      providerSessionsService.resolveResumeTarget.mockRejectedValueOnce(new Error('未找到 claude 会话'))
+      await handler(trustedEvent(), 'claude', nativeFolder('C:\\projects\\demo'), 'resumeLast', claudeRecord)
+      expect(service.launchProvider).toHaveBeenLastCalledWith('claude', nativeFolder('C:\\projects\\demo'), 'resumeLast')
+
+      providerSessionsService.resolveResumeTarget.mockResolvedValueOnce({ workspace: nativeFolder('C:\\projects\\other'), sessionId: '6b1f3c2a-0d4e-4f5a-9b8c-7d6e5f4a3b2c' })
+      await handler(trustedEvent(), 'claude', nativeFolder('C:\\projects\\demo'), 'resumeLast', claudeRecord)
+      expect(service.launchProvider).toHaveBeenLastCalledWith('claude', nativeFolder('C:\\projects\\demo'), 'resumeLast')
+
+      providerSessionsService.resolveResumeTarget.mockResolvedValueOnce({ workspace: nativeFolder('C:\\projects\\demo'), sessionId: null })
+      await handler(trustedEvent(), 'grok', nativeFolder('C:\\projects\\demo'), 'resumeLast', grokRecord)
+      expect(service.launchProvider).toHaveBeenLastCalledWith('grok', nativeFolder('C:\\projects\\demo'), 'resumeLast')
+
+      providerSessionsService.resolveResumeTarget.mockResolvedValueOnce({ workspace: '', sessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })
+      await handler(trustedEvent(), 'grok', nativeFolder('C:\\projects\\demo'), 'resumeLast', grokRecord)
+      expect(service.launchProvider).toHaveBeenLastCalledWith('grok', nativeFolder('C:\\projects\\demo'), 'resumeLast')
+    })
+
+    it('rejects a record of another tool or a record id that is not the record hash', () => {
+      const { service, providerSessionsService } = register()
+      const handler = electronMocks.handlers.get('cli:launch')!
+
+      expect(() => handler(trustedEvent(), 'grok', nativeFolder('C:\\w'), 'resumeLast', claudeRecord)).toThrow('CLI 启动方式错误')
+      expect(() => handler(trustedEvent(), 'claude', nativeFolder('C:\\w'), 'new', claudeRecord)).toThrow('CLI 启动方式错误')
+      for (const bad of ['claude:6b1f3c2a-0d4e-4f5a-9b8c-7d6e5f4a3b2c', `${claudeRecord} --dangerously-skip-permissions`, 'claude:../../etc/passwd', claudeRecord.toUpperCase()]) {
+        expect(() => handler(trustedEvent(), 'claude', nativeFolder('C:\\w'), 'resumeLast', bad)).toThrow('会话 ID 格式错误')
+      }
+      expect(providerSessionsService.resolveResumeTarget).not.toHaveBeenCalled()
       expect(service.launchProvider).not.toHaveBeenCalled()
     })
   })

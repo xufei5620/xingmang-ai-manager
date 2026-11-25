@@ -6192,33 +6192,34 @@ describe('Darwin Codex Desktop integration', () => {
   })
 
   it('lets a ChatGPT official account pass the desktop launch readiness check', async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-official-workspace-'))
-    temporaryDirectories.push(directory)
-    const missingWorkspace = path.join(directory, 'missing')
-    const { service, resolveCli, execute } = await createDarwinService({
-      workspace: missingWorkspace,
-      accountMode: 'official',
-    })
+    const { service, resolveCli, execute } = await createDarwinService({ accountMode: 'official' })
 
     await expect(service.launchCodexDesktop('open', {
       isDestroyed: () => false,
       send: vi.fn(),
-    })).rejects.toThrow('项目文件夹不存在，请重新选择')
+    })).resolves.toMatchObject({ restarted: false })
     expect(resolveCli).not.toHaveBeenCalled()
-    expect(execute).not.toHaveBeenCalled()
+    expect(execute).toHaveBeenCalledTimes(1)
   })
 
-  it('rejects a stored workspace that is not an existing directory', async () => {
+  it('opens the Darwin desktop app without a folder when the remembered one is gone, like Windows does', async () => {
+    // 0.2.24 Mac 上客户删掉了上次选的项目文件夹，点 Codex 桌面端的「打开」只弹「工作目录不存在，请重新选择」，
+    // 这张卡上没有地方选，「重试」还是同一句。Codex 自己管项目，不带文件夹打开它会回到自己上次的项目。
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-missing-workspace-'))
     temporaryDirectories.push(directory)
     const missingWorkspace = path.join(directory, 'missing')
-    const { service, execute, release } = await createDarwinService({ workspace: missingWorkspace })
+    const { service, codexEnv, execute, release } = await createDarwinService({ workspace: missingWorkspace })
 
     await expect(service.launchCodexDesktop('open', {
       isDestroyed: () => false,
       send: vi.fn(),
-    })).rejects.toThrow('项目文件夹不存在，请重新选择')
-    expect(execute).not.toHaveBeenCalled()
+    })).resolves.toMatchObject({ restarted: false })
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(execute.mock.calls[0]?.[0]).toEqual({
+      executable: '/usr/bin/open',
+      argv: ['-a', '/Applications/Codex.app', '--env', `CODEX_HOME=${codexEnv.CODEX_HOME}`],
+    })
+    expect(execute.mock.calls[0]?.[1]).not.toHaveProperty('cwd')
     expect(release).not.toHaveBeenCalled()
   })
 
