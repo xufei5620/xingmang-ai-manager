@@ -1,0 +1,21 @@
+# 临时：核 S01 更新交接脚本在受限语言模式、组策略 AllSigned 下起不起得来（退出码），核完就删。
+name: tmp-handoff-clm-probe
+on:
+  push:
+    branches: [claude/project-thread-0uk6sc]
+    paths:
+      - .github/workflows/tmp-handoff-clm-probe.yml
+      - e2e/tmp-handoff-clm-probe.mjs
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Probe the handoff script under lockdown and AllSigned
+        timeout-minutes: 10
+        run: node e2e/tmp-handoff-clm-probe.mjs
