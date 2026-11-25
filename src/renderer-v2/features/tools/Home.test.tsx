@@ -2416,9 +2416,13 @@ describe('renderer-v2 home Antigravity cards', () => {
     expect(cli).toContain('Antigravity 命令行')
     expect(cli).toContain('未安装')
     expect(cli).toContain('<span>安装</span></button>')
+    expect(cli).toContain('命令行编程助手')
     const desktop = row(markup, 'antigravity')
     expect(desktop).toContain('<span>打开</span></button>')
     expect(desktop).toContain('data-testid="tool-antigravity-source"')
+    // 装好以后中间那行不再是没装时的介绍（yoyo 2026-11-26「谷歌卡介绍改」）。
+    expect(desktop).toContain('打开时自动使用当前账号')
+    expect(desktop).not.toContain('可使用当前账号')
     expect(markup.indexOf('tool-row-codexDesktop')).toBeLessThan(markup.indexOf('tool-row-antigravityCli'))
     expect(markup.indexOf('tool-row-antigravity"')).toBeLessThan(markup.indexOf('tool-row-grok'))
   })
@@ -2427,6 +2431,7 @@ describe('renderer-v2 home Antigravity cards', () => {
     const desktop = row(render({}, undefined, { antigravity: { supported: true, cliInstalled: true, desktopInstalled: true, configured: false } }), 'antigravity')
     expect(desktop).toContain('待连接')
     expect(desktop).toContain('<span>打开</span></button>')
+    expect(desktop).toContain('打开时自动使用当前账号')
   })
 
   it('shows the install progress on the card that is installing', () => {

@@ -15,7 +15,7 @@ import type { ToolJob } from './useToolbox'
 import { accountKeyChangeInProgress, accountKeyChangePending, bootstrapOnlyFollowedRoute, type AccountBootstrapProgress, type AccountBootstrapResult } from './account-bootstrap'
 import type { PageId } from '../../registry/pages'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic, otherAppsAnchor } from '../../registry/business'
-import { homeToolBlurbs, homeToolOrder, officialAccountNames, shortcutTools, tools as toolRegistry } from '../../registry/tools'
+import { antigravityInstalledMeta, homeToolBlurbs, homeToolOrder, officialAccountNames, shortcutTools, tools as toolRegistry } from '../../registry/tools'
 import { statuses } from '../../registry/status'
 import { FirstRunSteps } from './FirstRun'
 import { bootstrapErrorText, isAccountNotEnabledFailure, keySyncFailureText, networkBlockedNotice } from './key-sync-failure'
@@ -1150,7 +1150,7 @@ export function Home(props: HomeProps) {
    */
   function renderAntigravity(card: AntigravityPresentation) {
     const installJob = jobs[card.id], launchJob = jobs[`launch:${card.id}`], job = launchJob ?? installJob
-    const meta = job?.label ?? homeToolBlurbs[card.id]
+    const meta = job?.label ?? (card.installed ? antigravityInstalledMeta : homeToolBlurbs[card.id])
     const remembered = card.target === 'cli' ? snapshot?.config.rememberedWorkspace : undefined
     const badge = installJob ? typeof installJob.percent === 'number' ? undefined : <span className="v2-tool-card-busy" role="status"><Spinner label={installJob.label} /></span>
       : !card.installed ? <span className="v2-tool-card-off">{statuses.tool.missing[0]}</span>
