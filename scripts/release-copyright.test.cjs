@@ -7,9 +7,9 @@ const {
 } = require('./release-copyright.cjs')
 
 test('the copyright line carries the year the package is built in', () => {
-  assert.equal(buildReleaseCopyright(new Date('2026-11-10T03:00:00+08:00')), 'Copyright © 2026 绍兴星芒文化传媒有限责任公司')
-  assert.equal(buildReleaseCopyright(new Date('2027-06-01T12:00:00+08:00')), 'Copyright © 2027 绍兴星芒文化传媒有限责任公司')
-  assert.equal(RELEASE_COPYRIGHT_HOLDER, '绍兴星芒文化传媒有限责任公司')
+  assert.equal(buildReleaseCopyright(new Date('2026-11-10T03:00:00+08:00')), 'Copyright © 2026 星芒文化')
+  assert.equal(buildReleaseCopyright(new Date('2027-06-01T12:00:00+08:00')), 'Copyright © 2027 星芒文化')
+  assert.equal(RELEASE_COPYRIGHT_HOLDER, '星芒文化')
 })
 
 // The release runners are on UTC. A package built in the first eight hours of

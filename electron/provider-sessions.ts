@@ -132,6 +132,14 @@ export interface ProviderSessionPage {
   capabilities: Record<ProviderSessionProvider, ProviderSessionCapability>
 }
 
+/** 「继续对话」按记录接上那一条要的两样，见 ProviderSessionsService.resolveResumeTarget。 */
+export interface ProviderSessionResumeTarget {
+  /** 这条对话当时在哪个文件夹里跑的。 */
+  workspace: string
+  /** 交给命令行的对话编号（裸 UUID）；认不出时为 null，打开时退回按文件夹接最近一条。 */
+  sessionId: string | null
+}
+
 export interface ProviderSessionExportResult {
   id: string
   provider: ProviderSessionProvider
@@ -824,6 +832,13 @@ function codexSummary(summary: CodexSessionPage['items'][number], readonly: bool
   }
 }
 
+const cliSessionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** 挑第一个像命令行对话编号的；argv 那边（tool-installation.ts 的 cliResumeArgv）还会再核一次。 */
+function resumableSessionId(candidates: readonly string[]): string | null {
+  return candidates.find((candidate) => cliSessionIdPattern.test(candidate)) ?? null
+}
+
 function providerFromId(id: string): ProviderSessionProvider {
   const separator = id.indexOf(':')
   const provider = separator > 0 ? id.slice(0, separator) : ''
@@ -1194,6 +1209,29 @@ export class ProviderSessionsService {
       return session.cwd
     }
     return (await this.resolveExternalSummary(provider, id)).cwd
+  }
+
+  /**
+   * 记录页上点哪条接哪条（0.2.25 S1）：交给命令行的是记录里读出来的编号，不是渲染层传来的
+   * 那个 id。三家都只认标准 UUID 格式的编号；Claude Code 的编号就是记录文件名（`--resume`
+   * 按它找文件，老版本续聊时另起的文件里开头几行还带着上一段的 sessionId，所以文件名优先），
+   * Grok CLI 是 summary.json 里的 info.id（没有就是会话文件夹名）。认不出就给 null，
+   * 启动那边退回按文件夹接最近一条，跟以前一样。
+   */
+  async resolveResumeTarget(id: string): Promise<ProviderSessionResumeTarget> {
+    const provider = providerFromId(id)
+    if (provider === 'codex') {
+      const session = (await this.listCodexSessions()).find((item) => item.id === id)
+      if (!session) throw new Error('未找到这条记录')
+      return { workspace: session.cwd, sessionId: resumableSessionId([session.nativeId]) }
+    }
+    const session = await this.resolveExternalSummary(provider, id)
+    if (provider === 'claude') {
+      const fileName = path.basename(session.sourcePath, path.extname(session.sourcePath))
+      return { workspace: session.cwd, sessionId: resumableSessionId([fileName, session.nativeId]) }
+    }
+    if (provider === 'grok') return { workspace: session.cwd, sessionId: resumableSessionId([session.nativeId]) }
+    return { workspace: session.cwd, sessionId: null }
   }
 
   async exportMarkdown(id: string, destinationPath: string): Promise<ProviderSessionExportResult> {

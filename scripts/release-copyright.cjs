@@ -5,7 +5,10 @@
 // 年份按北京时间算：星芒是国内公司，发版跑在 UTC 的 CI 上，北京时间 1 月 1 日 0 点到 8 点
 // 之间出的包，按 UTC 还算上一年。中国不用夏令时，固定东八区就够，也不依赖 Node 有没有带
 // 完整的时区数据。
-const RELEASE_COPYRIGHT_HOLDER = '绍兴星芒文化传媒有限责任公司'
+//
+// 版权人写简称「星芒文化」，不写登记全称（yoyo 2026-11-25 定）。签名发布比对证书用的名字
+// 另在 electron-builder.config.cjs 的 updatePublisher，那个必须是全称，别一起改。
+const RELEASE_COPYRIGHT_HOLDER = '星芒文化'
 const BEIJING_OFFSET_MILLISECONDS = 8 * 60 * 60 * 1000
 
 function resolveReleaseCopyrightYear(now) {

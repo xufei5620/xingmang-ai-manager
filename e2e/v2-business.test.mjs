@@ -1713,14 +1713,14 @@ test('session detail shows transcript and archives the native id after a user ac
 })
 
 // 记录页的 lead 一直写着「继续之前的对话」,但页面只有导出和归档。这条钉住
-// 兑现之后的行为:按钮把记录里的工作目录和固定的 resumeLast 一起交给主进程,
-// 续接参数本身永远不从渲染层来。Codex 另带这条记录的 id,由主进程核对后按 id
-// 接(它自己按目录找时还看连接名,切过账号就找不到)。
-test('records page resumes the most recent conversation in the folder on the row', async () => {
+// 兑现之后的行为:按钮把记录里的工作目录、固定的 resumeLast 和这条记录的 id
+// 一起交给主进程,续接参数本身永远不从渲染层来:主进程从记录里读出编号、核对
+// 过文件夹再按编号接(0.2.25 S1 起三家都这样)。
+test('records page resumes the conversation on the row', async () => {
   const page = await fixture('page=sessions')
   try {
     await page.getByTestId('sessions-resume-codex:session-1').click()
-    await waitForToast(page, '已打开Codex CLI，继续 C:/test-project 中最近的一条对话')
+    await waitForToast(page, '已打开Codex CLI，在 C:/test-project 中继续这次对话')
     assert.deepEqual(
       (await calls(page)).find((call) => call.name === 'launch-cli').args,
       { provider: 'codex', workspace: 'C:/test-project', mode: 'resumeLast', sessionId: 'codex:session-1' },
@@ -1730,14 +1730,19 @@ test('records page resumes the most recent conversation in the folder on the row
   }
 })
 
-// 续接参数是 CLI 自己按目录找最近一条,所以同一个工具、同一个目录只有最近的
-// 那条能给按钮:否则用户点第三条、接上的却是第一条。
-test('only the most recent record of a folder offers to resume it', async () => {
+// 0.2.25 S1:以前续接参数是 CLI 自己按目录找最近一条,同一个工具、同一个目录
+// 只有最近的那条给按钮。现在按这条记录的编号接,更早的那条也有按钮,点哪条接哪条。
+test('every record of a folder offers to resume that very record', async () => {
   const page = await fixture('page=sessions&sameFolder=1')
   try {
     await page.getByTestId('sessions-row-codex:session-0').waitFor()
     assert.equal(await page.getByTestId('sessions-resume-codex:session-1').count(), 1)
-    assert.equal(await page.getByTestId('sessions-resume-codex:session-0').count(), 0)
+    await page.getByTestId('sessions-resume-codex:session-0').click()
+    await waitForToast(page, '已打开Codex CLI，在 C:/test-project 中继续这次对话')
+    assert.equal(
+      (await calls(page)).find((call) => call.name === 'launch-cli').args.sessionId,
+      'codex:session-0',
+    )
   } finally {
     await page.close()
   }
