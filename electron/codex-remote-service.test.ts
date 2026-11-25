@@ -1085,7 +1085,7 @@ describe('codex-remote-service enabling', () => {
     expect(await s.service.snapshot()).toMatchObject({ available: true, alwaysElevated: true })
     // The reminder is about what Codex may do here; with remote control unavailable
     // there is nothing for it to warn about, and the unavailable notice says enough.
-    s.unavailable.reason = '手机遥控暂时停用了，修好以后会自动恢复。'
+    s.unavailable.reason = '遥控暂时停用了，修好以后会自动恢复。'
     const suspended = await s.service.snapshot()
     expect(suspended.available).toBe(false)
     expect(suspended.alwaysElevated).toBeUndefined()
@@ -1369,7 +1369,7 @@ describe('codex-remote-service switching on when Xingmang opens', () => {
     expect(s.channels).toHaveLength(1)
     expect(s.logDetails.find((entry) => entry.event === 'remote.auto-started')?.detail).toEqual({ opened: 1, failed: false })
     // 自己连上的也跟手动打开一样，给配对过的人说一声（YF-11），他在外面才知道能用了。
-    await s.channels[0].sentUntil(() => s.channels[0].texts().some((line) => line.startsWith('电脑端已开启手机遥控')))
+    await s.channels[0].sentUntil(() => s.channels[0].texts().some((line) => line.startsWith('电脑端已开启遥控')))
     expect(s.channels[0].sent[0].peer).toMatchObject({ userId: alice.userId })
   })
 
@@ -3243,7 +3243,7 @@ describe('codex-remote-service folders', () => {
     expect((await s.service.snapshot()).workspaces).toHaveLength(5)
     await expect(s.service.addWorkspace(folder(s, 'f'))).rejects.toThrow('最多添加 5 个文件夹，请先移除一个再添加。')
     await s.service.removeWorkspace(shown('e'))
-    await expect(s.service.addWorkspace(path.dirname(path.dirname(s.workspace)))).rejects.toThrow('无法用于手机遥控')
+    await expect(s.service.addWorkspace(path.dirname(path.dirname(s.workspace)))).rejects.toThrow('无法用于遥控')
     expect((await s.service.snapshot()).workspaces).toHaveLength(4)
   })
 
@@ -3929,7 +3929,7 @@ describe('codex-remote-service permission approvals', () => {
 
 // M14：电脑上关了遥控，手机上收到「已关闭」以后不能再冒出别的消息；道别那句不排在它们后面；关了马上再开也不等它们。
 describe('codex-remote-service closing while messages are still waiting to go out', () => {
-  const closed = '手机遥控已在电脑上关闭。'
+  const closed = '遥控已在电脑上关闭。'
 
   /**
    * 手机上发「状态」，那句回复卡在发的半路（第一道闸）；Codex 这时做完了，回答排在它后面。交回放行那道闸的函数。
@@ -3980,7 +3980,7 @@ describe('codex-remote-service closing while messages are still waiting to go ou
     await s.service.setChannelEnabled('feishu', true)
     const reopened = s.channels[1]
     // 新的这份连接不排在旧的那条卡住的后面。
-    await reopened.sentUntil(() => reopened.texts().some((line) => line.startsWith('电脑端已开启手机遥控')))
+    await reopened.sentUntil(() => reopened.texts().some((line) => line.startsWith('电脑端已开启遥控')))
     release()
     await statusReplied(channel)
     await new Promise((resolve) => setTimeout(resolve, 0))
@@ -4014,7 +4014,7 @@ describe('codex-remote-service lifecycle', () => {
     const channel = await enabledAndPaired(s)
     const codex = await prompted(s, channel)
     await s.service.setChannelEnabled('feishu', false)
-    expect(channel.texts()).toContain('手机遥控已在电脑上关闭。')
+    expect(channel.texts()).toContain('遥控已在电脑上关闭。')
     expect(channel.stopped).toBe(1)
     expect(codex.kills).toContain('SIGTERM')
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
@@ -4031,7 +4031,7 @@ describe('codex-remote-service lifecycle', () => {
     expect(s.service.hasEnabledChannel()).toBe(true)
 
     const snapshot = await s.service.disableAllChannels()
-    expect(channel.texts()).toContain('手机遥控已在电脑上关闭。')
+    expect(channel.texts()).toContain('遥控已在电脑上关闭。')
     expect(channel.stopped).toBe(1)
     expect(weixin.stopped).toBe(1)
     expect(codex.kills).toContain('SIGTERM')
@@ -4041,7 +4041,7 @@ describe('codex-remote-service lifecycle', () => {
 
     // 再点一次（菜单还没跟上）不重复道别、不再停一遍。
     await s.service.disableAllChannels()
-    expect(channel.texts().filter((line) => line === '手机遥控已在电脑上关闭。')).toHaveLength(1)
+    expect(channel.texts().filter((line) => line === '遥控已在电脑上关闭。')).toHaveLength(1)
     expect(channel.stopped).toBe(1)
     s.service.dispose()
     expect(await s.service.disableAllChannels()).toBeNull()
@@ -4062,7 +4062,7 @@ describe('codex-remote-service lifecycle', () => {
     await s.stateUntil((snapshot) => !snapshot.channels.feishu.enabled && !snapshot.channels.weixin.enabled)
     expect(s.service.hasEnabledChannel()).toBe(false)
     expect(s.snapshots.at(-1)).toMatchObject({ channels: { feishu: { enabled: false }, weixin: { enabled: false } } })
-    expect(channel.texts()).toEqual(['手机遥控已关闭。如需继续使用，请在电脑端的星芒中重新开启。'])
+    expect(channel.texts()).toEqual(['遥控已关闭。如需继续使用，请在电脑端的星芒中重新开启。'])
     expect(channel.sent[0].replyContext).toMatch(/^ctx-/)
     expect(channel.stopped).toBe(1)
     expect(weixin.stopped).toBe(1)
@@ -4085,7 +4085,7 @@ describe('codex-remote-service lifecycle', () => {
     channel.handlers?.onInbound(text(alice, '关闭遥控'))
     // 先把关掉的开关原子写进盘才断渠道、发「已关闭」：直接等发送本身，不靠 vi.waitFor 的 1 秒（R16）。
     await channel.sentUntil(() => channel.texts().length > 0)
-    expect(channel.texts()).toEqual(['手机遥控已关闭。如需继续使用，请在电脑端的星芒中重新开启。'])
+    expect(channel.texts()).toEqual(['遥控已关闭。如需继续使用，请在电脑端的星芒中重新开启。'])
     await vi.waitFor(() => expect(first.snapshots.at(-1)).toMatchObject({ channels: { feishu: { enabled: false } } }))
     // 卡片上的开关跟着显示关着，客户回到电脑前一看就明白。
     expect(first.snapshots.at(-1)).not.toHaveProperty('autoStart')
@@ -4119,7 +4119,7 @@ describe('codex-remote-service lifecycle', () => {
     await channel.sentUntil(() => channel.texts().length > 0)
     expect(s.service.hasEnabledChannel()).toBe(false)
     await vi.waitFor(() => expect(channel.stopped).toBe(1))
-    expect(channel.texts()).toEqual(['手机遥控已关闭。如需继续使用，请在电脑端的星芒中重新开启。'])
+    expect(channel.texts()).toEqual(['遥控已关闭。如需继续使用，请在电脑端的星芒中重新开启。'])
     expect(s.logs).not.toContain('remote.message-id-unsaved')
     expect((await s.store.readSettings()).autoStart).toBe(true)
     expect(s.logs).toContain('remote.auto-start-unsaved')
@@ -4148,13 +4148,13 @@ describe('codex-remote-service lifecycle', () => {
     await s.service.startPairing('feishu')
     first.handlers?.onInbound(text(alice, '000042'))
     await first.sentUntil(() => first.texts().some((line) => line.startsWith('配对成功')))
-    expect(first.texts().some((line) => line.startsWith('电脑端已开启手机遥控'))).toBe(false)
+    expect(first.texts().some((line) => line.startsWith('电脑端已开启遥控'))).toBe(false)
     await s.service.setChannelEnabled('feishu', false)
 
     await s.service.setChannelEnabled('feishu', true)
     const second = s.channels[1]
     // The folder is real (path.join), so on Windows it reads ~\projects\demo.
-    const opened = `电脑端已开启手机遥控，现在可以发送消息。工作文件夹：${path.join('~', 'projects', 'demo')}`
+    const opened = `电脑端已开启遥控，现在可以发送消息。工作文件夹：${path.join('~', 'projects', 'demo')}`
     await second.sentUntil(() => second.texts().includes(opened))
     expect(second.sent).toHaveLength(1)
     expect(second.sent[0].peer).toMatchObject({ channel: 'feishu', userId: alice.userId })
@@ -4179,14 +4179,14 @@ describe('codex-remote-service lifecycle', () => {
     expect(refreshed).toMatchObject({ available: true, channels: { feishu: { enabled: true } } })
     expect(s.snapshots).toContain(refreshed)
 
-    s.unavailable.reason = '手机遥控暂时停用了，修好以后会自动恢复。'
+    s.unavailable.reason = '遥控暂时停用了，修好以后会自动恢复。'
     const snapshot = await s.service.applyAvailability()
-    expect(channel.texts()).toContain('手机遥控已在电脑上关闭。')
+    expect(channel.texts()).toContain('遥控已在电脑上关闭。')
     expect(channel.stopped).toBe(1)
     expect(codex.kills).toContain('SIGTERM')
-    expect(snapshot).toMatchObject({ available: false, unavailableReason: '手机遥控暂时停用了，修好以后会自动恢复。', channels: { feishu: { enabled: false } } })
+    expect(snapshot).toMatchObject({ available: false, unavailableReason: '遥控暂时停用了，修好以后会自动恢复。', channels: { feishu: { enabled: false } } })
     expect(s.logs).toContain('remote.channel-suspended')
-    await expect(s.service.setChannelEnabled('feishu', true)).rejects.toThrow('手机遥控暂时停用了')
+    await expect(s.service.setChannelEnabled('feishu', true)).rejects.toThrow('遥控暂时停用了')
 
     // 放开以后不替他打开，等他自己点。
     s.unavailable.reason = null
@@ -4199,8 +4199,8 @@ describe('codex-remote-service lifecycle', () => {
   // 打开要先等读设置、读凭据、查 Codex 装没装，那几秒渠道还不算开着，远程关停不到它（R29-06）。
   it('does not connect a channel that remote control was switched off for while it was still opening', async () => {
     const s = await setup()
-    const opening = expect(s.service.setChannelEnabled('feishu', true)).rejects.toThrow('手机遥控暂时停用了，修好以后会自动恢复。')
-    s.unavailable.reason = '手机遥控暂时停用了，修好以后会自动恢复。'
+    const opening = expect(s.service.setChannelEnabled('feishu', true)).rejects.toThrow('遥控暂时停用了，修好以后会自动恢复。')
+    s.unavailable.reason = '遥控暂时停用了，修好以后会自动恢复。'
     await s.service.applyAvailability()
     await opening
     expect(s.channels).toHaveLength(0)
@@ -4220,7 +4220,7 @@ describe('codex-remote-service lifecycle', () => {
     const s = await setup({ secretsGate: new Promise<void>((resolve) => { release = resolve }) })
     const opening = s.service.setChannelEnabled('feishu', true)
     await vi.waitFor(() => expect(s.channels).toHaveLength(1))
-    s.unavailable.reason = '手机遥控暂时停用了，修好以后会自动恢复。'
+    s.unavailable.reason = '遥控暂时停用了，修好以后会自动恢复。'
     await s.service.applyAvailability()
     release()
     expect(await opening).toMatchObject({ available: false, channels: { feishu: { enabled: false } } })
@@ -4235,7 +4235,7 @@ describe('codex-remote-service lifecycle', () => {
     const channel = await enabledAndPaired(s)
     channel.stop = async () => {
       channel.stopped += 1
-      s.unavailable.reason = '手机遥控暂时停用了，修好以后会自动恢复。'
+      s.unavailable.reason = '遥控暂时停用了，修好以后会自动恢复。'
       await s.service.applyAvailability()
     }
     const snapshot = await s.service.saveChannelCredential('feishu', JSON.stringify({ appId: 'cli_abcdef', appSecret: 'y'.repeat(16) }), 'cli_abcdef')
@@ -4249,7 +4249,7 @@ describe('codex-remote-service lifecycle', () => {
     const codex = await prompted(s, channel)
     channel.stop = async () => {
       channel.stopped += 1
-      s.unavailable.reason = '手机遥控暂时停用了，修好以后会自动恢复。'
+      s.unavailable.reason = '遥控暂时停用了，修好以后会自动恢复。'
     }
     const snapshot = await s.service.saveChannelCredential('feishu', JSON.stringify({ appId: 'cli_abcdef', appSecret: 'y'.repeat(16) }), 'cli_abcdef')
     expect(s.channels).toHaveLength(1)
@@ -4367,7 +4367,7 @@ describe('codex-remote-service lifecycle', () => {
     const s = await setup({ idleCloseHours: 4 })
     const channel = await enabledAndPaired(s)
     await vi.advanceTimersByTimeAsync(4 * 60 * 60_000)
-    await vi.waitFor(() => expect(channel.texts()).toContain('4 小时内无新消息，手机遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('4 小时内无新消息，遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。'))
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
   })
 
@@ -4378,8 +4378,8 @@ describe('codex-remote-service lifecycle', () => {
     const channel = await enabledAndPaired(s)
     await s.service.setAutoStart(true)
     await vi.advanceTimersByTimeAsync(4 * 60 * 60_000)
-    await channel.sentUntil(() => channel.texts().includes('4 小时内无新消息，手机遥控已自动关闭。星芒下次打开时将自动连接；如需立即使用，请在电脑端重新开启。'))
-    expect(channel.texts()).not.toContain('4 小时内无新消息，手机遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。')
+    await channel.sentUntil(() => channel.texts().includes('4 小时内无新消息，遥控已自动关闭。星芒下次打开时将自动连接；如需立即使用，请在电脑端重新开启。'))
+    expect(channel.texts()).not.toContain('4 小时内无新消息，遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。')
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
   })
 
@@ -4388,7 +4388,7 @@ describe('codex-remote-service lifecycle', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const s = await setup({ idleCloseHours: 4 })
     const channel = await enabledAndPaired(s)
-    const warning = '手机遥控将在 10 分钟后自动关闭，如需继续使用，请回复任意消息。'
+    const warning = '遥控将在 10 分钟后自动关闭，如需继续使用，请回复任意消息。'
     await vi.advanceTimersByTimeAsync(4 * 60 * 60_000 - 1)
     await channel.sentUntil(() => channel.texts().includes(warning))
     vi.spyOn(s.store, 'readSettings').mockImplementationOnce(() => new Promise(() => undefined))
@@ -4404,7 +4404,7 @@ describe('codex-remote-service lifecycle', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const s = await setup({ idleCloseHours: 4 })
     const channel = await enabledAndPaired(s)
-    const warning = '手机遥控将在 10 分钟后自动关闭，如需继续使用，请回复任意消息。'
+    const warning = '遥控将在 10 分钟后自动关闭，如需继续使用，请回复任意消息。'
     await vi.advanceTimersByTimeAsync(3 * 60 * 60_000 + 49 * 60_000)
     expect(channel.texts()).toEqual([])
     await vi.advanceTimersByTimeAsync(60_000)
@@ -4437,9 +4437,9 @@ describe('codex-remote-service lifecycle', () => {
     await vi.advanceTimersByTimeAsync(11 * 60 * 60_000 + 49 * 60_000)
     expect(channel.texts()).toEqual([])
     await vi.advanceTimersByTimeAsync(60_000)
-    await channel.sentUntil(() => channel.texts().includes('手机遥控将在 10 分钟后自动关闭，如需继续使用，请回复任意消息。'))
+    await channel.sentUntil(() => channel.texts().includes('遥控将在 10 分钟后自动关闭，如需继续使用，请回复任意消息。'))
     await vi.advanceTimersByTimeAsync(10 * 60_000)
-    await vi.waitFor(() => expect(channel.texts()).toContain('12 小时内无新消息，手机遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('12 小时内无新消息，遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。'))
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
   })
 
@@ -4476,7 +4476,7 @@ describe('codex-remote-service lifecycle', () => {
     const s = await setup({ root })
     const channel = await enabledAndPaired(s)
     await vi.advanceTimersByTimeAsync(4 * 60 * 60_000)
-    await vi.waitFor(() => expect(channel.texts()).toContain('4 小时内无新消息，手机遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('4 小时内无新消息，遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。'))
   })
 
   // D66 / YKS-18：解绑、换人、退出登录，原来那个人要知道之后发的话不会再执行。
@@ -4720,8 +4720,8 @@ describe('codex-remote-service releasing Codex for an update or uninstall', () =
 
   it('says what the customer sees in so many words', () => {
     expect(codexRemoteBusyMessages).toEqual({
-      update: '手机遥控中的 Codex 正在处理任务，请待其完成后再更新，或先在设置中关闭手机遥控。',
-      uninstall: '手机遥控中的 Codex 正在处理任务，请待其完成后再卸载，或先在设置中关闭手机遥控。',
+      update: '遥控中的 Codex 正在处理任务，请待其完成后再更新，或先在「遥控」页关闭遥控。',
+      uninstall: '遥控中的 Codex 正在处理任务，请待其完成后再卸载，或先在「遥控」页关闭遥控。',
     })
   })
 
@@ -4918,7 +4918,7 @@ async function phoneReply(channel: FakeChannel, body: string): Promise<string> {
 }
 
 const switchedToB = [
-  '已切换到对话「整理接口文档」，请发送消息继续。手机遥控的规则（不发送密钥和密码、回复简洁等）将保留在该对话中，在电脑端继续时同样生效。',
+  '已切换到对话「整理接口文档」，请发送消息继续。遥控的规则（不发送密钥和密码、回复简洁等）将保留在该对话中，在电脑端继续时同样生效。',
   '请勿在电脑端和手机端同时向该对话发送消息。',
 ].join('\n')
 
@@ -5057,8 +5057,8 @@ describe('codex-remote-service continuing a Codex conversation from the phone', 
     const channel = await enabledAndPaired(s)
     await phoneReply(channel, '对话')
     expect(await phoneReply(channel, '对话 2')).toBe([
-      '已切换到对话「整理接口文档」，请发送消息继续。手机遥控的规则（不发送密钥和密码、回复简洁等）将保留在该对话中，在电脑端继续时同样生效。',
-      '该对话原有权限超出手机遥控允许的范围，已调整为「默认」，在电脑端继续时也将保持「默认」。',
+      '已切换到对话「整理接口文档」，请发送消息继续。遥控的规则（不发送密钥和密码、回复简洁等）将保留在该对话中，在电脑端继续时同样生效。',
+      '该对话原有权限超出遥控允许的范围，已调整为「默认」，在电脑端继续时也将保持「默认」。',
       '请勿在电脑端和手机端同时向该对话发送消息。',
     ].join('\n'))
     channel.handlers?.onInbound(text(alice, '再改一下'))
@@ -5175,7 +5175,7 @@ describe('codex-remote-service choosing the phone conversation on the computer',
     const settings = await s.store.readSettings()
     expect(settings.workspaceDirectories).toEqual([workspace, other, third])
     expect(settings.workspaceDirectory).toBe(third)
-    await expect(s.service.chooseConversation(threadA)).rejects.toThrow('该对话所在的文件夹不允许用于手机遥控，请选择其他对话。')
+    await expect(s.service.chooseConversation(threadA)).rejects.toThrow('该对话所在的文件夹不允许用于遥控，请选择其他对话。')
   })
 
   it('refuses a conversation in a folder the remote may not use, and an id it did not list', async () => {
@@ -5183,7 +5183,7 @@ describe('codex-remote-service choosing the phone conversation on the computer',
       list: (folders) => [codexThread(threadC, path.dirname(path.dirname(folders.workspace)), '整个主目录', codexSeconds(21, 12, 0))],
     })
     await s.service.listConversations()
-    await expect(s.service.chooseConversation(threadC)).rejects.toThrow('该对话所在的文件夹不允许用于手机遥控，请选择其他对话。')
+    await expect(s.service.chooseConversation(threadC)).rejects.toThrow('该对话所在的文件夹不允许用于遥控，请选择其他对话。')
     await expect(s.service.chooseConversation(threadA)).rejects.toThrow('无法读取对话列表，请稍后重试。')
   })
 

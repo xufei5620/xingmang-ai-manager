@@ -1,11 +1,22 @@
 /* 「创作」页（融合第 1 步）：起始页上「从这里开始」的卡，和右边换上去的那一块（一条视频的工作台、一个画布项目的卡）。
    左边那一列和对话那一半的样式在 features/chat/chat.css。颜色全用令牌，深浅两套自己跟着换。 */
 .create-start { display: grid; gap: calc(10px - var(--chat-start-squeeze, 0px) / 50); }
+/* 升级上来的客户头一次进来，起始页最上面多一条「已合并至此页」的提示，几张卡又被挤到输入框后面（820 高时露不全，
+   740、680 挡掉一截）。有这条提示时按 900 起算收紧，上限同 chat.css 里那条；光收留白还差几十像素，提示本身的上下留白
+   和标志也跟着收。卡里的留白和图标在下面 .create-card 里随同一个量收，没有提示时窗口矮也一样受益。
+   上下的留白和几段之间的间距比没有提示时收得更狠：680 高时只剩十几像素的余量，提示那句话、卡上那段说明换个字体多折
+   一行（约 19 像素）就又挡住了（CI 的 Chromium 上就是这样），所以至少留出两行的量。 */
+.chat-messages:has(> .xm-notice + .chat-empty[data-start='true']) { --chat-start-squeeze: clamp(0px, calc(900px - 100vh), 200px); padding-block: calc(24px - var(--chat-start-squeeze) / 10); gap: calc(22px - var(--chat-start-squeeze) / 12); }
+.chat-messages:has(> .xm-notice + .chat-empty[data-start='true']) > .chat-empty { padding-bottom: calc(4px - var(--chat-start-squeeze) / 50); gap: calc(10px - var(--chat-start-squeeze) / 30); }
+.chat-messages:has(> .xm-notice + .chat-empty[data-start='true']) > .chat-empty h2 { margin-top: calc(4px - var(--chat-start-squeeze) / 50); }
+.chat-messages:has(> .xm-notice + .chat-empty[data-start='true']) > .create-start { gap: calc(10px - var(--chat-start-squeeze) / 40); }
+.chat-messages:has(> .xm-notice + .chat-empty[data-start='true']) > .chat-empty .xm-logo { height: calc(44px - var(--chat-start-squeeze) / 8); }
+.chat-messages:has(> .xm-notice + .chat-empty[data-start='true']) > .xm-notice { padding-block: calc(14px - var(--chat-start-squeeze) / 20) calc(12px - var(--chat-start-squeeze) / 20); }
 .create-start-label { color: var(--text-3); font-size: 12px; text-align: center; }
 .create-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
-.create-card { display: grid; align-content: start; gap: 6px; min-width: 0; padding: 14px; border: 0; border-radius: 12px; corner-shape: squircle; background: var(--panel-solid); box-shadow: inset 0 0 0 1px var(--line); color: var(--text); font: inherit; text-align: left; cursor: pointer; transition: background var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard); }
+.create-card { display: grid; align-content: start; gap: calc(6px - var(--chat-start-squeeze, 0px) / 100); min-width: 0; padding: calc(14px - var(--chat-start-squeeze, 0px) / 25); border: 0; border-radius: 12px; corner-shape: squircle; background: var(--panel-solid); box-shadow: inset 0 0 0 1px var(--line); color: var(--text); font: inherit; text-align: left; cursor: pointer; transition: background var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard); }
 .create-card:hover { background: var(--panel-hover); box-shadow: inset 0 0 0 1px var(--soft-line); }
-.create-card-icon { display: grid; place-items: center; width: 32px; height: 32px; margin-bottom: 2px; border-radius: 9px; corner-shape: squircle; background: var(--soft); box-shadow: inset 0 0 0 1px var(--soft-line); color: var(--gold); }
+.create-card-icon { display: grid; place-items: center; width: calc(32px - var(--chat-start-squeeze, 0px) / 16); height: calc(32px - var(--chat-start-squeeze, 0px) / 16); margin-bottom: calc(2px - var(--chat-start-squeeze, 0px) / 100); border-radius: 9px; corner-shape: squircle; background: var(--soft); box-shadow: inset 0 0 0 1px var(--soft-line); color: var(--gold); }
 .create-card > strong { font-size: 13.5px; font-weight: 600; }
 .create-card > span:not(.create-card-icon) { color: var(--text-2); font-size: 12px; line-height: 1.6; }
 .create-card > small { display: inline-flex; align-items: center; gap: 3px; color: var(--text-3); font-size: 11px; }

@@ -23,7 +23,7 @@ export const codexRemoteConversationText = {
   newOption: '新对话',
   newOptionHint: '在上方选择的文件夹中开始新对话。',
   itemHint: (folder: string, time: string) => `${folder} · ${time}`,
-  note: (level: '默认' | '只读') => `继续已有对话时，如对话原有权限超出手机遥控允许的范围，将调整为「${level}」，在电脑端继续时也将保持。手机遥控的规则（不发送密钥和密码、回复简洁等）也将保留在该对话中。请勿在电脑端和手机端同时向同一对话发送消息。`,
+  note: (level: '默认' | '只读') => `继续已有对话时，如对话原有权限超出遥控允许的范围，将调整为「${level}」，在电脑端继续时也将保持。遥控的规则（不发送密钥和密码、回复简洁等）也将保留在该对话中。请勿在电脑端和手机端同时向同一对话发送消息。`,
   ok: '确定',
   cancel: '取消',
   loading: '正在读取对话…',

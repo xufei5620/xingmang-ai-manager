@@ -51,7 +51,7 @@ describe('codex-remote-text', () => {
   // YF-17：「帮助」里列出手机上能关遥控；只有整条就是「关闭遥控」才算，句子里带着的照常交给 Codex。
   it('lists closing the remote among the commands and does not read it out of a sentence', () => {
     expect(remoteMessages.help.split('\n')[1]).toBe('可用指令：新对话、对话、停止、状态、文件夹、关闭遥控、重试、帮助。')
-    expect(remoteMessages.closedFromPhone).toBe('手机遥控已关闭。如需继续使用，请在电脑端的星芒中重新开启。')
+    expect(remoteMessages.closedFromPhone).toBe('遥控已关闭。如需继续使用，请在电脑端的星芒中重新开启。')
     expect(parseRemoteCommand('先别关闭遥控', false)).toEqual({ kind: 'prompt', text: '先别关闭遥控' })
   })
 
@@ -100,7 +100,7 @@ describe('codex-remote-text', () => {
   })
 
   it('tells the phone the remote was switched on, with the folder written like the status reply', () => {
-    expect(remoteOpenedMessage('~/projects/demo')).toBe('电脑端已开启手机遥控，现在可以发送消息。工作文件夹：~/projects/demo')
+    expect(remoteOpenedMessage('~/projects/demo')).toBe('电脑端已开启遥控，现在可以发送消息。工作文件夹：~/projects/demo')
   })
 
   it('treats a sentence that merely contains a command word as a prompt', () => {
@@ -312,13 +312,13 @@ describe('codex-remote-text', () => {
     expect(remoteMessages.codexStarting).toBe('电脑正在启动 Codex，请稍候；如需取消，请发送「停止」。')
     expect(remoteMessages.threadReset).toBe('当前为新对话，Codex 无法读取此前的对话内容。')
     expect(remoteMessages.unbound).toBe('您已在电脑端被解绑，此后发送的消息将不再执行。')
-    expect(remoteMessages.idleClosingSoon).toBe('手机遥控将在 10 分钟后自动关闭，如需继续使用，请回复任意消息。')
+    expect(remoteMessages.idleClosingSoon).toBe('遥控将在 10 分钟后自动关闭，如需继续使用，请回复任意消息。')
     // YF-10：自动关那句的时长跟着设置走。
-    expect(idleClosedMessage(4)).toBe('4 小时内无新消息，手机遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。')
-    expect(idleClosedMessage(12)).toBe('12 小时内无新消息，手机遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。')
+    expect(idleClosedMessage(4)).toBe('4 小时内无新消息，遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。')
+    expect(idleClosedMessage(12)).toBe('12 小时内无新消息，遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。')
     // YR-8：开了「打开星芒时自动打开遥控」时换的两句，字照 yoyo 2026-11-18 批的一字不差。
-    expect(idleClosedMessage(4, true)).toBe('4 小时内无新消息，手机遥控已自动关闭。星芒下次打开时将自动连接；如需立即使用，请在电脑端重新开启。')
-    expect(idleClosedMessage(12, false)).toBe('12 小时内无新消息，手机遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。')
+    expect(idleClosedMessage(4, true)).toBe('4 小时内无新消息，遥控已自动关闭。星芒下次打开时将自动连接；如需立即使用，请在电脑端重新开启。')
+    expect(idleClosedMessage(12, false)).toBe('12 小时内无新消息，遥控已自动关闭。如需继续使用，请在电脑端的星芒中重新开启。')
     expect(remoteMessages.quitting).toBe('电脑端的星芒已退出，遥控已停止。请重新打开星芒并开启遥控后继续使用。')
     expect(remoteMessages.quittingAutoStart).toBe('电脑端的星芒已退出，遥控已停止。星芒再次打开时将自动连接。')
     expect(staleMessageNotice(25)).toBe('此消息发送于 25 分钟前，当时电脑未连接，因此未执行。如仍需执行，请重新发送。')
@@ -390,11 +390,11 @@ describe('codex-remote-text', () => {
     ].join('\n'))
     expect(conversationListMessage([])).toBe('电脑端已添加的文件夹中暂无 Codex 对话，发送消息即可开始新对话。')
     expect(conversationSwitchedMessage('修复登录页报错', null)).toBe([
-      '已切换到对话「修复登录页报错」，请发送消息继续。手机遥控的规则（不发送密钥和密码、回复简洁等）将保留在该对话中，在电脑端继续时同样生效。',
+      '已切换到对话「修复登录页报错」，请发送消息继续。遥控的规则（不发送密钥和密码、回复简洁等）将保留在该对话中，在电脑端继续时同样生效。',
       '请勿在电脑端和手机端同时向该对话发送消息。',
     ].join('\n'))
-    expect(conversationSwitchedMessage('修复登录页报错', 'default').split('\n')[1]).toBe('该对话原有权限超出手机遥控允许的范围，已调整为「默认」，在电脑端继续时也将保持「默认」。')
-    expect(conversationSwitchedMessage('修复登录页报错', 'readOnly').split('\n')[1]).toBe('该对话原有权限超出手机遥控允许的范围，已调整为「只读」，在电脑端继续时也将保持「只读」。')
+    expect(conversationSwitchedMessage('修复登录页报错', 'default').split('\n')[1]).toBe('该对话原有权限超出遥控允许的范围，已调整为「默认」，在电脑端继续时也将保持「默认」。')
+    expect(conversationSwitchedMessage('修复登录页报错', 'readOnly').split('\n')[1]).toBe('该对话原有权限超出遥控允许的范围，已调整为「只读」，在电脑端继续时也将保持「只读」。')
     expect(conversationMissingMessage(3)).toBe('不存在第 3 个对话，请发送「对话」查看列表。')
     expect(conversationSwitchedFromComputerMessage('修复登录页报错')).toBe('电脑端已切换到对话「修复登录页报错」。')
     expect(remoteMessages.conversationBusy).toBe('Codex 正在处理上一条消息，请待其完成后再切换对话。')
