@@ -845,6 +845,26 @@ describe('sessions table', () => {
     expect(markup).not.toContain('本软件已把保留期放长到一年')
     expect(markup).not.toContain('xm-drawer')
   })
+
+  it('leaves out the chip of a tool that is not installed and has no sessions, but keeps installed ones at zero', () => {
+    const options = [{ value: 'claude' }, { value: 'codex' }, { value: 'grok' }]
+    const counts = { all: 3, claude: 3, codex: 0, grok: 0 }
+    expect(sessionsPage.visibleSessionToolOptions(options, ['claude', 'codex'], counts, 'all').map((option) => option.value)).toEqual(['claude', 'codex'])
+    // 没装、但还留着记录的照旧有按钮；正选着的那颗不收。
+    expect(sessionsPage.visibleSessionToolOptions(options, ['claude'], { ...counts, grok: 2 }, 'all').map((option) => option.value)).toEqual(['claude', 'grok'])
+    expect(sessionsPage.visibleSessionToolOptions(options, ['claude'], counts, 'codex').map((option) => option.value)).toEqual(['claude', 'codex'])
+    // 统计还没读到时先只按装没装定；装的名单还没检测完时一颗不收。
+    expect(sessionsPage.visibleSessionToolOptions(options, ['codex'], null, 'all').map((option) => option.value)).toEqual(['codex'])
+    expect(sessionsPage.visibleSessionToolOptions(options, undefined, null, 'all').map((option) => option.value)).toEqual(['claude', 'codex', 'grok'])
+  })
+
+  it('renders no chip for a tool that is not installed before any session is read', () => {
+    const markup = renderToStaticMarkup(<SessionsPage api={{} as V2Bridge} installedProviders={['claude', 'codex']} />)
+    expect(markup).toContain('data-testid="sessions-tool-claude"')
+    expect(markup).toContain('data-testid="sessions-tool-codex"')
+    expect(markup).not.toContain('data-testid="sessions-tool-grok"')
+    expect(renderToStaticMarkup(<SessionsPage api={{} as V2Bridge} />)).toContain('data-testid="sessions-tool-grok"')
+  })
 })
 
 // #1070 第 11 步把记录页搬出去以后 pages-management 只做转出：转出的就是页面文件里那一份；搬出去的文件也不反过来

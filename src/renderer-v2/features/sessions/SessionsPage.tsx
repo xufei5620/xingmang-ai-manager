@@ -74,6 +74,22 @@ export function sessionToolCounts(
   }
   return counts
 }
+/**
+ * 工具按钮摆哪几颗：没装、也一条记录都没有的工具不挂一颗写着 0 的按钮，像是那家出了问题。装着的照旧摆，
+ * 0 条也摆；装的名单还没检测完时全摆（旧行为）；统计还没读到时先按装没装定，读到了有记录的再补上；
+ * 正选着的那颗不收。
+ */
+export function visibleSessionToolOptions<T extends { value: string }>(
+  options: readonly T[],
+  installedProviders: readonly string[] | undefined,
+  counts: Record<SessionToolFilter, number> | null,
+  selected: string,
+): T[] {
+  if (installedProviders === undefined) return [...options]
+  return options.filter((option) => option.value === selected
+    || installedProviders.includes(option.value)
+    || (isProvider(option.value) && (counts?.[option.value] ?? 0) > 0))
+}
 /** 表格标题下面那行小字：模型、几条消息；归档过的记录在后面标一句。条数不知道就不写，不写「未知 条」。 */
 export function sessionRowMeta(session: Pick<Session, 'model' | 'messageCount' | 'archived'>): string {
   return [
@@ -463,7 +479,7 @@ export function SessionsPage({
           value={provider}
           options={[
             { value: 'all', label: '全部', count: counts?.all, testId: 'sessions-tool-all' },
-            ...providerOptions.map((option) => ({
+            ...visibleSessionToolOptions(providerOptions, installedProviders, counts, provider).map((option) => ({
               value: option.value,
               label: option.label,
               count: counts && isProvider(option.value) ? counts[option.value] : undefined,
