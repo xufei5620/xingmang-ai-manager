@@ -800,10 +800,32 @@ function finalizeExternalSummary(
   }
 }
 
+// Codex surfaces (the desktop app's attachments, the IDE extension's editor
+// context) put model-only context before this delimiter and the user's own
+// words after it. Same literal as USER_MESSAGE_BEGIN in openai/codex
+// codex-rs/protocol, whose strip_user_message_prefix also cuts at the first one.
+const codexRequestDelimiter = '## My request for Codex:'
+const codexFilesHeading = '# Files mentioned by the user:'
+
+/**
+ * 只附了文件、没打字的那一句，标题里没有分隔行，只剩「# Files mentioned by the user:」
+ * 加一串「## 文件名: 路径」。这时拿文件名当标题，比整段英文加路径好认。
+ */
+function codexMentionedFileNames(title: string): string {
+  const trimmed = title.trimStart()
+  if (!trimmed.startsWith(codexFilesHeading)) return ''
+  const section = trimmed.slice(codexFilesHeading.length).split(codexRequestDelimiter)[0]
+  const names = Array.from(section.matchAll(/##\s+(.+?):\s/g), (match) => cleanText(match[1], 60))
+  return names.filter(Boolean).join('、')
+}
+
 /**
  * Codex 把会话标题原样存成第一句话。定时任务（Codex 的 Automation）那一句是整段任务说明：
  * 「Automation: 每日制作头像 Automation ID: … Automation memory: … Last run: …」再接几百字的
- * 指令，原样上屏会把首页「最近」那张卡撑破。定时任务只留任务名；其余标题收成一行、限长。
+ * 指令，原样上屏会把首页「最近」那张卡撑破。定时任务只留任务名。
+ * Codex 桌面端附了文件的那一句前面垫着「# Files mentioned by the user: …」，客户打的字在
+ * 「## My request for Codex:」后面，首页「最近」只露出前面那段英文；只取客户打的字。
+ * 其余标题收成一行、限长。
  */
 export function codexSessionTitle(title: string, sessionId: string): string {
   const automation = /^\s*Automation:\s*(.+?)\s+Automation ID:/s.exec(title)
@@ -811,7 +833,9 @@ export function codexSessionTitle(title: string, sessionId: string): string {
     const name = cleanText(automation[1], 60)
     if (name) return `定时任务：${name}`
   }
-  return cleanText(title) || sessionId
+  const delimiter = title.indexOf(codexRequestDelimiter)
+  const request = delimiter >= 0 ? cleanText(title.slice(delimiter + codexRequestDelimiter.length)) : ''
+  return request || codexMentionedFileNames(title) || cleanText(title) || sessionId
 }
 
 function codexSummary(summary: CodexSessionPage['items'][number], readonly: boolean): ProviderSessionSummary {
