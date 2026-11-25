@@ -1,6 +1,6 @@
 /* 「创作」页（融合第 1 步）：起始页上「从这里开始」的卡，和右边换上去的那一块（一条视频的工作台、一个画布项目的卡）。
    左边那一列和对话那一半的样式在 features/chat/chat.css。颜色全用令牌，深浅两套自己跟着换。 */
-.create-start { display: grid; gap: 10px; }
+.create-start { display: grid; gap: calc(10px - var(--chat-start-squeeze, 0px) / 50); }
 .create-start-label { color: var(--text-3); font-size: 12px; text-align: center; }
 .create-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
 .create-card { display: grid; align-content: start; gap: 6px; min-width: 0; padding: 14px; border: 0; border-radius: 12px; corner-shape: squircle; background: var(--panel-solid); box-shadow: inset 0 0 0 1px var(--line); color: var(--text); font: inherit; text-align: left; cursor: pointer; transition: background var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard); }

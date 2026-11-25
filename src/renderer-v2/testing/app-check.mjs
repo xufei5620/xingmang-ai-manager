@@ -4558,6 +4558,36 @@ test('the start page offers a film and the canvas under the examples, and says o
   } finally { await page.close() }
 })
 
+// 窗口矮时（1366 × 768 的笔记本）下面那几张卡落到输入框后面，只露出上半截，客户想不到往下滚。
+// 起始页的留白随窗口高度连续收紧，卡整张露在输入框上面；820 高时和原来一样。
+test('the start cards sit fully above the composer in a short window without changing the start page at the design height', async () => {
+  const page = await openCreate()
+  try {
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-start').waitFor()
+    assert.equal(await page.getByTestId('create-intro').count(), 0)
+    await page.getByTestId('chat-example-1').waitFor()
+    const layout = () => page.getByTestId('chat-empty').evaluate((empty) => {
+      const messages = empty.closest('.chat-messages')
+      const bottom = messages.getBoundingClientRect().bottom
+      const cards = [...messages.querySelectorAll('.create-card')]
+      return {
+        top: getComputedStyle(empty).paddingTop,
+        scrolled: messages.scrollTop,
+        cards: cards.length,
+        hidden: cards.filter((card) => card.getBoundingClientRect().bottom > bottom + 0.5).map((card) => card.dataset.testid),
+      }
+    })
+    assert.deepEqual(await layout(), { top: '28px', scrolled: 0, cards: 2, hidden: [] })
+    for (const height of [740, 680]) {
+      await page.setViewportSize({ width: 1100, height })
+      const shown = await layout()
+      assert.deepEqual({ ...shown, top: undefined }, { top: undefined, scrolled: 0, cards: 2, hidden: [] }, `${height}px tall`)
+    }
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('an account with nothing made before is not told about the merge, now or after it has made something', async () => {
   const page = await openCreate()
   try {
