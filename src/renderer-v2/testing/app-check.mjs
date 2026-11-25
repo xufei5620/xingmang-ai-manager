@@ -5249,8 +5249,9 @@ test('a picture is added to a canvas project the user picks, or to a new one, fr
     await add.waitFor()
     assert.equal((await add.textContent()).trim(), '添加到画布')
     assert.equal(await add.getAttribute('title'), '将此图添加到画布项目的素材库')
-    assert.deepEqual(await page.locator('.chat-asset-actions').first().locator('button').evaluateAll((buttons) => buttons.map((button) => button.getAttribute('data-testid'))),
-      ['chat-asset-reuse', 'chat-asset-animate', 'chat-asset-canvas', 'chat-asset-copy', 'chat-asset-save', 'chat-asset-menu'])
+    // 0.2.25 C2：这条回复只有一张图，「重新生成」「删除消息」接在这一排最后（testid 带消息 id，这里只比前缀）。
+    assert.deepEqual(await page.locator('.chat-asset-actions').first().locator('button').evaluateAll((buttons) => buttons.map((button) => button.getAttribute('data-testid').replace(/^(chat-message-(?:retry|delete))-.+$/, '$1'))),
+      ['chat-asset-reuse', 'chat-asset-animate', 'chat-asset-canvas', 'chat-asset-copy', 'chat-asset-save', 'chat-asset-menu', 'chat-message-retry', 'chat-message-delete'])
     assert.deepEqual(await fixtureCalls(page, 'addImageToCanvasProject'), [])
 
     // 菜单：标题、「新建画布项目」、左边那一列里的画布项目和各自什么时候改的。
