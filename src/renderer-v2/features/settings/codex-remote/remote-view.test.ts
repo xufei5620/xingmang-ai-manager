@@ -93,8 +93,8 @@ describe('codex remote view', () => {
 
   it('names the bound person by nickname and id tail, or by the tail alone', () => {
     const boundAt = new Date(2026, 9, 25, 14, 5).getTime()
-    expect(boundPeerText({ displayName: '小明', userIdTail: 'a1b2', boundAt })).toBe('小明（尾号 a1b2），10 月 25 日 14:05 配对')
-    expect(boundPeerText({ userIdTail: 'a1b2', boundAt })).toBe('尾号 a1b2 的账号，10 月 25 日 14:05 配对')
+    expect(boundPeerText({ displayName: '小明', userIdTail: 'a1b2', boundAt })).toBe('小明（尾号 a1b2），10 月 25 日 14:05 配对。在手机上发送「帮助」可查看可用指令。')
+    expect(boundPeerText({ userIdTail: 'a1b2', boundAt })).toBe('尾号 a1b2 的账号，10 月 25 日 14:05 配对。在手机上发送「帮助」可查看可用指令。')
   })
 
   it('says how many wrong pairing codes came in, and that the code was voided once they ran out', () => {
