@@ -150,9 +150,14 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
   const balance = useSharedBalanceSelector((state) => state.scope === accountScope ? state.balance : null)
   const prices = useVideoStudioPriceList(bridge, accountScope, false)
   // 列表的行是 memo 的：同一条视频、同一个项目没变时交出去的还是同一个对象。
-  const rows = useRef({ videos: new WeakMap<VideoStudioItem, CreateExtraItem>(), projects: new WeakMap<CanvasProjectListEntry, CreateExtraItem>(), films: new WeakMap<VideoStudioItem, ChatVideoFilm>() })
+  const rows = useRef({ videos: new WeakMap<VideoStudioItem, CreateExtraItem>(), busyVideos: new WeakMap<VideoStudioItem, CreateExtraItem>(), projects: new WeakMap<CanvasProjectListEntry, CreateExtraItem>(), films: new WeakMap<VideoStudioItem, ChatVideoFilm>() })
+  // 工作台在编写分镜、出片、合成的那一条，第二行写「正在处理…」：以前要等点别的视频被拦下来才知道它在忙
+  // （创作页复查第 7 条，yoyo 11-26 回「视频忙时提示」）。
+  const busyVideoId = session.busy ? session.openId : null
   const items: CreateExtraItem[] = [
-    ...videos.map((item) => cached<VideoStudioItem, CreateExtraItem>(rows.current.videos, item, () => ({ kind: 'video', id: item.id, title: videoStudioItemName(item), detail: videoStudioDraftProgress(item.project), updatedAt: item.updatedAt }))),
+    ...videos.map((item) => item.id === busyVideoId
+      ? cached<VideoStudioItem, CreateExtraItem>(rows.current.busyVideos, item, () => ({ kind: 'video', id: item.id, title: videoStudioItemName(item), detail: '正在处理…', updatedAt: item.updatedAt }))
+      : cached<VideoStudioItem, CreateExtraItem>(rows.current.videos, item, () => ({ kind: 'video', id: item.id, title: videoStudioItemName(item), detail: videoStudioDraftProgress(item.project), updatedAt: item.updatedAt }))),
     ...canvas.projects.map((entry) => cached<CanvasProjectListEntry, CreateExtraItem>(rows.current.projects, entry, () => ({ kind: 'canvas', id: entry.id, title: entry.name, detail: '画布项目', updatedAt: entry.updatedAt }))),
   ]
   const stableItems = useStableList(items)

@@ -4378,6 +4378,22 @@ test('switching films reuses the models and prices read for the first one, and r
   } finally { await page.close() }
 })
 
+// 创作页复查第 7 条（yoyo 11-26 回「视频忙时提示」）：工作台手上有事的那一条，左边第二行写「正在处理…」，忙完换回原样。
+test('the column says a film is being worked on while its workbench is busy, and shows its progress again afterwards', async () => {
+  const page = await openCreate('videoFilms=pending&chatVideo=1')
+  try {
+    await page.getByTestId('nav-chat').click()
+    const row = page.getByTestId('create-item-video-fixture-film-cat')
+    await expect(row).toHaveText('橘猫回家正在处理…')
+    // 别的那条照旧。
+    await expect(page.getByTestId('create-item-video-fixture-film-sea')).toHaveText('海边那条尚未编写分镜')
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'resumeAiVideo'))
+    await page.evaluate(() => window.v2Test.releaseChatVideo())
+    await expect(row).toHaveText('橘猫回家2 个镜头 · 已生成 1 段')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a film opens from the column into its workbench on the right, and is renamed and deleted from there', async () => {
   const page = await openCreate('videoFilms=1')
   try {
