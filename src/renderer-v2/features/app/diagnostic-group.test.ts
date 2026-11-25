@@ -50,6 +50,48 @@ describe('groupDiagnostics', () => {
   })
 })
 
+describe('groupDiagnostics with the connection settings of tools that are not installed', () => {
+  const noSettings = (tool: string) => ({ code: `PROVIDER_${tool}`, state: 'warn', details: { exists: false, hasApiKey: false } })
+  const cli = (tool: string, installed: boolean) => ({ code: `CLI_${tool}`, state: installed ? 'pass' : 'warn', details: { installed } })
+
+  it('puts the missing settings of a CLI that is not installed under 可选 instead of 需要处理', () => {
+    // 只装了 Claude Code：以前「需要处理」里挂着 Codex CLI、Grok CLI 两行「尚无连接设置」，状态栏却写「环境正常」。
+    const groups = groupDiagnostics([
+      cli('CLAUDE', true), cli('CODEX', false), cli('GROK', false),
+      { code: 'CODEX_DESKTOP', state: 'warn', details: { installed: false } },
+      { code: 'PROVIDER_CLAUDE', state: 'pass', details: { exists: true, hasApiKey: true } },
+      noSettings('CODEX'), noSettings('GROK'),
+    ])
+    expect(groups.problem.map((item) => item.code)).toEqual([])
+    expect(groups.optional.map((item) => item.code)).toEqual(['CLI_CODEX', 'CLI_GROK', 'CODEX_DESKTOP', 'PROVIDER_CODEX', 'PROVIDER_GROK'])
+  })
+
+  it('keeps the missing settings of an installed CLI under 需要处理', () => {
+    const groups = groupDiagnostics([cli('GROK', true), noSettings('GROK')])
+    expect(groups.problem.map((item) => item.code)).toEqual(['PROVIDER_GROK'])
+  })
+
+  it('keeps the Codex settings under 需要处理 while the Codex desktop app, which reads the same settings, is installed', () => {
+    const groups = groupDiagnostics([
+      cli('CODEX', false),
+      { code: 'CODEX_DESKTOP', state: 'pass', details: { installed: true } },
+      noSettings('CODEX'),
+    ])
+    expect(groups.problem.map((item) => item.code)).toEqual(['PROVIDER_CODEX'])
+  })
+
+  it('keeps half-written settings, and settings of a CLI whose check failed, under 需要处理', () => {
+    const groups = groupDiagnostics([
+      cli('GROK', false),
+      { code: 'PROVIDER_GROK', state: 'fail', details: { exists: true, hasApiKey: false } },
+      { code: 'CLI_CODEX', state: 'fail' },
+      noSettings('CODEX'),
+      { code: 'CODEX_DESKTOP', state: 'warn', details: { installed: false } },
+    ])
+    expect(groups.problem.map((item) => item.code)).toEqual(['PROVIDER_GROK', 'CLI_CODEX', 'PROVIDER_CODEX'])
+  })
+})
+
 describe('diagnosticStateLabel', () => {
   it('names the row icon with the three words the old badge used', () => {
     expect(diagnosticStateLabel('pass')).toBe('正常')
