@@ -682,6 +682,31 @@ test('installing the Antigravity command line connects it, opens it in a chosen 
   } finally { await running.close() }
 })
 
+// 记住的项目文件夹被删掉以后点 Antigravity 命令行的「打开」：跟 Claude Code、Codex 那几张卡一样提示一句再弹选择窗口，
+// 不弹「操作没有完成」；选好的那个记下了，再点直接进它，不再提示、不再弹。
+test('the Antigravity command line says the remembered folder is gone, asks for another one, and keeps it', async () => {
+  const page = await open('antigravity=installed&antigravityWorkspaceGone=1')
+  const opens = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openAntigravityCli').map((entry) => entry.args))
+  const choices = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'chooseWorkspace').length)
+  try {
+    const primary = page.getByTestId('tool-antigravityCli-primary')
+    await expect(primary).toHaveText('打开')
+    await primary.click()
+    await waitForToast(page, '上次使用的目录已不存在，请重新选择。')
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'openAntigravityCli').length === 2)
+    assert.deepEqual(await opens(), [['C:\\work\\deleted-project'], ['C:\\Selected Project']])
+    assert.equal(await choices(), 1)
+    assert.equal(await page.getByRole('dialog', { name: '操作未完成' }).count(), 0)
+    await expect(primary).toHaveText('打开')
+    await expect(primary).toBeEnabled()
+    await primary.click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'openAntigravityCli').length === 3)
+    assert.deepEqual((await opens())[2], ['C:\\Selected Project'])
+    assert.equal(await choices(), 1)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 换账号、换线路以后主进程替 Antigravity 改完设置叫的那一声：只重读这两张卡，三个外部客户端不跟着重新检测、
 // 设置和配置也不重读（复查 A 第 2 轮第 2 条；原来借的是线路那一声）。
 test('when the main process moves Antigravity onto the new account, home rereads only its two cards', async () => {
@@ -2127,9 +2152,9 @@ async function recordsReads(page) {
     .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === size).length))
 }
 
-// 记录页去过一次以后，在终端里聊完再回来还是第一次进来时那份：刚聊的那条不在，「继续对话」还挂在同一文件夹更早的那条上，
-// 而 Claude Code 按文件夹接最近一条（#292），点下去接上的是刚聊的那条。
-test('the records page reads both lists again when it is shown again, so 接着聊 sits on the newest record of the folder', async () => {
+// 记录页去过一次以后，在终端里聊完再回来还是第一次进来时那份：刚聊的那条不在。再显示时两份都重读。
+// 0.2.25 S1 起每条都按编号接，同一文件夹更早的那条照旧带「继续对话」，接上的就是它自己。
+test('the records page reads both lists again when it is shown again, so the chat just made shows up with its own 接着聊', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
   try {
     await page.getByTestId('nav-sessions').click()
@@ -2142,16 +2167,16 @@ test('the records page reads both lists again when it is shown again, so 接着�
     await page.getByTestId('nav-sessions').click()
     await page.getByTestId('sessions-resume-claude:6').waitFor()
     assert.deepEqual(await recordsReads(page), [list + 1, latest + 1])
-    // 刚聊的排第一、带「继续对话」；my-app 里更早的 claude:1 不再带，不会接到别的对话上。
+    // 刚聊的排第一、带「继续对话」；my-app 里更早的 claude:1 也照旧带。
     assert.equal(await page.locator('[data-testid^="sessions-row-"]').first().getAttribute('data-testid'), 'sessions-row-claude:6')
-    assert.equal(await page.getByTestId('sessions-resume-claude:1').count(), 0)
+    assert.equal(await page.getByTestId('sessions-resume-claude:1').count(), 1)
     await clean(page)
   } finally { await page.close() }
 })
 
-// 已知4：记录页同一下。停在记录页时在终端里又聊了一条，半分钟内回到窗口不重读；这时点同一文件夹更早那条的「继续对话」，
-// 先读一份最新的对一次，不是最近的就这次不打开，列表换成新的、按钮挪到刚聊的那条上。
-test('the records page 接着聊 checks the newest records first and holds back when a newer chat took over the folder (已知4)', async () => {
+// 0.2.25 S1：以前（已知4）停在记录页时在终端里又聊了一条，点同一文件夹更早那条的「继续对话」，要先读一份最新的对一次，
+// 因为 Claude Code 按文件夹接最近一条，接上的会是刚聊的那条。现在带着这条记录的 id 按编号接，点哪条接哪条，不用再对。
+test('the records page 接着聊 on an older record of a folder resumes that very record by its id, without reading the records first', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
   try {
     await page.getByTestId('nav-sessions').click()
@@ -2160,12 +2185,10 @@ test('the records page 接着聊 checks the newest records first and holds back 
     const [list, latest] = await recordsReads(page)
     await page.evaluate(() => window.v2Test.addRecentSession('6', 'claude', 'C:\\work\\my-app', 500))
     await resume.click()
-    await page.getByTestId('sessions-resume-claude:6').waitFor()
-    assert.deepEqual(await recordsReads(page), [list + 1, latest + 1])
-    assert.equal(await page.getByTestId('sessions-resume-claude:1').count(), 0)
-    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli')), false)
-    // 什么都没打开：不说「已打开」，也不报错。
-    assert.equal(await page.locator('.v2-business-notice.is-error').count(), 0)
+    await waitForToast(page, '已打开Claude Code，在 C:\\work\\my-app 中继续这次对话')
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args)),
+      [['claude', 'C:\\work\\my-app', 'resumeLast', 'claude:1']])
+    assert.deepEqual(await recordsReads(page), [list, latest])
     await clean(page)
   } finally { await page.close() }
 })
@@ -2585,8 +2608,8 @@ test('after 接着聊 on the records page the next return to the window reads ag
     })
     await focusWindow()
     await drawer.getByText('刚在终端里问的').waitFor()
-    // 「最新 100 条」多读的那一次是点「继续对话」时先对的一下（已知4）。
-    assert.deepEqual(await recordsReads(page), [list + 1, latest + 2])
+    // 0.2.25 S1 起按编号接，点「继续对话」不再先读一份最新的对一次，两份各多读一次。
+    assert.deepEqual(await recordsReads(page), [list + 1, latest + 1])
     await expect(drawer.getByText('上回问到这里')).toBeVisible()
     assert.equal(await page.evaluate(() => window.__sawTranscriptLoading), false)
     await clean(page)
@@ -4581,8 +4604,11 @@ test('the start cards sit fully above the composer in a short window without cha
       }
     })
     assert.deepEqual(await layout(), { top: '28px', scrolled: 0, cards: 2, hidden: [] })
+    // 只改高、宽留在 1280：宽不到 1272 时侧栏要等 matchMedia 回调、React 重画才收成窄条，改完尺寸立刻量会量到
+    // 「窗口已经窄了、侧栏还是 224」的那一瞬，正文窄、卡高，慢 runner 上 680 那一下就量成被挡（#2166、#2168 各红一次）。
+    // 1366 × 768 的笔记本侧栏本来就是展开的，量这种才是要守的情形。
     for (const height of [740, 680]) {
-      await page.setViewportSize({ width: 1100, height })
+      await page.setViewportSize({ width: 1280, height })
       const shown = await layout()
       assert.deepEqual({ ...shown, top: undefined }, { top: undefined, scrolled: 0, cards: 2, hidden: [] }, `${height}px tall`)
     }
@@ -5249,8 +5275,9 @@ test('a picture is added to a canvas project the user picks, or to a new one, fr
     await add.waitFor()
     assert.equal((await add.textContent()).trim(), '添加到画布')
     assert.equal(await add.getAttribute('title'), '将此图添加到画布项目的素材库')
-    assert.deepEqual(await page.locator('.chat-asset-actions').first().locator('button').evaluateAll((buttons) => buttons.map((button) => button.getAttribute('data-testid'))),
-      ['chat-asset-reuse', 'chat-asset-animate', 'chat-asset-canvas', 'chat-asset-copy', 'chat-asset-save', 'chat-asset-menu'])
+    // 0.2.25 C2：这条回复只有一张图，「重新生成」「删除消息」接在这一排最后（testid 带消息 id，这里只比前缀）。
+    assert.deepEqual(await page.locator('.chat-asset-actions').first().locator('button').evaluateAll((buttons) => buttons.map((button) => button.getAttribute('data-testid').replace(/^(chat-message-(?:retry|delete))-.+$/, '$1'))),
+      ['chat-asset-reuse', 'chat-asset-animate', 'chat-asset-canvas', 'chat-asset-copy', 'chat-asset-save', 'chat-asset-menu', 'chat-message-retry', 'chat-message-delete'])
     assert.deepEqual(await fixtureCalls(page, 'addImageToCanvasProject'), [])
 
     // 菜单：标题、「新建画布项目」、左边那一列里的画布项目和各自什么时候改的。
@@ -9955,7 +9982,7 @@ test('switching accounts while the model question is open drops it without openi
 
 // 第四十批 B：记录页的「继续对话」以前直接叫主进程打开，首页打开前那几道关（核对默认模型、
 // 没连好账号先去连、Codex 老配置先修）一道都没过。
-const recordsResumedNotice = '已打开Claude Code，继续 C:\\work\\my-app 中最近的一条对话'
+const recordsResumedNotice = '已打开Claude Code，在 C:\\work\\my-app 中继续这次对话'
 async function resumeFromRecords(page) {
   await page.getByTestId('nav-sessions').click()
   await page.getByTestId('sessions-resume-claude:1').click()
@@ -9972,7 +9999,7 @@ test('resuming from the records page checks the tool first and opens right away 
   try {
     await resumeFromRecords(page)
     await waitForToast(page, recordsResumedNotice)
-    assert.deepEqual(await launchCliCalls(page), [['claude', 'C:\\work\\my-app', 'resumeLast']])
+    assert.deepEqual(await launchCliCalls(page), [['claude', 'C:\\work\\my-app', 'resumeLast', 'claude:1']])
     const methods = await page.evaluate(() => window.v2Test.calls.map((call) => call.method))
     assert.ok(methods.includes('checkToolModels') && methods.indexOf('checkToolModels') < methods.indexOf('launchCli'), '打开之前和首页一样核过默认模型')
     await clean(page)
@@ -9994,7 +10021,7 @@ test('resuming from the records page asks about a gone default model first and o
       .filter((call) => call.method === 'saveConfig' || call.method === 'launchCli')
       .map((call) => call.method === 'saveConfig' ? [call.method, call.args[0]] : [call.method, ...call.args])), [
       ['saveConfig', { provider: 'claude', apiKey: '', model: 'claude-opus-5-5', mode: 'merge' }],
-      ['launchCli', 'claude', 'C:\\work\\my-app', 'resumeLast'],
+      ['launchCli', 'claude', 'C:\\work\\my-app', 'resumeLast', 'claude:1'],
     ])
     await question.waitFor({ state: 'detached' })
     await clean(page)
@@ -10016,7 +10043,7 @@ test('closing the records page question opens nothing, and keeping the old model
     await page.getByTestId('sessions-resume-claude:1').click()
     await page.getByTestId('model-swap-keep').click()
     await waitForToast(page, recordsResumedNotice)
-    assert.deepEqual(await launchCliCalls(page), [['claude', 'C:\\work\\my-app', 'resumeLast']])
+    assert.deepEqual(await launchCliCalls(page), [['claude', 'C:\\work\\my-app', 'resumeLast', 'claude:1']])
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'saveConfig')), false)
     await clean(page)
   } finally { await page.close() }

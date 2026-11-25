@@ -1713,14 +1713,14 @@ test('session detail shows transcript and archives the native id after a user ac
 })
 
 // 记录页的 lead 一直写着「继续之前的对话」,但页面只有导出和归档。这条钉住
-// 兑现之后的行为:按钮把记录里的工作目录和固定的 resumeLast 一起交给主进程,
-// 续接参数本身永远不从渲染层来。Codex 另带这条记录的 id,由主进程核对后按 id
-// 接(它自己按目录找时还看连接名,切过账号就找不到)。
-test('records page resumes the most recent conversation in the folder on the row', async () => {
+// 兑现之后的行为:按钮把记录里的工作目录、固定的 resumeLast 和这条记录的 id
+// 一起交给主进程,续接参数本身永远不从渲染层来:主进程从记录里读出编号、核对
+// 过文件夹再按编号接(0.2.25 S1 起三家都这样)。
+test('records page resumes the conversation on the row', async () => {
   const page = await fixture('page=sessions')
   try {
     await page.getByTestId('sessions-resume-codex:session-1').click()
-    await waitForToast(page, '已打开Codex CLI，继续 C:/test-project 中最近的一条对话')
+    await waitForToast(page, '已打开Codex CLI，在 C:/test-project 中继续这次对话')
     assert.deepEqual(
       (await calls(page)).find((call) => call.name === 'launch-cli').args,
       { provider: 'codex', workspace: 'C:/test-project', mode: 'resumeLast', sessionId: 'codex:session-1' },
@@ -1730,14 +1730,19 @@ test('records page resumes the most recent conversation in the folder on the row
   }
 })
 
-// 续接参数是 CLI 自己按目录找最近一条,所以同一个工具、同一个目录只有最近的
-// 那条能给按钮:否则用户点第三条、接上的却是第一条。
-test('only the most recent record of a folder offers to resume it', async () => {
+// 0.2.25 S1:以前续接参数是 CLI 自己按目录找最近一条,同一个工具、同一个目录
+// 只有最近的那条给按钮。现在按这条记录的编号接,更早的那条也有按钮,点哪条接哪条。
+test('every record of a folder offers to resume that very record', async () => {
   const page = await fixture('page=sessions&sameFolder=1')
   try {
     await page.getByTestId('sessions-row-codex:session-0').waitFor()
     assert.equal(await page.getByTestId('sessions-resume-codex:session-1').count(), 1)
-    assert.equal(await page.getByTestId('sessions-resume-codex:session-0').count(), 0)
+    await page.getByTestId('sessions-resume-codex:session-0').click()
+    await waitForToast(page, '已打开Codex CLI，在 C:/test-project 中继续这次对话')
+    assert.equal(
+      (await calls(page)).find((call) => call.name === 'launch-cli').args.sessionId,
+      'codex:session-0',
+    )
   } finally {
     await page.close()
   }
@@ -4122,6 +4127,32 @@ test('the WeChat block logs in through the QR dialog, asks for the number on the
         ['remote-weixin-login-cancel', '0f8fad5b-d9cb-469f-a165-70867728950e'],
       ],
     )
+  } finally {
+    await page.close()
+  }
+})
+
+// 0.2.25 M1：填好飞书应用、只差文件夹时，「打开遥控」那行以前说「请先在上方选择工作文件夹。」，可文件夹那一行在下面
+// 「通用设置」里。现在说「请先选择工作文件夹。」，开关左边直接一颗「选择文件夹」，选好开关马上能打开，那颗也收起。
+test('the phone remote switch offers to choose the folder beside it when that is the only step left', async () => {
+  const page = await fixture('page=remote&remoteReady=1&remoteNoFolder=1')
+  try {
+    const card = page.getByTestId('settings-remote-card')
+    const toggle = card.getByRole('switch', { name: '打开飞书遥控', exact: true })
+    const row = card.getByTestId('settings-remote-feishu-enable')
+    await row.getByText('请先选择工作文件夹。', { exact: true }).waitFor()
+    assert.equal(await toggle.isDisabled(), true)
+    const choose = row.getByTestId('settings-remote-feishu-choose-workspace')
+    assert.equal(await choose.innerText(), '选择文件夹')
+    // 下面「通用设置」里那一行照旧在。
+    assert.equal(await card.getByTestId('settings-remote-workspace').count(), 1)
+    await choose.click()
+    await card.getByTestId('settings-remote-workspace-row').getByText('~/projects/demo', { exact: true }).waitFor()
+    await choose.waitFor({ state: 'detached' })
+    assert.equal(await toggle.isDisabled(), false)
+    assert.equal((await callsNamed(page, 'remote-workspace')).length, 1)
+    await toggle.click()
+    await card.getByTestId('settings-remote-feishu-state').getByText('已连接', { exact: true }).waitFor()
   } finally {
     await page.close()
   }

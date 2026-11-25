@@ -51,10 +51,10 @@ describe('resumeSessionNotice', () => {
   })
 
   it('confirms the resume, with the override reminder when there is one', () => {
-    expect(resumeSessionNotice({}, 'Claude Code', 'C:\\work')).toBe('已打开Claude Code，继续 C:\\work 中最近的一条对话')
-    expect(resumeSessionNotice(undefined, 'Codex', 'D:\\app')).toBe('已打开Codex，继续 D:\\app 中最近的一条对话')
+    expect(resumeSessionNotice({}, 'Claude Code', 'C:\\work')).toBe('已打开Claude Code，在 C:\\work 中继续这次对话')
+    expect(resumeSessionNotice(undefined, 'Codex', 'D:\\app')).toBe('已打开Codex，在 D:\\app 中继续这次对话')
     expect(resumeSessionNotice({ configOverrideNotice: '这个项目文件夹里有自己的设置' }, 'Codex', 'D:\\app'))
-      .toBe('已打开Codex，继续 D:\\app 中最近的一条对话。这个项目文件夹里有自己的设置')
+      .toBe('已打开Codex，在 D:\\app 中继续这次对话。这个项目文件夹里有自己的设置')
   })
 })
 

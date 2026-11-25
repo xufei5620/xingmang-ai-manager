@@ -158,6 +158,22 @@ describe('buildMacosCodexAppLaunchPlan', () => {
     expect(new URL(plan.argv[2]).protocol).toBe('codex:')
   })
 
+  it('just opens the application, like the Windows launch, when there is no folder to open', () => {
+    const codexHome = path.resolve(os.tmpdir(), 'codex-home')
+    const plan = buildMacosCodexAppLaunchPlan('/Applications/Codex.app', null, codexHome, [
+      '--host-resolver-rules=MAP ab.chatgpt.com 127.0.0.1:43210',
+    ])
+
+    expect(plan).toEqual({
+      executable: '/usr/bin/open',
+      argv: [
+        '-a', '/Applications/Codex.app', '--env', `CODEX_HOME=${codexHome}`,
+        '--args', '--host-resolver-rules=MAP ab.chatgpt.com 127.0.0.1:43210',
+      ],
+    })
+    expect(plan.argv.some((argument) => argument.startsWith('codex:'))).toBe(false)
+  })
+
   it.each(['', 'codex://threads/new', '-a', '--flag\0value', `--${'x'.repeat(2_048)}`])(
     'rejects an app argument that is not a plain switch %#',
     (argument) => {

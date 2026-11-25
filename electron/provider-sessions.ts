@@ -132,6 +132,14 @@ export interface ProviderSessionPage {
   capabilities: Record<ProviderSessionProvider, ProviderSessionCapability>
 }
 
+/** 「继续对话」按记录接上那一条要的两样，见 ProviderSessionsService.resolveResumeTarget。 */
+export interface ProviderSessionResumeTarget {
+  /** 这条对话当时在哪个文件夹里跑的。 */
+  workspace: string
+  /** 交给命令行的对话编号（裸 UUID）；认不出时为 null，打开时退回按文件夹接最近一条。 */
+  sessionId: string | null
+}
+
 export interface ProviderSessionExportResult {
   id: string
   provider: ProviderSessionProvider
@@ -792,10 +800,32 @@ function finalizeExternalSummary(
   }
 }
 
+// Codex surfaces (the desktop app's attachments, the IDE extension's editor
+// context) put model-only context before this delimiter and the user's own
+// words after it. Same literal as USER_MESSAGE_BEGIN in openai/codex
+// codex-rs/protocol, whose strip_user_message_prefix also cuts at the first one.
+const codexRequestDelimiter = '## My request for Codex:'
+const codexFilesHeading = '# Files mentioned by the user:'
+
+/**
+ * 只附了文件、没打字的那一句，标题里没有分隔行，只剩「# Files mentioned by the user:」
+ * 加一串「## 文件名: 路径」。这时拿文件名当标题，比整段英文加路径好认。
+ */
+function codexMentionedFileNames(title: string): string {
+  const trimmed = title.trimStart()
+  if (!trimmed.startsWith(codexFilesHeading)) return ''
+  const section = trimmed.slice(codexFilesHeading.length).split(codexRequestDelimiter)[0]
+  const names = Array.from(section.matchAll(/##\s+(.+?):\s/g), (match) => cleanText(match[1], 60))
+  return names.filter(Boolean).join('、')
+}
+
 /**
  * Codex 把会话标题原样存成第一句话。定时任务（Codex 的 Automation）那一句是整段任务说明：
  * 「Automation: 每日制作头像 Automation ID: … Automation memory: … Last run: …」再接几百字的
- * 指令，原样上屏会把首页「最近」那张卡撑破。定时任务只留任务名；其余标题收成一行、限长。
+ * 指令，原样上屏会把首页「最近」那张卡撑破。定时任务只留任务名。
+ * Codex 桌面端附了文件的那一句前面垫着「# Files mentioned by the user: …」，客户打的字在
+ * 「## My request for Codex:」后面，首页「最近」只露出前面那段英文；只取客户打的字。
+ * 其余标题收成一行、限长。
  */
 export function codexSessionTitle(title: string, sessionId: string): string {
   const automation = /^\s*Automation:\s*(.+?)\s+Automation ID:/s.exec(title)
@@ -803,7 +833,9 @@ export function codexSessionTitle(title: string, sessionId: string): string {
     const name = cleanText(automation[1], 60)
     if (name) return `定时任务：${name}`
   }
-  return cleanText(title) || sessionId
+  const delimiter = title.indexOf(codexRequestDelimiter)
+  const request = delimiter >= 0 ? cleanText(title.slice(delimiter + codexRequestDelimiter.length)) : ''
+  return request || codexMentionedFileNames(title) || cleanText(title) || sessionId
 }
 
 function codexSummary(summary: CodexSessionPage['items'][number], readonly: boolean): ProviderSessionSummary {
@@ -822,6 +854,13 @@ function codexSummary(summary: CodexSessionPage['items'][number], readonly: bool
     sourcePath: '',
     detailAvailable: summary.rolloutAvailable,
   }
+}
+
+const cliSessionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** 挑第一个像命令行对话编号的；argv 那边（tool-installation.ts 的 cliResumeArgv）还会再核一次。 */
+function resumableSessionId(candidates: readonly string[]): string | null {
+  return candidates.find((candidate) => cliSessionIdPattern.test(candidate)) ?? null
 }
 
 function providerFromId(id: string): ProviderSessionProvider {
@@ -1194,6 +1233,29 @@ export class ProviderSessionsService {
       return session.cwd
     }
     return (await this.resolveExternalSummary(provider, id)).cwd
+  }
+
+  /**
+   * 记录页上点哪条接哪条（0.2.25 S1）：交给命令行的是记录里读出来的编号，不是渲染层传来的
+   * 那个 id。三家都只认标准 UUID 格式的编号；Claude Code 的编号就是记录文件名（`--resume`
+   * 按它找文件，老版本续聊时另起的文件里开头几行还带着上一段的 sessionId，所以文件名优先），
+   * Grok CLI 是 summary.json 里的 info.id（没有就是会话文件夹名）。认不出就给 null，
+   * 启动那边退回按文件夹接最近一条，跟以前一样。
+   */
+  async resolveResumeTarget(id: string): Promise<ProviderSessionResumeTarget> {
+    const provider = providerFromId(id)
+    if (provider === 'codex') {
+      const session = (await this.listCodexSessions()).find((item) => item.id === id)
+      if (!session) throw new Error('未找到这条记录')
+      return { workspace: session.cwd, sessionId: resumableSessionId([session.nativeId]) }
+    }
+    const session = await this.resolveExternalSummary(provider, id)
+    if (provider === 'claude') {
+      const fileName = path.basename(session.sourcePath, path.extname(session.sourcePath))
+      return { workspace: session.cwd, sessionId: resumableSessionId([fileName, session.nativeId]) }
+    }
+    if (provider === 'grok') return { workspace: session.cwd, sessionId: resumableSessionId([session.nativeId]) }
+    return { workspace: session.cwd, sessionId: null }
   }
 
   async exportMarkdown(id: string, destinationPath: string): Promise<ProviderSessionExportResult> {

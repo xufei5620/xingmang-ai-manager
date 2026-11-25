@@ -30,7 +30,7 @@ import { staleAccountMessage, type AccountWorkGate } from '../../account-work-ga
 import {
   parseChooseWorkspaceOptions,
   parseCliLaunchMode,
-  parseCodexResumeRecordId,
+  parseResumeRecordId,
   parseDesktopLaunchMode,
   parseWorkspace,
 } from '../parsers/tools'
@@ -222,15 +222,15 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
   })
   registerTrustedHandler('repository:get-context', () => options.extensionService.getRepositoryContext())
   /**
-   * 记录这边核对一遍再交给 Codex:记录还在、而且就在要打开的这个文件夹里,才按
-   * id 接;查不到(刚被删、数据库暂时读不了)或文件夹对不上,就退回按目录找最近
-   * 一条 —— 也就是加这个参数之前的行为,不会因此打不开。
+   * 记录这边核对一遍再交给命令行:记录还在、而且就在要打开的这个文件夹里,才按
+   * 记录里读出的编号接;查不到(刚被删、数据库暂时读不了)、文件夹对不上或认不出
+   * 编号,就退回按目录找最近一条 —— 也就是加这个参数之前的行为,不会因此打不开。
    */
-  async function verifiedCodexResumeSessionId(recordId: string, workspace: string): Promise<string | null> {
+  async function verifiedResumeSessionId(recordId: string, workspace: string): Promise<string | null> {
     try {
-      const recorded = await options.providerSessionsService.resolveWorkspace(recordId)
-      if (!recorded || !sameLaunchWorkspace(recorded, workspace)) return null
-      return recordId.slice('codex:'.length)
+      const recorded = await options.providerSessionsService.resolveResumeTarget(recordId)
+      if (!recorded.workspace || !sameLaunchWorkspace(recorded.workspace, workspace)) return null
+      return recorded.sessionId
     } catch {
       return null
     }
@@ -265,12 +265,12 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
     const stored = service.readStoredConfig()
     const target = parseWorkspace(workspace, stored.workspace, process.platform)
     const launchMode = parseCliLaunchMode(mode)
-    const resumeRecordId = parseCodexResumeRecordId(provider, launchMode, recordId)
+    const resumeRecordId = parseResumeRecordId(provider, launchMode, recordId)
     // 在问「不建议在此文件夹中打开」之前拦：关着的工具不该先弹一个文件夹的问题。
     return launchForClickedAccount((accountWork) => runWhenOn(options.remoteFeatures, `launch:${provider}`, toolLaunchOffMessage(cliCatalog[provider].name), () => {
       if (resumeRecordId === null) return launchCliInWorkspace(event, provider, target, launchMode, null, accountWork)
       return (async () => {
-        const resumeSessionId = await verifiedCodexResumeSessionId(resumeRecordId, target)
+        const resumeSessionId = await verifiedResumeSessionId(resumeRecordId, target)
         assertLaunchAccountCurrent(accountWork)
         return launchCliInWorkspace(event, provider, target, launchMode, resumeSessionId, accountWork)
       })()
