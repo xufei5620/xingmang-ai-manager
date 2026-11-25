@@ -430,6 +430,53 @@ test('writes a storyboard, generates every shot and joins them into one film', a
   await page.close()
 })
 
+// 创作页复查第 5 条：片段要等好几分钟，客户多半切走了。一轮片段都回来了、合成好了，窗口不在前台时各报一声（同对话里出视频）；
+// 一段都没出成的那一轮不报，窗口在前台时不报。
+test('sends one system notification when a round of clips is back and one when the film is joined, while the window is behind', async () => {
+  const { page, errors } = await openStudio()
+  await page.evaluate(() => {
+    window.__notified = []
+    window.xingmangPlatform = { notifyActivity: async (kind, key) => { window.__notified.push([kind, key]); return 'requested' } }
+    document.hasFocus = () => false
+  })
+  await writeStoryboard(page, '红绿两段', { title: '两段', shots: [{ prompt: '红色的街' }, { prompt: '绿色的门' }] })
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 2)
+  const [red, green] = await studioCalls(page, 'generate')
+  // 回来一段还不报：这一轮还有一段在出。
+  await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#00ff00'), green.requestId)
+  await page.getByTestId('video-shot-1').getByText('已生成').waitFor()
+  assert.deepEqual(await page.evaluate(() => window.__notified), [])
+  await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#ff0000'), red.requestId)
+  await page.waitForFunction(() => window.__notified.length === 1)
+  assert.deepEqual(await page.evaluate(() => window.__notified), [['task', `video:${green.requestId}`]])
+
+  await page.getByTestId('video-compose').click()
+  await page.getByTestId('video-result').waitFor({ timeout: fixtureReadyTimeoutMs })
+  await page.waitForFunction(() => window.__notified.length === 2)
+  const [, joined] = await page.evaluate(() => window.__notified)
+  assert.equal(joined[0], 'task')
+  assert.match(joined[1], /^video:v+\d+$/)
+
+  // 重新生成第二段没出成：不报。
+  const regenerate = async (index) => {
+    await page.getByTestId(`video-shot-generate-${index}`).click()
+    await page.getByTestId('video-confirm').getByRole('button', { name: '重新生成' }).click()
+    await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
+    return (await page.evaluate(() => window.videoStudioPage.pendingClips()))[0].requestId
+  }
+  await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '上游超时'), await regenerate(1))
+  await page.getByTestId('video-shot-1').getByText('生成失败').waitFor()
+  // 窗口在前台时出成了也不报。
+  await page.evaluate(() => { document.hasFocus = () => true })
+  await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#0000ff'), await regenerate(0))
+  await page.waitForFunction(() => document.querySelector('[data-testid=video-shot-0]')?.dataset.status === 'done' && window.videoStudioPage.pendingClips().length === 0)
+  assert.equal(await page.evaluate(() => window.__notified.length), 2)
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
 // 审查清单 JJ-1：生成到一半关掉软件，钱扣了的那段要回到镜头上，不能显示「还没生成」让客户再花一次钱。
 test('picks shots that were still generating back up after the page reopens, without paying again', async () => {
   const { page, errors } = await openStudio()
