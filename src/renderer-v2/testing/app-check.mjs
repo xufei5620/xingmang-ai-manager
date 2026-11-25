@@ -4326,6 +4326,29 @@ test('the column lists what it could read and names the kind it could not', asyn
   }
 })
 
+// 创作页复查第 2 条：上次关软件时还在出的那一段，重开后不用点开那条视频就去接回；右边照旧是起始页。
+test('a clip still generating at the last quit is picked up when the page opens, without opening its film', async () => {
+  const page = await openCreate('videoFilms=pending&chatVideo=1')
+  try {
+    await page.getByTestId('nav-chat').click()
+    const row = page.getByTestId('create-item-video-fixture-film-cat')
+    await row.waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'resumeAiVideo'))
+    assert.deepEqual([...new Set((await fixtureCalls(page, 'resumeAiVideo')).map(([id]) => id))], ['fixture-pending-clip'])
+    assert.equal(await fixtureCalls(page, 'generateAiVideo').then((calls) => calls.length), 0)
+    await page.getByTestId('create-start').waitFor()
+    assert.equal(await page.getByTestId('create-video-pane').isHidden(), true)
+    await page.evaluate(() => window.v2Test.releaseChatVideo())
+    await expect(row).toContainText('已生成 1 段')
+    await page.getByTestId('create-start').waitFor()
+    // 点开它：接回来的那一段已经在第一镜上。
+    await row.click()
+    await page.getByTestId('create-video-pane').waitFor()
+    await expect(page.locator('.video-studio-shot').first()).toHaveAttribute('data-status', 'done')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a film opens from the column into its workbench on the right, and is renamed and deleted from there', async () => {
   const page = await openCreate('videoFilms=1')
   try {
