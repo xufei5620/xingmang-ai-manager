@@ -4628,12 +4628,15 @@ test('the start cards stay above the composer in a short window while the merge 
       const messages = empty.closest('.chat-messages')
       const bottom = messages.getBoundingClientRect().bottom
       const cards = [...messages.querySelectorAll('.create-card')]
-      return { scrolled: messages.scrollTop, cards: cards.length, hidden: cards.filter((card) => card.getBoundingClientRect().bottom > bottom + 0.5).map((card) => card.dataset.testid) }
+      const lowest = Math.max(...cards.map((card) => card.getBoundingClientRect().bottom))
+      return { scrolled: messages.scrollTop, cards: cards.length, hidden: cards.filter((card) => card.getBoundingClientRect().bottom > bottom + 0.5).map((card) => card.dataset.testid), spare: Math.round(bottom - lowest) }
     })
-    // 宽留在 1280，理由同上一条（侧栏收窄要等一拍）。
+    // 宽留在 1280，理由同上一条（侧栏收窄要等一拍）。余量随字体差十几二十像素（CI 的 Chromium 上提示那句话会多折一行），
+    // 红了先看报出来的 spare 差多少。
     for (const height of [820, 740, 680]) {
       await page.setViewportSize({ width: 1280, height })
-      assert.deepEqual(await layout(), { scrolled: 0, cards: 3, hidden: [] }, `${height}px tall`)
+      const { spare, ...seen } = await layout()
+      assert.deepEqual(seen, { scrolled: 0, cards: 3, hidden: [] }, `${height}px tall, ${spare}px left under the cards`)
     }
     await clean(page)
   } finally { await page.close() }
