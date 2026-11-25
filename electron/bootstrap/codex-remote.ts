@@ -46,8 +46,8 @@ export interface CodexRemoteBootstrapOptions {
   readBalanceUsd?(): Promise<number | null>
 }
 
-const elevatedMessage = '星芒正以管理员身份运行，为保障安全，此时无法开启手机遥控。请以普通方式重新打开星芒。'
-const unconfirmedMessage = '无法确认星芒是否以管理员身份运行，为保障安全，此时无法开启手机遥控。请以普通方式重新打开星芒后重试。'
+const elevatedMessage = '星芒正以管理员身份运行，为保障安全，此时无法开启遥控。请以普通方式重新打开星芒。'
+const unconfirmedMessage = '无法确认星芒是否以管理员身份运行，为保障安全，此时无法开启遥控。请以普通方式重新打开星芒后重试。'
 
 /**
  * Whether this Windows account runs every program at High integrity by itself: the
