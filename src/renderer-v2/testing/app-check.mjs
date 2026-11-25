@@ -155,6 +155,54 @@ test('the signed-in workspace draws no canvas behind the pages', async () => {
   } finally { await page.close() }
 })
 
+// 段落最后一行只剩一个字看着像排版出错（创作页那句折成「……共用同一账」「号。」）。先用浏览器原来的
+// 折法在这台机器的字体下找出会只剩一个字的宽度，再看界面自己的折法在同样宽度下不再这样；
+// 宽度按实际字体量出来，换了字体也找得到。打字的地方不按这个排。
+test('paragraphs in the signed-in workspace never end on a single character, but text being typed is laid out as before', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('shell-topbar').waitFor()
+    const result = await page.evaluate(() => {
+      const probe = document.createElement('p')
+      probe.style.cssText = 'position: absolute; left: 0; top: 0; margin: 0; font-size: 13px; line-height: 1.6'
+      probe.textContent = '提问、写作、绘图、制作视频均可在下方输入框中完成，额度与工具共用同一账号。'
+      document.querySelector('.v2-workspace').append(probe)
+      const text = probe.firstChild
+      const range = document.createRange()
+      function lastLine() {
+        let top = -Infinity
+        let line = ''
+        for (let index = 0; index < text.length; index += 1) {
+          range.setStart(text, index)
+          range.setEnd(text, index + 1)
+          const at = range.getBoundingClientRect().top
+          if (at > top + 1) { top = at; line = '' }
+          line += text.data[index]
+        }
+        return line.replace(/[。，、；：！？」』）]/g, '')
+      }
+      const widths = []
+      probe.style.setProperty('text-wrap-style', 'auto')
+      for (let width = 160; width <= 520; width += 1) {
+        probe.style.width = `${width}px`
+        if (lastLine().length === 1) widths.push(width)
+      }
+      probe.style.removeProperty('text-wrap-style')
+      const lines = widths.map((width) => { probe.style.width = `${width}px`; return lastLine() })
+      probe.remove()
+      const field = document.createElement('textarea')
+      document.querySelector('.v2-workspace').append(field)
+      const typing = getComputedStyle(field).getPropertyValue('text-wrap-style')
+      field.remove()
+      return { widths, lines, typing }
+    })
+    assert.ok(result.widths.length > 0, 'the default wrapping should leave a single character at some width')
+    assert.deepEqual(result.lines.filter((line) => line.length < 2), [])
+    assert.equal(result.typing, 'auto')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // Runs before the fixture mounts: the page reports a Mac the way Chromium does
 // on macOS, and every state the startup windows reach is recorded as it is
 // committed, so a frame laid out for the wrong system cannot slip by between
