@@ -4394,6 +4394,19 @@ test('the column says a film is being worked on while its workbench is busy, and
   } finally { await page.close() }
 })
 
+// 创作页复查第 8 条（yoyo 11-26 回「成片放前面」）：合成过的先说合成了，224 宽的那一列里不再被截成「…」。
+test('a joined film says so first in the column, where the narrow column no longer cuts it off', async () => {
+  const page = await openCreate('library=1&videoFilms=library')
+  try {
+    await page.getByTestId('nav-chat').click()
+    const row = page.getByTestId('create-item-video-fixture-film-cat')
+    await expect(row).toHaveText('橘猫回家已合成 · 2 个镜头')
+    assert.equal(await row.locator('.chat-conversation-text > span').evaluate((line) => line.scrollWidth <= line.clientWidth), true)
+    await expect(page.getByTestId('create-item-video-fixture-film-sea')).toHaveText('海边那条尚未编写分镜')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a film opens from the column into its workbench on the right, and is renamed and deleted from there', async () => {
   const page = await openCreate('videoFilms=1')
   try {
