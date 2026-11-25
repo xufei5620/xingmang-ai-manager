@@ -175,6 +175,24 @@ describe('codex remote page', () => {
     expect(markup).not.toContain('data-testid="settings-remote-feishu-peer"')
   })
 
+  // 0.2.25 M1：凭据填好了、只差文件夹时，开关说明不再叫人去「上方」找（文件夹那一行其实在下面「通用设置」里），
+  // 开关左边直接摆一颗「选择文件夹」；选好以后、开着的时候、还没填凭据的时候都不摆。
+  it('offers to choose the folder right beside the switch when that is the only step left', () => {
+    const waiting = render(snapshot({ workspaceDirectory: null }, { hasCredential: true, accountLabel: 'cli_a1b2c3d4' }))
+    expect(waiting).toContain('请先选择工作文件夹。')
+    expect(waiting).not.toContain('请先在上方选择工作文件夹。')
+    expect(waiting).toMatch(/<button[^>]*data-testid="settings-remote-feishu-choose-workspace"[^>]*>.*?<span>选择文件夹<\/span><\/button>/)
+    expect(buttonMarkup(waiting, 'settings-remote-feishu-choose-workspace')).not.toContain('disabled=""')
+    expect(waiting.indexOf('settings-remote-feishu-choose-workspace')).toBeLessThan(waiting.indexOf('data-testid="settings-remote-feishu-switch"'))
+    // 下面「通用设置」里那一行照旧在。
+    expect(buttonMarkup(waiting, 'settings-remote-workspace')).toBeTruthy()
+    expect(render(snapshot({ workspaceDirectory: '~/projects/demo' }, { hasCredential: true, accountLabel: 'cli_a1b2c3d4' })))
+      .not.toContain('settings-remote-feishu-choose-workspace')
+    expect(render(snapshot({ workspaceDirectory: null }))).not.toContain('settings-remote-feishu-choose-workspace')
+    const locked = render(snapshot({ workspaceDirectory: null, available: false, unavailableReason: '星芒正以管理员身份运行。' }, { hasCredential: true, accountLabel: 'cli_a1b2c3d4' }))
+    expect(buttonMarkup(locked, 'settings-remote-feishu-choose-workspace')).toContain('disabled=""')
+  })
+
   // YF-4：六步下面两颗，飞书开发者后台交给浏览器，教程是星芒自己的那一章；不给跳页的就只摆前一颗。
   it('puts the Feishu console and the tutorial under the setup steps, and drops the tutorial without a way to navigate', () => {
     const state = snapshot()

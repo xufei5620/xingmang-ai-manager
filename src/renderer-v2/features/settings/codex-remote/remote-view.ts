@@ -55,7 +55,7 @@ export function remoteSwitchHint(
   isMac = false,
 ): string {
   if (!channel.enabled && !channel.hasCredential) return credentialHint
-  if (!channel.enabled && !snapshot.workspaceDirectory) return '请先在上方选择工作文件夹。'
+  if (!channel.enabled && !snapshot.workspaceDirectory) return '请先选择工作文件夹。'
   const reopen = snapshot.autoStart ? '' : '，下次打开星芒需重新开启'
   const idle = snapshot.idleCloseHours ? `；无消息 ${snapshot.idleCloseHours} 小时后也会自动断开` : ''
   const hidden = isMac ? '窗口收到菜单栏后仍保持开启' : '窗口缩到托盘后仍保持开启'

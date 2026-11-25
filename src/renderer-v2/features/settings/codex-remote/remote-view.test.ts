@@ -72,7 +72,7 @@ describe('codex remote view', () => {
 
   it('names the missing step before the switch can be turned on', () => {
     expect(remoteSwitchHint(snapshot(), channel({ hasCredential: false }), '请先在上方填写飞书应用信息。')).toBe('请先在上方填写飞书应用信息。')
-    expect(remoteSwitchHint(snapshot({ workspaceDirectory: null }), channel(), '请先在上方填写飞书应用信息。')).toBe('请先在上方选择工作文件夹。')
+    expect(remoteSwitchHint(snapshot({ workspaceDirectory: null }), channel(), '请先在上方填写飞书应用信息。')).toBe('请先选择工作文件夹。')
     // 缺省「不自动关」（YF-10）：不说闲着几小时断开。
     expect(remoteSwitchHint(snapshot(), channel(), '请先在上方填写飞书应用信息。')).toBe('开启期间电脑不会自动休眠，但合上笔记本盖子后仍会休眠。窗口缩到托盘后仍保持开启，退出星芒后才会断开，下次打开星芒需重新开启。')
     expect(remoteSwitchHint(snapshot({ idleCloseHours: 4 }), channel(), '请先在上方填写飞书应用信息。')).toBe('开启期间电脑不会自动休眠，但合上笔记本盖子后仍会休眠。窗口缩到托盘后仍保持开启，退出星芒后才会断开，下次打开星芒需重新开启；无消息 4 小时后也会自动断开。')
