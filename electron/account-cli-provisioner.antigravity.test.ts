@@ -1,13 +1,18 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import fc from 'fast-check'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { managedCliKeyProfiles, sub2ApiManagedCliKeyProfiles } from './catalog'
 import {
   AntigravityServiceUnavailableError,
   resolveAntigravityManagedKey,
+  syncManagedCliKeySummary,
   type ManagedCliKeyStoreLike,
 } from './account-cli-provisioner'
 import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
-import type { StoredManagedCliKey } from './managed-cli-key-store'
+import type { SafeStorageLike } from './account-session-store'
+import { ManagedCliKeyStore, type StoredManagedCliKey } from './managed-cli-key-store'
 import { networkFailureMessages } from './network-failure'
 import { NewApiNetworkError } from './new-api-client'
 import type { RelayBackendClient } from './relay-backend'
@@ -340,5 +345,120 @@ describe('resolveAntigravityManagedKey with random inputs', () => {
         if (result) expect(result.models.length).toBeGreaterThan(0)
       },
     ), { numRuns: 60 })
+  })
+})
+
+// 复查 A 第 2 轮第 1 条：换账号时 Antigravity 在后台取密钥，跟登录那一轮同步同时读写本机密钥缓存。缓存的版本号整份文件
+// 一个，先存的那一方让后存的那一方被拒，签好的密钥没存下。
+describe('resolveAntigravityManagedKey next to other key work on the same cache', () => {
+  const directories: string[] = []
+
+  afterEach(() => {
+    for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true })
+  })
+
+  function storage(): SafeStorageLike {
+    return {
+      isEncryptionAvailable: () => true,
+      encryptString: (plainText) => Buffer.from(`fixture-cipher:${plainText}`),
+      decryptString: (ciphertext) => {
+        const encoded = ciphertext.toString('utf8')
+        if (!encoded.startsWith('fixture-cipher:')) throw new Error('unknown fixture ciphertext')
+        return encoded.slice('fixture-cipher:'.length)
+      },
+    }
+  }
+
+  function storePath(): string {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-antigravity-key-turn-'))
+    directories.push(directory)
+    return path.join(directory, 'managed-cli-keys.dat')
+  }
+
+  it('waits for a login sync that is still signing, so neither one loses its keys from the local cache', async () => {
+    const filePath = storePath()
+    const store = new ManagedCliKeyStore(filePath, storage())
+    let geminiCached: () => void = () => undefined
+    const geminiSaved = new Promise<void>((resolve) => { geminiCached = resolve })
+    const save = store.save.bind(store)
+    vi.spyOn(store, 'save').mockImplementation(async (userId, keys, expectedRevision) => {
+      const saved = await save(userId, keys, expectedRevision)
+      if (saved && keys.some((entry) => entry.provider === 'gemini')) geminiCached()
+      return saved
+    })
+    let nextId = 100
+    let loginSyncPaused = false
+    const provisionCliKey = vi.fn(async (input: { name?: string; group?: string } = {}) => {
+      const id = nextId++
+      // 登录那一轮签第一把时停一下：没排队时 Antigravity 那边正好在这时签完、存进缓存。排了队它要等这一轮做完，
+      // 这里等不到它，过一会儿自己接着签。
+      if (input.group !== geminiProfile.group && !loginSyncPaused) {
+        loginSyncPaused = true
+        await Promise.race([geminiSaved, new Promise((resolve) => setTimeout(resolve, 200))])
+      }
+      return { id, name: input.name ?? 'unnamed', key: `sk-${input.group}-${id}-secret-123456` }
+    })
+    const service = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
+      getActiveSiteId: vi.fn(() => 'solov'),
+      provisionCliKey,
+      listUsableGroups: vi.fn(async () => Object.values(managedCliKeyProfiles).map((profile) => ({ name: profile.group }))),
+    } as unknown as AccountService
+
+    const [summary, antigravity] = await Promise.all([
+      syncManagedCliKeySummary(service, store),
+      resolveAntigravityManagedKey(service, modelService(async () => models), store),
+    ])
+
+    expect(summary.storageWarning).toBeUndefined()
+    expect(summary.failed).toEqual([])
+    expect(summary.ready.map((entry) => entry.provider).sort()).toEqual(['claude', 'codex', 'grok'])
+    expect(antigravity.group).toBe(geminiProfile.group)
+    expect(provisionCliKey).toHaveBeenCalledTimes(4)
+    const cached = await new ManagedCliKeyStore(filePath, storage()).read(73)
+    expect(cached.map((entry) => entry.provider).sort()).toEqual(['claude', 'codex', 'gemini', 'grok'])
+    expect(cached.find((entry) => entry.provider === 'gemini')?.key).toBe(antigravity.key)
+  })
+
+  it('signs one key when the follow-up after an account change and a click on Open ask at the same time', async () => {
+    const { service, provisionCliKey } = accountService()
+    const store = memoryStore([storedKey('claude')])
+    const lister = modelService(async () => models)
+
+    const [first, second] = await Promise.all([
+      resolveAntigravityManagedKey(service, lister, store),
+      resolveAntigravityManagedKey(service, lister, store),
+    ])
+
+    expect(provisionCliKey).toHaveBeenCalledTimes(1)
+    expect(second).toEqual(first)
+    expect(store.cached.filter((entry) => entry.provider === 'gemini')).toHaveLength(1)
+  })
+
+  it('stores the new key again on top of the newer cache when its first save was turned down', async () => {
+    const { service } = accountService()
+    const store = memoryStore([storedKey('claude')])
+    let revision = 0
+    let refusals = 1
+    store.captureRevision = () => revision
+    store.save = vi.fn(async (_userId: number, keys: readonly StoredManagedCliKey[], expectedRevision?: number) => {
+      if (refusals > 0) {
+        // 别处刚存过一份：版本号往前走了，带着旧版本号的这一次被拒。
+        refusals -= 1
+        store.cached = [...store.cached, storedKey('codex')]
+        revision += 1
+        return false
+      }
+      if (expectedRevision !== revision) return false
+      store.cached = keys.map((entry) => ({ ...entry }))
+      revision += 1
+      return true
+    })
+
+    const result = await resolveAntigravityManagedKey(service, modelService(async () => models), store)
+
+    expect(store.save).toHaveBeenCalledTimes(2)
+    expect(store.cached.map((entry) => entry.provider).sort()).toEqual(['claude', 'codex', 'gemini'])
+    expect(store.cached.find((entry) => entry.provider === 'gemini')?.key).toBe(result.key)
   })
 })

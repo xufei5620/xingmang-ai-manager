@@ -122,6 +122,31 @@ class AccountSessionChangedError extends Error {
 
 const inFlightResolutions = new WeakMap<object, Map<string, Promise<ResolvedManagedCliKeys>>>()
 
+// 本机密钥缓存的版本号是整份文件一个（managed-cli-key-store.ts 的 revision）：登录那一轮从读缓存到存回去要联网签好几把，
+// 这中间别处存过一次，它带着旧版本号存就被拒，签好的密钥没存下，首页还冒一句「本地密钥缓存已被其他操作更新」。换账号时
+// Antigravity 在后台取密钥正好跟它同时（复查 A 第 2 轮第 1 条）。所以同一个账号「读缓存、签、存回去」这一整段按缓存排队，
+// 一次只走一段；同一段的重复调用照旧由 inFlightResolutions 合并。只按账号排：换走了的那个账号还没跑完的那段不挡新账号
+// （它下一次核账号就停下，不会存）。前面没人时当场开始，不多等一拍。
+const keyCacheTurns = new WeakMap<object, Map<number, Promise<void>>>()
+
+function withKeyCacheTurn<T>(keyStore: ManagedCliKeyStoreLike | undefined, userId: number, work: () => Promise<T>): Promise<T> {
+  if (!keyStore) return work()
+  let turns = keyCacheTurns.get(keyStore)
+  if (!turns) {
+    turns = new Map()
+    keyCacheTurns.set(keyStore, turns)
+  }
+  const accountTurns = turns
+  const previous = accountTurns.get(userId)
+  const turn = previous ? previous.then(work) : work()
+  const settled = turn.then(() => undefined, () => undefined)
+  accountTurns.set(userId, settled)
+  void settled.then(() => {
+    if (accountTurns.get(userId) === settled) accountTurns.delete(userId)
+  })
+  return turn
+}
+
 interface AccountSessionCapture {
   readonly userId: number
   readonly revision: number | null
@@ -404,7 +429,7 @@ async function resolveManagedCliKeys(
     inFlightResolutions.set(serviceKey, serviceResolutions)
   }
 
-  const operation = (async (): Promise<ResolvedManagedCliKeys> => {
+  const operation = withKeyCacheTurn(keyStore, userId, async (): Promise<ResolvedManagedCliKeys> => {
     assertSameAuthenticatedUser(accountService, capture)
     let cached: StoredManagedCliKey[] = []
     if (keyStore) {
@@ -573,7 +598,7 @@ async function resolveManagedCliKeys(
       regrouped,
       ...(storageWarning ? { storageWarning } : {}),
     }
-  })()
+  })
   const trackedOperation = operation.finally(() => {
     const current = inFlightResolutions.get(serviceKey)
     if (current?.get(resolutionKey) !== trackedOperation) return
@@ -618,16 +643,22 @@ async function cacheReplacementKey(
   assertSession: () => void,
 ): Promise<void> {
   try {
-    const stored = await keyStore.read(userId)
-    const revision = keyStore.captureRevision?.()
-    assertSession()
-    const cachedKeys = providerIds.flatMap((provider) => {
-      if (provider === replacement.provider) return [replacement]
-      const entry = stored.find((item) => item.provider === provider)
-      return entry ? [entry] : []
-    })
-    if (revision === undefined) await keyStore.save(userId, cachedKeys)
-    else await keyStore.save(userId, cachedKeys, revision)
+    // 只换自己这一格、别的格照读到的留，所以被拒（别处刚存过）时按最新那份再来一次是安全的；再被拒就算了，
+    // 下次用到时重签一把，不为缓存卡住客户。
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const stored = await keyStore.read(userId)
+      const revision = keyStore.captureRevision?.()
+      assertSession()
+      const cachedKeys = providerIds.flatMap((provider) => {
+        if (provider === replacement.provider) return [replacement]
+        const entry = stored.find((item) => item.provider === provider)
+        return entry ? [entry] : []
+      })
+      const saved = revision === undefined
+        ? await keyStore.save(userId, cachedKeys)
+        : await keyStore.save(userId, cachedKeys, revision)
+      if (saved !== false) return
+    }
   } catch (error) {
     rethrowAccountSessionChange(error)
   }
@@ -812,8 +843,21 @@ export async function resolveAntigravityManagedKey(
   keyStore?: ManagedCliKeyStoreLike,
 ): Promise<AntigravityManagedKey> {
   const capture = authenticatedSession(accountService)
+  // 跟登录那一轮、另一次取 Antigravity 密钥排同一队（withKeyCacheTurn）：换账号时后台跟的那一步和登录那一轮同时开始，
+  // 排在后面的读到的是前面存好的缓存，不会两边都签、互相把对方签好的冲掉；跟的那一步和客户点「打开」撞上也只签一把。
+  return withKeyCacheTurn(keyStore, capture.userId, () => resolveAntigravityManagedKeyInTurn(accountService, modelService, capture, keyStore))
+}
+
+async function resolveAntigravityManagedKeyInTurn(
+  accountService: ManagedKeyAccountService,
+  modelService: Pick<SystemService, 'fetchAvailableModels'>,
+  capture: AccountSessionCapture,
+  keyStore: ManagedCliKeyStoreLike | undefined,
+): Promise<AntigravityManagedKey> {
   const userId = capture.userId
   const assertSession = () => assertSameAuthenticatedUser(accountService, capture)
+  // 排队时可能换了账号：轮到这里先核一次，不替上一个账号读缓存、签密钥。
+  assertSession()
   const siteId = accountService.getActiveSiteId?.()
   const profiles = resolveManagedCliKeyProfiles(siteId)
   const profile = profiles.gemini
