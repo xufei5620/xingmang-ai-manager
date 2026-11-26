@@ -47,7 +47,7 @@ node "<本技能目录>/scripts/generate.mjs" --image "./ref.png" --image "./sty
 
 ## 模型怎么选
 
-一般不要传 `--model`：脚本和画图工具会用登录时按当前账号挑好的 OpenAI 图片模型（按 `gpt-image-2.6-flare` → `gpt-image-2.5-flare` → `gpt-image-2` 的顺序，账号有哪个用哪个）。这次没画出来会按账号里有的往下换，换了会在 stderr 说一句。
+一般不要传 `--model`：脚本和画图工具会用登录时按当前账号挑好的 OpenAI 图片模型（按 `gpt-image-2.6-flare` → `gpt-image-2.5-flare` → `gpt-image-2` 的顺序，账号有哪个用哪个）。只有这个型号目前无法使用时，才会按账号里有的往下换，换了会在结果里说明。
 
 用户点名时才用别的：
 
@@ -86,3 +86,4 @@ node "<本技能目录>/scripts/generate.mjs" --image "./ref.png" --image "./sty
 画图工具或脚本报错时，把报错里的那句话告诉用户，然后停下，等用户决定下一步。
 
 - 余额不足：请用户在管理工具中充值后再试。不要重试，不要换型号。
+- 其他报错：不要自动重试，也不要换型号。需要换 Key 或换型号的情况，画图工具和脚本已经自行处理。

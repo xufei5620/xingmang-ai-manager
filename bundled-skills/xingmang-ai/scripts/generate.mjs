@@ -36,11 +36,12 @@ const QUALITIES = ['low', 'medium', 'high', 'auto']
 const BACKGROUNDS = ['opaque', 'transparent', 'auto']
 
 class GenerateError extends Error {
-  constructor(message, retryable = false, upstream = false, unexplained = false) {
+  constructor(message, switchKey = false, modelUnavailable = false, unexplained = false) {
     super(message)
-    this.retryable = retryable
-    // 中转明确回了错误（不是连不上、超时）：自动挑的默认模型这样失败时，按顺序换下一个再试。
-    this.upstream = upstream
+    // 换一把 Key 可能就过了（401、403、429、503）。
+    this.switchKey = switchKey
+    // 这个型号现在用不了：自动挑的默认型号这样失败时，按顺序换下一个再试。
+    this.modelUnavailable = modelUnavailable
     // 中转回了错误却没说原因：报错时换成一句人话，不把状态码或错误类别名交给 AI 转述。
     this.unexplained = unexplained
   }
@@ -100,6 +101,15 @@ export function insufficientBalanceMessage(said) {
     ? `（剩余 ${moneyText(remaining)}）`
     : `（需要 ${moneyText(needed)}，剩余 ${moneyText(remaining)}）`
   return `当前账号余额不足，无法生成这张图片${amounts}。请在管理工具中充值后重试。`
+}
+
+// 只有「这个型号现在用不了」才换下一个型号：没有这个型号、这个分组里没有它的渠道、站上还没给它定价。
+// 内容审核不通过、参数不对、参考图有问题，换型号结果一样，还要把参考图再传一遍。与画图工具一致，测试钉住。
+const MODEL_UNAVAILABLE_CODES = new Set(['model_not_found', 'model_price_error'])
+const MODEL_UNAVAILABLE_PATTERN = /model_not_found|无可用渠道|no available channel|no available compatible accounts|倍率或价格未配置|ratio or price not set/i
+
+export function isModelUnavailable(status, code, message) {
+  return status === 404 || MODEL_UNAVAILABLE_CODES.has(code) || MODEL_UNAVAILABLE_PATTERN.test(typeof message === 'string' ? message : '')
 }
 
 // 不在这里 process.exit：Windows 上 fetch 的连接还在关，直接退出会打出 libuv 的 Assertion 并以 127 退出。
@@ -432,16 +442,18 @@ function upstreamFailure(result) {
   }
   // xAI 这类上游把原因直接写成字符串 error，也算说了原因。
   const message = typeof payload?.error === 'string' ? payload.error : payload?.error?.message || payload?.message
-  const code = payload?.error?.code ?? payload?.code
-  // 不带 retryable、upstream：不换 Key，也不换型号。
-  if (isInsufficientBalance(result.status, typeof code === 'string' ? code : '', message)) {
+  const rawCode = payload?.error?.code ?? payload?.code
+  const code = typeof rawCode === 'string' ? rawCode : ''
+  // 余额不足：不换 Key，也不换型号。
+  if (isInsufficientBalance(result.status, code, message)) {
     return new GenerateError(insufficientBalanceMessage(message))
   }
-  const retryable = [401, 403, 429, 503].includes(result.status)
+  const switchKey = [401, 403, 429, 503].includes(result.status)
+  const modelUnavailable = isModelUnavailable(result.status, code, message)
   if (typeof message !== 'string' || isUnexplainedUpstreamMessage(message)) {
-    return new GenerateError(`图片服务没说原因（HTTP ${result.status}）`, retryable, true, true)
+    return new GenerateError(`图片服务没说原因（HTTP ${result.status}）`, switchKey, modelUnavailable, true)
   }
-  return new GenerateError(redactUpstream(message), retryable, true)
+  return new GenerateError(redactUpstream(message), switchKey, modelUnavailable)
 }
 
 function extractImagePayload(payload) {
@@ -583,8 +595,8 @@ async function main() {
   const config = await readSkillConfig(skillRootFromScript())
   const origin = assertHttpsOrigin(config.baseUrl)
 
-  // 没点名、或点的就是主程序挑好的那个：按账号列表里有的顺序往下退（站上新开的这次没画出来：还没定价、渠道没好）。
-  // 点名要别的就只用它。
+  // 没点名、或点的就是主程序挑好的那个：这个型号现在用不了时（站上新开的还没定价、渠道没好），按账号列表里有的
+  // 顺序往下退。点名要别的就只用它。
   const requested = options.model || config.model || DEFAULT_MODEL
   const family = modelFamily(requested)
   const chain = defaultModelChain(config)
@@ -623,18 +635,18 @@ async function main() {
       } catch (error) {
         lastError = error instanceof Error ? error : new GenerateError('生成失败')
         lastModel = model
-        const retryable = error instanceof GenerateError && error.retryable
-        if (!retryable || index === keys.length - 1) break
+        const switchKey = error instanceof GenerateError && error.switchKey
+        if (!switchKey || index === keys.length - 1) break
         process.stderr.write('Codex Key 未能出图，已改用生图分组 Key。\n')
       }
     }
-    if (bytes || !(lastError instanceof GenerateError) || !lastError.upstream) break
+    if (bytes || !(lastError instanceof GenerateError) || !lastError.modelUnavailable) break
   }
   if (!bytes && lastError instanceof GenerateError && lastError.unexplained) {
     fail(unexplainedFailureMessage(lastModel, family, images.length > 0))
   }
   if (!bytes) fail(lastError ? lastError.message : '生成失败')
-  if (usedModel !== requested) process.stderr.write(`${requested} 没能出图，已改用 ${usedModel}。\n`)
+  if (usedModel !== requested) process.stderr.write(`${requested} 目前无法使用，已改用 ${usedModel}。\n`)
 
   const finalPath = outputPathFor(options.out, bytes)
   await writeFile(finalPath, bytes)

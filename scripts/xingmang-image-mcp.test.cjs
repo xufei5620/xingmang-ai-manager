@@ -54,6 +54,8 @@ async function withServer(config, respond, run, options = {}) {
       }
       requests.push(request)
       const reply = respond(request)
+      // A test that returns nothing drops the connection without an answer.
+      if (!reply) return void req.socket.destroy()
       res.writeHead(reply.status, { 'content-type': 'application/json' })
       res.end(JSON.stringify(reply.body))
     })
@@ -286,6 +288,7 @@ test('MCP server falls back to gpt-image-2 when the picked model is refused by t
     const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
     assert.equal(generated.result.isError, undefined, JSON.stringify({ result: generated.result, requests: requests.map((request) => [request.authorization, request.body.toString('utf8').slice(0, 80)]) }))
     assert.match(generated.result.content[1].text, /已用 gpt-image-2 画好图片/)
+    assert.match(generated.result.content[1].text, /gpt-image-2\.5-flare 目前无法使用，已改用 gpt-image-2。/)
     assert.deepEqual(requests.map((request) => [
       request.authorization,
       JSON.parse(request.body.toString('utf8')).model,
@@ -309,6 +312,64 @@ test('MCP server keeps a model the AI named on purpose and does not swap it', as
     assert.equal(failed.result.isError, true)
     assert.match(failed.result.content[0].text, /price not configured/)
     assert.deepEqual(requests.map((request) => JSON.parse(request.body.toString('utf8')).model), ['gpt-image-2.5-sunburst'])
+  })
+})
+
+test('MCP server changes model only when the relay says this model cannot be used right now', async () => {
+  const config = {
+    codexApiKey: 'sk-codex-not-real',
+    apiKey: 'sk-image-not-real',
+    model: 'gpt-image-2.6-flare',
+    fallbackModels: ['gpt-image-2.5-flare', 'gpt-image-2'],
+  }
+  function attempts(requests) {
+    return requests.map((request) => `${request.authorization.slice('Bearer sk-'.length, -'-not-real'.length)} ${jsonBody(request).model}`)
+  }
+  // Content moderation, a bad argument, a missing reference image: another model answers the same.
+  for (const refusal of [
+    { status: 400, body: { error: { message: '图片内容审核未通过，请修改描述后重试', code: 'content_policy_violation' } } },
+    { status: 400, body: { error: { message: '未找到目标图片' } } },
+    { status: 500, body: { error: { message: 'upstream exploded' } } },
+    { status: 502, body: '<html>Bad Gateway</html>' },
+  ]) {
+    await withServer(config, () => refusal, async ({ call, requests }) => {
+      const failed = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
+      assert.equal(failed.result.isError, true)
+      assert.deepEqual(attempts(requests), ['codex gpt-image-2.6-flare'], JSON.stringify(refusal))
+    })
+  }
+  // A dead key or a rate limit is worth the other key, never another model.
+  for (const status of [401, 429, 503]) {
+    await withServer(config, () => ({ status, body: { error: { message: 'try again later' } } }), async ({ call, requests }) => {
+      const failed = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
+      assert.equal(failed.result.isError, true)
+      assert.deepEqual(attempts(requests), ['codex gpt-image-2.6-flare', 'image gpt-image-2.6-flare'], String(status))
+    })
+  }
+  // The model is gone upstream (404, no key change) or has no channel in either group (503, both keys).
+  function retired(request) {
+    const model = jsonBody(request).model
+    if (model === 'gpt-image-2.6-flare') return { status: 404, body: { error: { message: 'The model does not exist', code: 'model_not_found' } } }
+    if (model === 'gpt-image-2.5-flare') return { status: 503, body: { error: { message: '当前分组 default 下对于模型 gpt-image-2.5-flare 无可用渠道', code: 'model_not_found' } } }
+    return ok()
+  }
+  await withServer(config, retired, async ({ call, requests }) => {
+    const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
+    assert.equal(generated.result.isError, undefined)
+    assert.match(generated.result.content[1].text, /gpt-image-2\.6-flare 目前无法使用，已改用 gpt-image-2。/)
+    assert.deepEqual(attempts(requests), [
+      'codex gpt-image-2.6-flare',
+      'codex gpt-image-2.5-flare',
+      'image gpt-image-2.5-flare',
+      'codex gpt-image-2',
+    ])
+  })
+  // No answer at all: the other key and the other models would not connect either.
+  await withServer(config, () => null, async ({ call, requests }) => {
+    const failed = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
+    assert.equal(failed.result.isError, true)
+    assert.match(failed.result.content[0].text, /连不上图片服务/)
+    assert.equal(requests.length, 1)
   })
 })
 
@@ -602,6 +663,8 @@ async function runGenerate(config, respond, args) {
       }
       requests.push(request)
       const reply = respond(request)
+      // A test that returns nothing drops the connection without an answer.
+      if (!reply) return void req.socket.destroy()
       res.writeHead(reply.status, { 'content-type': 'application/json' })
       res.end(JSON.stringify(reply.body))
     })
@@ -776,8 +839,9 @@ test('generate script turns a relay error without a reason into a plain sentence
   const config = { apiKey: 'sk-test-not-real', model: 'gpt-image-2.6-flare', fallbackModels: ['gpt-image-2'] }
   const draw = await runGenerate(config, badGateway, [])
   assert.equal(draw.code, 1)
-  assert.deepEqual(requestedModels(draw.requests), ['gpt-image-2.6-flare', 'gpt-image-2'])
-  assert.equal(draw.stderr.trim(), 'gpt-image-2 这次没能出图，图片服务没说原因。可以稍后再试一次。')
+  // A gateway error says nothing about the model, so the next one is not tried.
+  assert.deepEqual(requestedModels(draw.requests), ['gpt-image-2.6-flare'])
+  assert.equal(draw.stderr.trim(), 'gpt-image-2.6-flare 这次没能出图，图片服务没说原因。可以稍后再试一次。')
 
   // A reason the upstream wrote as a plain string still reaches the AI word for word.
   function plainString() {
@@ -817,12 +881,79 @@ test('generate script falls through the account default chain in order', async (
   const fallen = await runGenerate(config, refuseNewModels, [])
   assert.equal(fallen.code, 0, fallen.stderr)
   assert.deepEqual(requestedModels(fallen.requests), ['gpt-image-2.6-flare', 'gpt-image-2.5-flare', 'gpt-image-2'])
-  assert.match(fallen.stderr, /gpt-image-2\.6-flare 没能出图，已改用 gpt-image-2。/)
+  assert.match(fallen.stderr, /gpt-image-2\.6-flare 目前无法使用，已改用 gpt-image-2。/)
   assert.match(fallen.stderr, /已用 gpt-image-2 出图/)
 
   const named = await runGenerate(config, refuseNewModels, ['--model', 'gpt-image-2.5-flare'])
   assert.equal(named.code, 1)
   assert.deepEqual(requestedModels(named.requests), ['gpt-image-2.5-flare'])
+})
+
+test('generate script changes model only when the relay says this model cannot be used right now', async () => {
+  const config = {
+    codexApiKey: 'sk-codex-not-real',
+    apiKey: 'sk-image-not-real',
+    model: 'gpt-image-2.6-flare',
+    fallbackModels: ['gpt-image-2.5-flare', 'gpt-image-2'],
+  }
+  function moderation() {
+    return { status: 400, body: { error: { message: '图片内容审核未通过，请修改描述后重试', code: 'content_policy_violation' } } }
+  }
+  const refused = await runGenerate(config, moderation, [])
+  assert.equal(refused.code, 1)
+  assert.equal(refused.stderr.trim(), '图片内容审核未通过，请修改描述后重试')
+  assert.deepEqual(requestedModels(refused.requests), ['gpt-image-2.6-flare'])
+
+  const limited = await runGenerate(config, () => ({ status: 429, body: { error: { message: 'try again later' } } }), [])
+  assert.equal(limited.code, 1)
+  assert.deepEqual(limited.requests.map((request) => [request.authorization, jsonBody(request).model]), [
+    ['Bearer sk-codex-not-real', 'gpt-image-2.6-flare'],
+    ['Bearer sk-image-not-real', 'gpt-image-2.6-flare'],
+  ])
+
+  function retired(request) {
+    return jsonBody(request).model === 'gpt-image-2.6-flare'
+      ? { status: 404, body: { error: { message: 'The model does not exist', code: 'model_not_found' } } }
+      : ok()
+  }
+  const moved = await runGenerate(config, retired, [])
+  assert.equal(moved.code, 0, moved.stderr)
+  assert.deepEqual(requestedModels(moved.requests), ['gpt-image-2.6-flare', 'gpt-image-2.5-flare'])
+  assert.match(moved.stderr, /gpt-image-2\.6-flare 目前无法使用，已改用 gpt-image-2\.5-flare。/)
+})
+
+test('generate script and the MCP server agree on when a model counts as unavailable', async () => {
+  const { isModelUnavailable } = await import(pathToFileURL(generatePath).href)
+  for (const [status, code, message] of [
+    [404, '', 'not found'],
+    [503, 'model_not_found', '当前分组 default 下对于模型 gpt-image-3 无可用渠道'],
+    [503, '', '分组 图片模型 下模型 gpt-image-3 无可用渠道'],
+    [503, '', 'no available channel for gpt-image-2.5-flare'],
+    [503, '', 'No available compatible accounts'],
+    [500, 'model_price_error', '模型 gpt-image-3 倍率或价格未配置，请联系管理员设置'],
+  ]) {
+    assert.equal(isModelUnavailable(status, code, message), true, `${status} ${code} ${message}`)
+  }
+  for (const [status, code, message] of [
+    [400, 'content_policy_violation', '图片内容审核未通过'],
+    [400, '', '未找到目标图片'],
+    [503, '', 'Service Unavailable'],
+    [429, '', 'rate limited'],
+    [502, '', undefined],
+  ]) {
+    assert.equal(isModelUnavailable(status, code, message), false, `${status} ${code} ${message}`)
+  }
+  const generate = await readFile(generatePath, 'utf8')
+  const server = await readFile(serverPath, 'utf8')
+  for (const shared of [
+    "const MODEL_UNAVAILABLE_CODES = new Set(['model_not_found', 'model_price_error'])",
+    'const MODEL_UNAVAILABLE_PATTERN = /model_not_found|无可用渠道|no available channel|no available compatible accounts|倍率或价格未配置|ratio or price not set/i',
+    "return status === 404 || MODEL_UNAVAILABLE_CODES.has(code) || MODEL_UNAVAILABLE_PATTERN.test(typeof message === 'string' ? message : '')",
+    '目前无法使用，已改用',
+  ]) {
+    assert.ok(generate.includes(shared), shared)
+    assert.ok(server.includes(shared), shared)
+  }
 })
 
 test('generate script converts size tiers, aspect ratios and background', async () => {

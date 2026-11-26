@@ -42,8 +42,16 @@ const ALLOWED_RELAY_ORIGINS = new Set([
   'https://api.solov.cc',
   'https://xm-direct.solov.cc',
 ])
-// 这几种状态换一把 Key 可能就过了（没这个分组、额度、限流、上游忙），与生图技能一致。
-const RETRYABLE_STATUSES = new Set([401, 403, 429, 503])
+// 这几种状态换一把 Key 可能就过了（这把 Key 失效、所在分组没有这个型号、限流、上游忙），与生图技能一致。
+const SWITCH_KEY_STATUSES = new Set([401, 403, 429, 503])
+// 只有「这个型号现在用不了」才换下一个型号：没有这个型号、这个分组里没有它的渠道、站上还没给它定价。
+// 内容审核不通过、参数不对、参考图有问题，换型号结果一样，还要把参考图再传一遍。与生图技能脚本一致，测试钉住。
+const MODEL_UNAVAILABLE_CODES = new Set(['model_not_found', 'model_price_error'])
+const MODEL_UNAVAILABLE_PATTERN = /model_not_found|无可用渠道|no available channel|no available compatible accounts|倍率或价格未配置|ratio or price not set/i
+
+function isModelUnavailable(status, code, message) {
+  return status === 404 || MODEL_UNAVAILABLE_CODES.has(code) || MODEL_UNAVAILABLE_PATTERN.test(typeof message === 'string' ? message : '')
+}
 // 余额不足：认的是服务端自己写死的错误码和那几句话，和主程序 relay-quota-failure.ts 认的是同一套。两把 Key 是
 // 同一个账户，换 Key、换型号都一样没钱，认出来就立刻停。刻意不认光秃秃的 insufficient_quota 和「令牌额度不足」：
 // 前一个是上游渠道自己欠费，后一个是这把 Key 设了上限，叫客户充值就说错了。与生图技能脚本一致，测试钉住。
@@ -80,11 +88,12 @@ function insufficientBalanceMessage(said) {
 }
 
 class ImageError extends Error {
-  constructor(message, retryable = false, upstream = false) {
+  constructor(message, switchKey = false, modelUnavailable = false) {
     super(message)
-    this.retryable = retryable
-    // 中转明确回了错误（不是连不上、超时）：自动挑的默认模型这样失败时，按顺序换下一个再试。
-    this.upstream = upstream
+    // 换一把 Key 可能就过了。
+    this.switchKey = switchKey
+    // 这个型号现在用不了：自动挑的默认型号这样失败时，按顺序换下一个再试。
+    this.modelUnavailable = modelUnavailable
   }
 }
 
@@ -483,7 +492,8 @@ async function requestImage(origin, apiKey, input, images) {
   } catch (error) {
     if (error instanceof ImageError) throw error
     if (error?.name === 'AbortError') throw new ImageError('画图超时（300 秒），可以把画质调低再试')
-    throw new ImageError('连不上图片服务，请检查网络后再试', true)
+    // 连不上不换 Key 也不换型号：换了一样连不上。
+    throw new ImageError('连不上图片服务，请检查网络后再试')
   } finally {
     clearTimeout(timer)
   }
@@ -492,19 +502,21 @@ async function requestImage(origin, apiKey, input, images) {
   if (!response.ok) {
     // xAI 这类上游把原因直接写成字符串 error，也算说了原因。
     const message = typeof payload?.error === 'string' ? payload.error : payload?.error?.message || payload?.message
-    if (isInsufficientBalance(response.status, relayErrorCode(payload), message)) {
+    const code = relayErrorCode(payload)
+    if (isInsufficientBalance(response.status, code, message)) {
       process.stderr.write(`画图失败，余额不足（HTTP ${response.status}）\n`)
-      // 不带 retryable、upstream：不换 Key，也不换型号。
+      // 不换 Key，也不换型号。
       throw new ImageError(insufficientBalanceMessage(message))
     }
-    const retryable = RETRYABLE_STATUSES.has(response.status)
+    const switchKey = SWITCH_KEY_STATUSES.has(response.status)
+    const modelUnavailable = isModelUnavailable(response.status, code, message)
     if (typeof message !== 'string' || isUnexplainedUpstreamMessage(message)) {
       // 原话只进日志（MCP 的 stderr 由宿主记进日志，不进对话），AI 和客户看到的是一句人话。
       const said = typeof message === 'string' && message.trim() ? redactUpstream(message) : '没有内容'
       process.stderr.write(`画图失败，图片服务回了 HTTP ${response.status}：${said}\n`)
-      throw new ImageError(unexplainedFailureMessage(input.model, input.family, images.length > 0), retryable, true)
+      throw new ImageError(unexplainedFailureMessage(input.model, input.family, images.length > 0), switchKey, modelUnavailable)
     }
-    throw new ImageError(redactUpstream(message), retryable, true)
+    throw new ImageError(redactUpstream(message), switchKey, modelUnavailable)
   }
   const encoded = encodedImage(payload, input.family)
   if (typeof encoded !== 'string' || !encoded || encoded.length > MAX_RESPONSE_BYTES
@@ -518,8 +530,8 @@ async function requestImage(origin, apiKey, input, images) {
 async function generateImage(argumentsValue) {
   const input = parseArguments(argumentsValue)
   const config = await readConfig()
-  // AI 没点名、或点的就是主程序挑好的那个：按账号列表里有的顺序往下退（站上新开的这次没画出来：还没定价、渠道没好）。
-  // 点名要别的就只用它，失败原样交回去让 AI 自己换。
+  // AI 没点名、或点的就是主程序挑好的那个：这个型号现在用不了时（站上新开的还没定价、渠道没好），按账号列表里有的
+  // 顺序往下退。点名要别的就只用它，失败原样交回去。
   const requested = input.model ?? config.chain[0]
   const family = modelFamily(requested)
   const models = requested === config.chain[0] ? config.chain : [requested]
@@ -538,18 +550,22 @@ async function generateImage(argumentsValue) {
       try {
         const image = await requestImage(config.origin, keys[index].value, { ...input, model, family, resolved }, images)
         const done = images.length ? `已用 ${model} 改好图片` : `已用 ${model} 画好图片`
+        const notes = [
+          resolved.ignored ? '（Grok 不能指定尺寸和比例，按它自己的默认尺寸出的）' : '',
+          model === requested ? '' : `。${requested} 目前无法使用，已改用 ${model}。`,
+        ]
         return {
           content: [
             { type: 'image', data: image.encoded, mimeType: image.mimeType },
-            { type: 'text', text: resolved.ignored ? `${done}（Grok 不能指定尺寸和比例，按它自己的默认尺寸出的）` : done },
+            { type: 'text', text: `${done}${notes.join('')}` },
           ],
         }
       } catch (error) {
         lastError = error
-        if (!(error instanceof ImageError) || !error.retryable) break
+        if (!(error instanceof ImageError) || !error.switchKey) break
       }
     }
-    if (!(lastError instanceof ImageError) || !lastError.upstream) break
+    if (!(lastError instanceof ImageError) || !lastError.modelUnavailable) break
   }
   throw lastError ?? new ImageError('画图失败')
 }
