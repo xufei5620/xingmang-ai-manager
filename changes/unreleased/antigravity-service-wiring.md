@@ -1,3 +1,0 @@
-## 开发
-
-- Antigravity 接中转第七步：主进程接线（`antigravity-service.ts`，门面上是 `SystemService.antigravity`）。检测命令行和桌面端装没装、设置是不是当前账号这条线路的；一键装以后按需签 Gemini 分组的密钥写设置；带着设置打开桌面端（Windows 交给资源管理器、按 yoyo 11-23 打字同意的「Antigravity 免核签名」不核程序签名，安装包照核；Mac 核谷歌签名后起主程序，设置只放在环境里）和命令行（核谷歌签名后在选的文件夹开终端）。开着的桌面端拿不到这次的设置时不打开，回 `closeFirst`。新加 4 条主窗口通道 `antigravity:inspect` / `antigravity:install` / `antigravity:open-desktop` / `antigravity:open-cli` 和进度事件 `antigravity:install-progress`（入参只有 `cli` / `desktop` 和项目文件夹，密钥不过通道），两条打开是 scoped-queued；远程开关加 `antigravityCli`、`antigravityDesktop` 两样。Windows 上「开没开着」那一问在受限语言模式（开着应用控制策略）下也能跑、路径里的中文读得回来，Windows 冒烟加了一条两种模式对照。界面还没接，下一步做。
