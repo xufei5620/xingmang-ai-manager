@@ -324,6 +324,50 @@ test('MCP server redacts keys echoed back in upstream errors', async () => {
   })
 })
 
+// new-api v1.0.0-rc.24 service/billing_session.go：钱包余额不够这一次预扣时的原话。
+function insufficientBalance() {
+  return {
+    status: 403,
+    body: { error: { message: '预扣费额度失败, 用户剩余额度: ＄0.137692, 需要预扣费额度: ＄0.200000', type: 'new_api_error', code: 'insufficient_user_quota' } },
+  }
+}
+
+const insufficientBalanceSentence = '当前账号余额不足，无法生成这张图片（需要 $0.20，剩余 $0.14）。请在管理工具中充值后重试。'
+
+test('MCP server stops at the first request when the account balance is too low', async () => {
+  // Both keys belong to the same account and every model costs money: one refusal is the answer.
+  const config = {
+    codexApiKey: 'sk-codex-not-real',
+    apiKey: 'sk-image-not-real',
+    model: 'gpt-image-2.6-flare',
+    fallbackModels: ['gpt-image-2.5-flare', 'gpt-image-2'],
+  }
+  await withServer(config, insufficientBalance, async ({ call, requests, child }) => {
+    let log = ''
+    child.stderr.on('data', (chunk) => { log += chunk })
+    const failed = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
+    assert.equal(failed.result.isError, true)
+    assert.deepEqual(failed.result.content, [{ type: 'text', text: insufficientBalanceSentence }])
+    assert.equal(requests.length, 1)
+    assert.match(log, /余额不足（HTTP 403）/)
+  })
+})
+
+test('MCP server still switches keys when only the first key hit its own spending limit', async () => {
+  // A key's own cap is not the account balance: the other key may well have room.
+  function respond(request) {
+    if (request.authorization === 'Bearer sk-codex-not-real') {
+      return { status: 403, body: { error: { message: 'token quota is not enough, token remain quota: ＄0.010000, need quota: ＄0.200000', code: 'pre_consume_token_quota_failed' } } }
+    }
+    return ok()
+  }
+  await withServer({ codexApiKey: 'sk-codex-not-real', apiKey: 'sk-image-not-real' }, respond, async ({ call, requests }) => {
+    const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
+    assert.equal(generated.result.isError, undefined)
+    assert.deepEqual(requests.map((request) => request.authorization), ['Bearer sk-codex-not-real', 'Bearer sk-image-not-real'])
+  })
+})
+
 test('MCP server rejects gpt-image-2 sizes that are not multiples of 16', async () => {
   await withServer({ apiKey: 'sk-test-not-real' }, ok, async ({ call, requests }) => {
     const refused = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'x', size: '1000x1000' } })
@@ -650,6 +694,66 @@ test('generate script exits with code 1 and only the real error when the relay r
   assert.equal(failed.stdout, '')
   assert.match(failed.stderr, /prompt rejected/)
   assert.doesNotMatch(failed.stderr, /sk-leaked-value|Assertion/)
+})
+
+test('generate script stops at the first request when the account balance is too low', async () => {
+  const config = {
+    codexApiKey: 'sk-codex-not-real',
+    apiKey: 'sk-image-not-real',
+    model: 'gpt-image-2.6-flare',
+    fallbackModels: ['gpt-image-2.5-flare', 'gpt-image-2'],
+  }
+  const failed = await runGenerate(config, insufficientBalance, [])
+  assert.equal(failed.code, 1)
+  assert.equal(failed.stdout, '')
+  assert.equal(failed.stderr.trim(), insufficientBalanceSentence)
+  assert.equal(failed.requests.length, 1)
+})
+
+test('generate script and the MCP server agree on what counts as an empty balance and how to say it', async () => {
+  const { isInsufficientBalance, insufficientBalanceMessage } = await import(pathToFileURL(generatePath).href)
+  for (const [status, code, message] of [
+    [403, 'insufficient_user_quota', ''],
+    [403, '', '用户额度不足, 剩余额度: ＄0.000000'],
+    [403, '', '预扣费额度失败, 用户剩余额度: ＄0.137692, 需要预扣费额度: ＄0.200000'],
+    [403, '', '订阅额度不足或未配置订阅: no active subscription'],
+    [403, 'INSUFFICIENT_BALANCE', 'Insufficient account balance'],
+  ]) {
+    assert.equal(isInsufficientBalance(status, code, message), true, `${status} ${code} ${message}`)
+  }
+  for (const [status, code, message] of [
+    // The key's own cap, an upstream channel out of credit, and the same words on a status that is not a refusal.
+    [403, 'pre_consume_token_quota_failed', 'token quota is not enough, token remain quota: ＄0.010000'],
+    [403, '', '令牌额度不足'],
+    [429, 'insufficient_quota', 'You exceeded your current quota'],
+    [500, 'insufficient_user_quota', '用户额度不足'],
+    [403, '', undefined],
+  ]) {
+    assert.equal(isInsufficientBalance(status, code, message), false, `${status} ${code} ${message}`)
+  }
+  assert.equal(insufficientBalanceMessage('预扣费额度失败, 用户剩余额度: ＄0.137692, 需要预扣费额度: ＄0.200000'), insufficientBalanceSentence)
+  assert.equal(insufficientBalanceMessage('用户额度不足, 剩余额度: ＄0.05'), '当前账号余额不足，无法生成这张图片（剩余 $0.05）。请在管理工具中充值后重试。')
+  // Rounding must never print a remaining amount that looks sufficient.
+  assert.equal(
+    insufficientBalanceMessage('预扣费额度失败, 用户剩余额度: ＄0.199000, 需要预扣费额度: ＄0.200000'),
+    '当前账号余额不足，无法生成这张图片（需要 $0.20，剩余 $0.19）。请在管理工具中充值后重试。',
+  )
+  // Numbers without a currency sign may be quota units, and a missing reason has no numbers at all.
+  for (const said of ['用户额度不足, 剩余额度: 68846', 'Insufficient account balance', '', undefined, 42]) {
+    assert.equal(insufficientBalanceMessage(said), '当前账号余额不足，无法生成这张图片。请在管理工具中充值后重试。', String(said))
+  }
+  const generate = await readFile(generatePath, 'utf8')
+  const server = await readFile(serverPath, 'utf8')
+  for (const shared of [
+    'const INSUFFICIENT_BALANCE_STATUSES = new Set([401, 402, 403, 429])',
+    'const INSUFFICIENT_BALANCE_PATTERN = /insufficient_user_quota|用户额度不足|预扣费额度失败|订阅额度不足|user quota is not enough|INSUFFICIENT_BALANCE|insufficient account balance/i',
+    'const needed = centsOf(/需要预扣费额度[:：]\\s*[＄$]\\s*(\\d+(?:\\.\\d+)?)/.exec(text))',
+    'const remainingMatch = /剩余额度[:：]\\s*[＄$]\\s*(-?\\d+(?:\\.\\d+)?)/.exec(text)',
+    'return `当前账号余额不足，无法生成这张图片${amounts}。请在管理工具中充值后重试。`',
+  ]) {
+    assert.ok(generate.includes(shared), shared)
+    assert.ok(server.includes(shared), shared)
+  }
 })
 
 test('generate script turns a relay error without a reason into a plain sentence', async () => {

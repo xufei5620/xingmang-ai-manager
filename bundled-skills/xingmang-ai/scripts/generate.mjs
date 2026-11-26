@@ -67,6 +67,41 @@ export function unexplainedFailureMessage(model, family, editing) {
   return `${model} 这次没能${action}，图片服务没说原因。${next}`
 }
 
+// 余额不足：认的是服务端自己写死的错误码和那几句话，和主程序 relay-quota-failure.ts 认的是同一套。两把 Key 是
+// 同一个账户，换 Key、换型号都一样没钱，认出来就立刻停。刻意不认光秃秃的 insufficient_quota 和「令牌额度不足」：
+// 前一个是上游渠道自己欠费，后一个是这把 Key 设了上限，叫客户充值就说错了。与画图工具一致，测试钉住。
+const INSUFFICIENT_BALANCE_STATUSES = new Set([401, 402, 403, 429])
+const INSUFFICIENT_BALANCE_PATTERN = /insufficient_user_quota|用户额度不足|预扣费额度失败|订阅额度不足|user quota is not enough|INSUFFICIENT_BALANCE|insufficient account balance/i
+
+export function isInsufficientBalance(status, code, message) {
+  return INSUFFICIENT_BALANCE_STATUSES.has(status) && INSUFFICIENT_BALANCE_PATTERN.test(`${code} ${message}`)
+}
+
+function centsOf(match) {
+  return match ? Math.round(Number(match[1]) * 100) : null
+}
+
+function moneyText(cents) {
+  return `$${(Math.max(0, cents) / 100).toFixed(2)}`
+}
+
+/**
+ * 余额不足时给 AI 和客户的那句话。金额从服务端的原话里取（「用户剩余额度: ＄0.137692, 需要预扣费额度: ＄0.200000」），
+ * 只认带美元符号的：不带符号的数字可能是站上的额度单位，不当钱写出来。取不到就不写金额。
+ */
+export function insufficientBalanceMessage(said) {
+  const text = typeof said === 'string' ? said : ''
+  const needed = centsOf(/需要预扣费额度[:：]\s*[＄$]\s*(\d+(?:\.\d+)?)/.exec(text))
+  const remainingMatch = /剩余额度[:：]\s*[＄$]\s*(-?\d+(?:\.\d+)?)/.exec(text)
+  let remaining = centsOf(remainingMatch)
+  // 四舍五入后不能写成「需要 $0.20，剩余 $0.20」：差一点不够时剩余按舍去算。
+  if (needed !== null && remaining !== null && remaining >= needed) remaining = Math.floor(Number(remainingMatch[1]) * 100)
+  const amounts = remaining === null ? '' : needed === null
+    ? `（剩余 ${moneyText(remaining)}）`
+    : `（需要 ${moneyText(needed)}，剩余 ${moneyText(remaining)}）`
+  return `当前账号余额不足，无法生成这张图片${amounts}。请在管理工具中充值后重试。`
+}
+
 // 不在这里 process.exit：Windows 上 fetch 的连接还在关，直接退出会打出 libuv 的 Assertion 并以 127 退出。
 function fail(message) {
   throw new GenerateError(message)
@@ -397,6 +432,11 @@ function upstreamFailure(result) {
   }
   // xAI 这类上游把原因直接写成字符串 error，也算说了原因。
   const message = typeof payload?.error === 'string' ? payload.error : payload?.error?.message || payload?.message
+  const code = payload?.error?.code ?? payload?.code
+  // 不带 retryable、upstream：不换 Key，也不换型号。
+  if (isInsufficientBalance(result.status, typeof code === 'string' ? code : '', message)) {
+    return new GenerateError(insufficientBalanceMessage(message))
+  }
   const retryable = [401, 403, 429, 503].includes(result.status)
   if (typeof message !== 'string' || isUnexplainedUpstreamMessage(message)) {
     return new GenerateError(`图片服务没说原因（HTTP ${result.status}）`, retryable, true, true)

@@ -7,7 +7,7 @@
 - OpenAI、Grok：Header `Authorization: Bearer sk-...`
 - Nano Banana（Gemini 原生接口）：Header `x-goog-api-key: sk-...`（`Bearer` 站上也认）
 - 接口地址只用 `config.json` 的 `baseUrl`，不要改成第三方生图站
-- OpenAI 模型先用 `config.json` 的 Codex Key（`GPT`），401/403/429/503 再改用 `图片模型`（或旧名 `生图分组`）
+- OpenAI 模型先用 `config.json` 的 Codex Key（`GPT`），401/403/429/503 再改用 `图片模型`（或旧名 `生图分组`）；余额不足（403，`insufficient_user_quota`）时直接停止，不换 Key、不换型号
 - Nano Banana 和 Grok 只在 `图片模型` 分组里有，只用那把 Key；账号没有就提醒用户登录或开通
 - 不要走 `/pg/chat/completions`
 - Key 只存在本技能 `config.json`，登录时自动写入；不要读环境变量或 CLI 配置
