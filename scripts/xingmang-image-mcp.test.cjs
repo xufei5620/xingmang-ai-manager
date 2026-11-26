@@ -89,6 +89,21 @@ globalThis.fetch = function (input, init) {
 `)
     argv.unshift('--import', pathToFileURL(preloadPath).href)
   }
+  if (options.clock) {
+    // The file name carries the second the image was saved in. A test that is about two images
+    // landing in the same second pins the server's clock instead of hoping the runner is fast.
+    const clockPath = path.join(root, 'fixed-clock.mjs')
+    await writeFile(clockPath, `const RealDate = Date
+const fixed = new RealDate(${options.clock.join(', ')}).getTime()
+globalThis.Date = class extends RealDate {
+  constructor(...args) {
+    if (args.length) super(...args)
+    else super(fixed)
+  }
+}
+`)
+    argv.unshift('--import', pathToFileURL(clockPath).href)
+  }
   const child = spawn(process.execPath, argv, {
     // 'home' stands for a desktop app that starts the server outside any project.
     cwd: options.cwd === 'home' ? home : work,
@@ -1301,12 +1316,16 @@ test('MCP server never overwrites an earlier image and keeps each one under its 
       const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
       paths.push(savedPath(generated.result.content[1].text))
     }
-    assert.equal(new Set(paths).size, 3)
-    // Three images inside two seconds: at least two share a timestamp, and the later one gets a suffix.
-    assert.ok(paths.some((filePath) => /^\d{8}-\d{6}-gpt-image-2\.6-flare-2\.png$/.test(path.basename(filePath))), paths.join('\n'))
+    // All three were saved in the same second: the later ones get a suffix instead of replacing the first.
+    assert.deepEqual(paths, [
+      path.join(work, 'outputs', '20261126-173005-gpt-image-2.6-flare.png'),
+      path.join(work, 'outputs', '20261126-173005-gpt-image-2.6-flare-2.png'),
+      path.join(work, 'outputs', '20261126-173005-gpt-image-2.6-flare-3.png'),
+    ])
+    // The server closes each file before it answers, so the folder holds exactly these three.
     assert.deepEqual((await readdir(path.join(work, 'outputs'))).sort(), paths.map((filePath) => path.basename(filePath)).sort())
     for (const filePath of paths) assert.equal(await readFile(filePath, 'utf8'), 'fixture-image')
-  })
+  }, { clock: [2026, 10, 26, 17, 30, 5] })
 })
 
 test('MCP server saves into the pictures folder when it was not started inside a project', async () => {
