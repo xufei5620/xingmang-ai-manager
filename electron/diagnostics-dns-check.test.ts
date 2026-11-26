@@ -139,7 +139,7 @@ describe('dnsCheckOutcome', () => {
     const result = outcome('ok', 'wrong', { automatic: false, line: 'direct' }, 'darwin')
     expect(result).toMatchObject({ state: 'warn', details: { line1: 'ok', line2: 'wrong', fix: 'open-dns-settings', reroute: 'auto' } })
     expect(result.summary).toBe('本机使用的 DNS 将星芒线路2的地址解析错误，线路1解析正确。您选择了「只用线路2」，AI 工具将无法连接：'
-      + '请点击「去处理」改为「自动」，或将电脑的 DNS 改为 223.5.5.5 和 119.29.29.29。' + dnsSettingsGuidance('darwin'))
+      + '请点击「前往处理」改为「自动」，或将电脑的 DNS 改为 223.5.5.5 和 119.29.29.29。' + dnsSettingsGuidance('darwin'))
   })
 })
 

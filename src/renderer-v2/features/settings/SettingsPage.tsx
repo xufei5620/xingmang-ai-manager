@@ -1268,7 +1268,7 @@ export function SettingsPage({
           key="transfer"
           anchor="transfer"
           title={chatTransfer ? settingsItemLabel('transfer') : '导出设置'}
-          description={worksBusy === 'export' ? worksExportingText : worksBusy === 'import' ? worksImportingText : chatTransfer ? '文件中不含密码和密钥，在新电脑上登录即可' : '登录后再导出，会连聊天记录一起带上'}
+          description={worksBusy === 'export' ? worksExportingText : worksBusy === 'import' ? worksImportingText : chatTransfer ? '文件中不含密码和密钥，在新电脑上登录即可' : '登录后导出可包含聊天记录'}
           control={
             <Button
               size="sm"

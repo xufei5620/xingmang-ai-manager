@@ -1499,10 +1499,10 @@ describe('registerIpcHandlers', () => {
 
       await expect(electronMocks.handlers.get('video-studio:plan')!(trustedEvent(), {
         requestId: 'plan-1', group: '文字分组', model: 'gpt-6-astra', idea: '一只橘猫回家', shotCount: 1, secondsPerShot: 6, aspect: '9:16', captions: true,
-      })).rejects.toThrow(/^视频剪辑暂时停用了，修好以后会自动恢复。$/)
+      })).rejects.toThrow(/^视频剪辑已暂时停用，修复后将自动恢复。$/)
       await expect(electronMocks.handlers.get('video:generate')!(trustedEvent(), {
         requestId: 'video-1', group: '视频分组', model: 'grok-video', prompt: '海浪', seconds: '6', imageAssetIds: [imageId],
-      })).rejects.toThrow(/^视频剪辑暂时停用了/)
+      })).rejects.toThrow(/^视频剪辑已暂时停用/)
       expect(chatService.completeOnce).not.toHaveBeenCalled()
       expect(videoService.generate).not.toHaveBeenCalled()
       await expect(electronMocks.handlers.get('video:resume')!(trustedEvent(), 'shot-1')).resolves.toEqual(clip)
@@ -4961,13 +4961,13 @@ describe('registerIpcHandlers', () => {
     const event = trustedEvent()
     // 状态文件已经读过：开着的照原来同步往下走，关着的当场抛；同步、异步两种处理器都按被拒算。
 
-    await expect(async () => electronMocks.handlers.get('cli:install')!(event, 'codex')).rejects.toThrow(/^Codex CLI 的安装和更新暂时停用了，修好以后会自动恢复。$/)
-    await expect(async () => electronMocks.handlers.get('cli:uninstall')!(event, 'codex', { reinstall: true })).rejects.toThrow(/^Codex CLI 的安装和更新暂时停用了/)
-    await expect(async () => electronMocks.handlers.get('cli:launch')!(event, 'codex', os.homedir())).rejects.toThrow(/^暂时不能从星芒打开 Codex CLI，修好以后会自动恢复。$/)
-    await expect(async () => electronMocks.handlers.get('desktop:install-codex')!(event)).rejects.toThrow(/^Codex 桌面端的安装和更新暂时停用了/)
-    await expect(async () => electronMocks.handlers.get('desktop:launch-codex')!(event, 'open')).rejects.toThrow(/^暂时不能从星芒打开 Codex 桌面端，/)
-    await expect(async () => electronMocks.handlers.get('external-clients:install')!(event, 'opencode')).rejects.toThrow(/^OpenCode 的安装和更新暂时停用了/)
-    await expect(async () => electronMocks.handlers.get('external-clients:launch')!(event, 'workbuddy')).rejects.toThrow(/^暂时不能从星芒打开 WorkBuddy，/)
+    await expect(async () => electronMocks.handlers.get('cli:install')!(event, 'codex')).rejects.toThrow(/^Codex CLI 的安装和更新已暂时停用，修复后将自动恢复。$/)
+    await expect(async () => electronMocks.handlers.get('cli:uninstall')!(event, 'codex', { reinstall: true })).rejects.toThrow(/^Codex CLI 的安装和更新已暂时停用/)
+    await expect(async () => electronMocks.handlers.get('cli:launch')!(event, 'codex', os.homedir())).rejects.toThrow(/^暂时无法从星芒打开 Codex CLI，修复后将自动恢复。$/)
+    await expect(async () => electronMocks.handlers.get('desktop:install-codex')!(event)).rejects.toThrow(/^Codex 桌面端的安装和更新已暂时停用/)
+    await expect(async () => electronMocks.handlers.get('desktop:launch-codex')!(event, 'open')).rejects.toThrow(/^暂时无法从星芒打开 Codex 桌面端，/)
+    await expect(async () => electronMocks.handlers.get('external-clients:install')!(event, 'opencode')).rejects.toThrow(/^OpenCode 的安装和更新已暂时停用/)
+    await expect(async () => electronMocks.handlers.get('external-clients:launch')!(event, 'workbuddy')).rejects.toThrow(/^暂时无法从星芒打开 WorkBuddy，/)
     expect(service.installCli).not.toHaveBeenCalled()
     expect(service.uninstallCli).not.toHaveBeenCalled()
     expect(service.launchProvider).not.toHaveBeenCalled()
@@ -10400,7 +10400,7 @@ describe('provider-sessions:open-directory', () => {
     providerSessionsService.resolveWorkspace.mockResolvedValue(path.join(directory, 'moved-away'))
 
     await expect(electronMocks.handlers.get('provider-sessions:open-directory')!(trustedEvent(), 'claude:1'))
-      .rejects.toThrow('已经不在了')
+      .rejects.toThrow('已不存在')
 
     expect(electronMocks.openPath).not.toHaveBeenCalled()
   })
@@ -11168,10 +11168,10 @@ describe('Antigravity channels', () => {
     remoteFeatures.update(['install:antigravityCli', 'install:antigravityDesktop', 'launch:antigravityCli', 'launch:antigravityDesktop'])
     register(service, undefined, undefined, undefined, undefined, undefined, {}, { remoteFeatures })
     const event = trustedEvent()
-    await expect(async () => electronMocks.handlers.get('antigravity:install')!(event, 'cli')).rejects.toThrow(/^Antigravity 命令行的安装和更新暂时停用了，修好以后会自动恢复。$/)
-    await expect(async () => electronMocks.handlers.get('antigravity:install')!(event, 'desktop')).rejects.toThrow(/^Antigravity 的安装和更新暂时停用了/)
-    await expect(async () => electronMocks.handlers.get('antigravity:open-desktop')!(event)).rejects.toThrow(/^暂时不能从星芒打开 Antigravity，/)
-    await expect(async () => electronMocks.handlers.get('antigravity:open-cli')!(event, os.homedir())).rejects.toThrow(/^暂时不能从星芒打开 Antigravity 命令行，/)
+    await expect(async () => electronMocks.handlers.get('antigravity:install')!(event, 'cli')).rejects.toThrow(/^Antigravity 命令行的安装和更新已暂时停用，修复后将自动恢复。$/)
+    await expect(async () => electronMocks.handlers.get('antigravity:install')!(event, 'desktop')).rejects.toThrow(/^Antigravity 的安装和更新已暂时停用/)
+    await expect(async () => electronMocks.handlers.get('antigravity:open-desktop')!(event)).rejects.toThrow(/^暂时无法从星芒打开 Antigravity，/)
+    await expect(async () => electronMocks.handlers.get('antigravity:open-cli')!(event, os.homedir())).rejects.toThrow(/^暂时无法从星芒打开 Antigravity 命令行，/)
     expect(antigravity.install).not.toHaveBeenCalled()
     expect(antigravity.openDesktop).not.toHaveBeenCalled()
     expect(antigravity.openCli).not.toHaveBeenCalled()

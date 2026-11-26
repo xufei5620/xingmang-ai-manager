@@ -92,7 +92,7 @@ function isInsideOneDrive(directory: string, env: NodeJS.ProcessEnv): boolean {
 export function resolveStarterWorkspaceContainer(parentDirectory: string, platform: NodeJS.Platform): string {
   const impl = platform === 'win32' ? path.win32 : path.posix
   if (typeof parentDirectory !== 'string' || !impl.isAbsolute(parentDirectory)) {
-    throw new Error('找不到可以放项目的文件夹')
+    throw new Error('未找到可存放项目的文件夹')
   }
   return impl.join(parentDirectory, starterWorkspaceContainerName)
 }
@@ -114,7 +114,7 @@ export function createStarterWorkspace(parentDirectory: string, context: Workspa
     throw new Error('该位置不适合存放项目')
   }
   // 上层目录本身不替用户建：它不存在说明系统报的位置不对，建出来的东西用户也找不到。
-  if (!isExistingDirectory(parentDirectory)) throw new Error('找不到可以放项目的文件夹')
+  if (!isExistingDirectory(parentDirectory)) throw new Error('未找到可存放项目的文件夹')
   try {
     ensureSafeDataDirectory(container, '项目文件夹')
     for (let index = 1; index <= maxStarterWorkspaceIndex; index += 1) {

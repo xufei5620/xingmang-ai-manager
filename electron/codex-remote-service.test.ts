@@ -1085,7 +1085,7 @@ describe('codex-remote-service enabling', () => {
     expect(await s.service.snapshot()).toMatchObject({ available: true, alwaysElevated: true })
     // The reminder is about what Codex may do here; with remote control unavailable
     // there is nothing for it to warn about, and the unavailable notice says enough.
-    s.unavailable.reason = '遥控暂时停用了，修好以后会自动恢复。'
+    s.unavailable.reason = '遥控已暂时停用，修复后将自动恢复。'
     const suspended = await s.service.snapshot()
     expect(suspended.available).toBe(false)
     expect(suspended.alwaysElevated).toBeUndefined()
@@ -4179,14 +4179,14 @@ describe('codex-remote-service lifecycle', () => {
     expect(refreshed).toMatchObject({ available: true, channels: { feishu: { enabled: true } } })
     expect(s.snapshots).toContain(refreshed)
 
-    s.unavailable.reason = '遥控暂时停用了，修好以后会自动恢复。'
+    s.unavailable.reason = '遥控已暂时停用，修复后将自动恢复。'
     const snapshot = await s.service.applyAvailability()
     expect(channel.texts()).toContain('遥控已在电脑上关闭。')
     expect(channel.stopped).toBe(1)
     expect(codex.kills).toContain('SIGTERM')
-    expect(snapshot).toMatchObject({ available: false, unavailableReason: '遥控暂时停用了，修好以后会自动恢复。', channels: { feishu: { enabled: false } } })
+    expect(snapshot).toMatchObject({ available: false, unavailableReason: '遥控已暂时停用，修复后将自动恢复。', channels: { feishu: { enabled: false } } })
     expect(s.logs).toContain('remote.channel-suspended')
-    await expect(s.service.setChannelEnabled('feishu', true)).rejects.toThrow('遥控暂时停用了')
+    await expect(s.service.setChannelEnabled('feishu', true)).rejects.toThrow('遥控已暂时停用')
 
     // 放开以后不替他打开，等他自己点。
     s.unavailable.reason = null
@@ -4199,8 +4199,8 @@ describe('codex-remote-service lifecycle', () => {
   // 打开要先等读设置、读凭据、查 Codex 装没装，那几秒渠道还不算开着，远程关停不到它（R29-06）。
   it('does not connect a channel that remote control was switched off for while it was still opening', async () => {
     const s = await setup()
-    const opening = expect(s.service.setChannelEnabled('feishu', true)).rejects.toThrow('遥控暂时停用了，修好以后会自动恢复。')
-    s.unavailable.reason = '遥控暂时停用了，修好以后会自动恢复。'
+    const opening = expect(s.service.setChannelEnabled('feishu', true)).rejects.toThrow('遥控已暂时停用，修复后将自动恢复。')
+    s.unavailable.reason = '遥控已暂时停用，修复后将自动恢复。'
     await s.service.applyAvailability()
     await opening
     expect(s.channels).toHaveLength(0)
@@ -4220,7 +4220,7 @@ describe('codex-remote-service lifecycle', () => {
     const s = await setup({ secretsGate: new Promise<void>((resolve) => { release = resolve }) })
     const opening = s.service.setChannelEnabled('feishu', true)
     await vi.waitFor(() => expect(s.channels).toHaveLength(1))
-    s.unavailable.reason = '遥控暂时停用了，修好以后会自动恢复。'
+    s.unavailable.reason = '遥控已暂时停用，修复后将自动恢复。'
     await s.service.applyAvailability()
     release()
     expect(await opening).toMatchObject({ available: false, channels: { feishu: { enabled: false } } })
@@ -4235,7 +4235,7 @@ describe('codex-remote-service lifecycle', () => {
     const channel = await enabledAndPaired(s)
     channel.stop = async () => {
       channel.stopped += 1
-      s.unavailable.reason = '遥控暂时停用了，修好以后会自动恢复。'
+      s.unavailable.reason = '遥控已暂时停用，修复后将自动恢复。'
       await s.service.applyAvailability()
     }
     const snapshot = await s.service.saveChannelCredential('feishu', JSON.stringify({ appId: 'cli_abcdef', appSecret: 'y'.repeat(16) }), 'cli_abcdef')
@@ -4249,7 +4249,7 @@ describe('codex-remote-service lifecycle', () => {
     const codex = await prompted(s, channel)
     channel.stop = async () => {
       channel.stopped += 1
-      s.unavailable.reason = '遥控暂时停用了，修好以后会自动恢复。'
+      s.unavailable.reason = '遥控已暂时停用，修复后将自动恢复。'
     }
     const snapshot = await s.service.saveChannelCredential('feishu', JSON.stringify({ appId: 'cli_abcdef', appSecret: 'y'.repeat(16) }), 'cli_abcdef')
     expect(s.channels).toHaveLength(1)

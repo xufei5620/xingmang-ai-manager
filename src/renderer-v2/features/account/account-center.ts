@@ -86,7 +86,7 @@ export interface SubscriptionOverview {
   /** 已用和总额（美元）；不限额或后台没给能算的数时为 null，就不画进度条。 */
   usedUsd: number | null
   totalUsd: number | null
-  /** 快到期或快用完：标签写「快用完了」，链接写「去续费」。 */
+  /** 快到期或快用完：标签写「快用完了」，链接写「前往续费」。 */
   short: boolean
   preference: AccountSubscriptionBillingPreference | null
 }

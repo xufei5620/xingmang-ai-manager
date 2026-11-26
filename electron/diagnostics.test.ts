@@ -2514,7 +2514,7 @@ describe('diagnostics', () => {
       details: { elevated: true, executionMode: 'trusted-only', probeFailure: 'blocked', probeElapsedMs: 15_020 },
     })
     expect(item?.summary).toContain('已按管理员方式处理')
-    expect(item?.summary).toContain('被安全软件或电脑的管控策略拦下了')
+    expect(item?.summary).toContain('被安全软件或电脑的管控策略拦截')
     expect(item?.summary).toContain('直接双击重新打开')
     // 上游英文原文只进运行日志，不上屏；文案不出现技术词。
     expect(item?.summary).not.toMatch(/Add-Type|Compilation|PowerShell|管理员组|SID/)
@@ -3453,7 +3453,7 @@ describe('CERTIFICATE_TRUST', () => {
     const { input } = withProbe({ plain: 'cert', system: 'cert', version: 'v22.12.0' })
     expect(await certificateItem(input)).toMatchObject({
       state: 'fail',
-      summary: '本机安装了公司或安全软件的证书，但电脑上的 Node.js 版本过旧，无法识别该证书。请点击「去处理」更新至新版本。',
+      summary: '本机安装了公司或安全软件的证书，但电脑上的 Node.js 版本过旧，无法识别该证书。请点击「前往处理」更新至新版本。',
       details: { verdict: 'outdatedNode', nodeVersion: 'v22.12.0' },
     })
   })

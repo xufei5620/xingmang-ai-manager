@@ -35,7 +35,7 @@ describe('resolveOpenableSessionWorkspace', () => {
   it('refuses a folder that is gone', async () => {
     const directory = workspace()
     await expect(resolveOpenableSessionWorkspace(path.join(directory, 'moved-away')))
-      .rejects.toThrow('已经不在了')
+      .rejects.toThrow('已不存在')
   })
 
   it('refuses a file, so the shell can never be asked to run one', async () => {

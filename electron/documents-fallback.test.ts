@@ -268,7 +268,7 @@ describe('buildDocumentsFallbackPrompt', () => {
   it('says where the project went, why, and offers to open it', () => {
     const prompt = buildDocumentsFallbackPrompt('C:\\Users\\peaker\\XingmangProjects\\my-project', 'win32')
 
-    expect(prompt.message).toBe('「文档」文件夹不让写，项目放在了 C:\\Users\\peaker\\XingmangProjects\\my-project')
+    expect(prompt.message).toBe('「文档」文件夹禁止写入，项目已改为保存在 C:\\Users\\peaker\\XingmangProjects\\my-project')
     expect(prompt.detail).toContain('受控文件夹访问')
     expect(prompt.buttons[prompt.openFolderIndex]).toBe('打开文件夹')
     expect(`${prompt.title}${prompt.message}${prompt.detail}`).not.toMatch(/EPERM|EACCES|权限位|%USERPROFILE%/)

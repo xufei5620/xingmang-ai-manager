@@ -190,7 +190,7 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
   })
   registerTrustedHandler('config:save-standing-instructions', async (_event, text: unknown) => {
     const instructions = validateStandingInstructions(text)
-    if (!service.saveStandingInstructions) throw new Error('这个版本还不能保存长期嘱咐')
+    if (!service.saveStandingInstructions) throw new Error('当前版本暂不支持保存长期嘱咐')
     return service.saveStandingInstructions(instructions)
   })
   async function switchAccountSourceOnce(provider: ProviderId, target: 'account' | 'official') {

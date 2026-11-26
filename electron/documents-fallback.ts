@@ -236,12 +236,12 @@ export interface DocumentsFallbackPrompt {
 /** 项目改建到主目录后弹的那一句：说清楚为什么换、换到了哪，给「打开文件夹」。 */
 export function buildDocumentsFallbackPrompt(directory: string, platform: NodeJS.Platform): DocumentsFallbackPrompt {
   const cause = platform === 'win32'
-    ? '常见原因是 Windows 安全中心开了「受控文件夹访问」，或者安全软件开了文档保护。'
-    : '常见原因是系统或安全软件的文档保护。'
+    ? '常见原因是 Windows 安全中心开启了「受控文件夹访问」，或安全软件开启了文档保护。'
+    : '常见原因是系统或安全软件开启了文档保护。'
   return {
-    title: '项目放在了个人文件夹',
-    message: `「文档」文件夹不让写，项目放在了 ${directory}`,
-    detail: `${cause}项目照常能用；以后「文档」还是不让写时，新项目也会放在这里。`,
+    title: '项目已保存在个人文件夹',
+    message: `「文档」文件夹禁止写入，项目已改为保存在 ${directory}`,
+    detail: `${cause}项目可正常使用；此后「文档」仍禁止写入时，新项目也将保存在此处。`,
     buttons: ['知道了', '打开文件夹'],
     openFolderIndex: 1,
   }

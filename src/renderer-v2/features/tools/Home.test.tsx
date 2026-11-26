@@ -950,7 +950,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     // 终端和 Homebrew 那套挪进教程，首页不再放。
     expect(markup).not.toContain('data-testid="home-runtime-guide-node"')
     expect(markup).not.toContain('brew install node')
-    expect(markup).not.toContain('去官网下载 Node.js')
+    expect(markup).not.toContain('前往官网下载 Node.js')
     // Mac 上不提权，Windows 那句管理员授权不能出现。
     expect(markup).not.toContain('data-testid="home-runtime-node-elevation"')
   })
@@ -962,7 +962,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     expect(markup).toContain('本机尚无可用的 Node.js')
     expect(markup).toContain('准备 Node.js')
     expect(markup).not.toContain('data-testid="home-runtime-guide-node"')
-    expect(markup).not.toContain('去官网下载 Node.js')
+    expect(markup).not.toContain('前往官网下载 Node.js')
     expect(markup).not.toContain('包管理器')
     expect(markup).not.toContain('data-testid="home-runtime-node-elevation"')
   })
@@ -1036,7 +1036,7 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
     expect(markup).not.toContain('四个命令行工具')
     expect(markup).toContain('sudo apt install python3')
     expect(markup).not.toContain('data-testid="home-runtime-python"')
-    expect(markup).not.toContain('去官网下载 Python')
+    expect(markup).not.toContain('前往官网下载 Python')
     expect(markup).not.toContain('data-testid="home-runtime-tutorial"')
     expect(markup).not.toContain('完整步骤在教程里')
     expect(markup).not.toContain('Gemini CLI 需要它')
@@ -1665,11 +1665,11 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
       },
     } as unknown as ToolboxSnapshot
     const opencode = {
-      ...macClient, tool: 'opencode', installHint: '本机缺少系统自带的应用安装组件，无法一键安装；请点击「去官网下载」，安装完成后返回重新检测',
+      ...macClient, tool: 'opencode', installHint: '本机缺少系统自带的应用安装组件，无法一键安装；请点击「前往官网下载」，安装完成后返回重新检测',
       officialDownloadUrl: 'https://opencode.ai/desktop',
     } as typeof macClient
     const withDownload = render({}, undefined, { snapshot: windows, externalClients: [opencode], onOpenExternalDownload: () => undefined })
-    expect(rowButton(withDownload, 'opencode')).toContain('去官网下载')
+    expect(rowButton(withDownload, 'opencode')).toContain('前往官网下载')
     expect(rowButton(withDownload, 'opencode')).not.toContain('disabled')
     expect(withDownload).not.toContain('暂不支持')
     expect(withDownload).not.toMatch(/winget|ENOENT/i)
@@ -1701,7 +1701,7 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
     expect(button).not.toContain('disabled')
     expect(markup).toContain('安装 WorkBuddy 后，星芒将自动关联当前账号')
     expect(markup).toContain('未安装')
-    for (const gone of ['去官网下载', '安装指南', '暂不支持', '办公助手，可以接当前账号的模型']) expect(markup, gone).not.toContain(gone)
+    for (const gone of ['前往官网下载', '安装指南', '暂不支持', '办公助手，可以接当前账号的模型']) expect(markup, gone).not.toContain(gone)
   })
 })
 
@@ -1758,7 +1758,7 @@ describe('renderer-v2 home balance for subscription customers', () => {
   it('warns about renewal when the subscription is about to end and the wallet cannot take over', () => {
     const markup = render({}, undefined, { balance: empty, subscription: { ...subscription, expiringSoon: true } })
     expect(markup).toContain('订阅 10月3日到期，到期后将从余额扣费。')
-    expect(markup).toContain('去续费')
+    expect(markup).toContain('前往续费')
     expect(markup).not.toContain('home-low-balance')
   })
 })

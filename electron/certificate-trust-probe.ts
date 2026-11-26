@@ -103,7 +103,7 @@ export function certificateTrustVerdict(input: {
 export const certificateTrustSummaries: Readonly<Record<CertificateTrustVerdict, string>> = {
   direct: '工具使用自带的证书即可连接星芒服务，本机未更换网页证书。',
   systemTrusted: '本机安装了公司或安全软件的证书。星芒已让安装工具的过程和从星芒打开的工具信任该证书，可正常使用。',
-  outdatedNode: '本机安装了公司或安全软件的证书，但电脑上的 Node.js 版本过旧，无法识别该证书。请点击「去处理」更新至新版本。',
+  outdatedNode: '本机安装了公司或安全软件的证书，但电脑上的 Node.js 版本过旧，无法识别该证书。请点击「前往处理」更新至新版本。',
   untrusted: '连接星芒时收到的证书并非星芒的证书，通常是网络中有设备在拦截（常见于运营商、公司或学校网络）。请更换网络（如手机热点）后重新检查；如使用公司或学校网络，请联系网络管理员。',
   elevated: '星芒当前以管理员身份运行，此时不允许工具信任电脑上另行安装的证书。请关闭星芒后直接双击正常打开。',
   unknown: '本次未能直接连接星芒服务，无法判断证书情况。如工具使用正常，无需处理。',

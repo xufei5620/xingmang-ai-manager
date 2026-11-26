@@ -53,8 +53,8 @@ export function validateStandingInstructions(value: unknown): string {
   if (typeof value !== 'string') throw new Error('长期嘱咐格式错误')
   const text = value.replace(/\r\n?/g, '\n').trim()
   if ([...text].length > STANDING_INSTRUCTIONS_MAX_LENGTH) throw new Error(`长期嘱咐最多 ${STANDING_INSTRUCTIONS_MAX_LENGTH} 个字`)
-  if (/[\u0000-\u0008\u000b-\u001f\u007f]/.test(text)) throw new Error('长期嘱咐里有不能用的字符')
-  if (text.includes(STANDING_INSTRUCTIONS_MARKER)) throw new Error('长期嘱咐里不能有星芒自己的标记那句话')
+  if (/[\u0000-\u0008\u000b-\u001f\u007f]/.test(text)) throw new Error('长期嘱咐中包含不支持的字符')
+  if (text.includes(STANDING_INSTRUCTIONS_MARKER)) throw new Error('长期嘱咐中不能包含星芒的内部标记')
   return text
 }
 

@@ -59,7 +59,7 @@ const claudeApplicationId = `${claudeFamily}!Claude`
 const maximumProbeBytes = 256 * 1024
 // 找不到可信的系统 winget 时，原因是 ENOENT、包身份校验失败之类的内部细节，客户看不懂
 // 也做不了什么；首页行里只说装不了、怎么办，原因写进运行日志给客服查。
-export const externalClientWingetUnavailableHint = '本机缺少系统自带的应用安装组件，无法一键安装；请点击「去官网下载」，安装完成后返回重新检测'
+export const externalClientWingetUnavailableHint = '本机缺少系统自带的应用安装组件，无法一键安装；请点击「前往官网下载」，安装完成后返回重新检测'
 // Windows 上签名不对、Mac 上苹果的签名核对没过，首页那一行说的都是这一句。
 const signatureMismatchMessage = '客户端数字签名无效或签名发布者与官方发布者不一致'
 const appxPathIdentityMessage = '客户端 AppX 路径身份无法验证'
