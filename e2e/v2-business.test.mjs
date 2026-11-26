@@ -2596,21 +2596,21 @@ test('backup restore requires preview and confirmation before touching files', a
     await preview.getByText('config.toml', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('backup-preview-drawer').count(), 1)
     await preview.getByText('已校验，文件完整', { exact: true }).waitFor()
-    await preview.getByText('恢复前会先把当前配置另存一份，恢复后需要重新打开工具。', { exact: true }).waitFor()
+    await preview.getByText('恢复前将自动另存当前配置，恢复后需重新打开工具。', { exact: true }).waitFor()
     await preview.getByText('备份保存在本机，其中可能包含密钥，请勿随意提供给他人。', { exact: true }).waitFor()
     await preview
       .getByRole('button', { name: '恢复这份配置', exact: true })
       .click()
     // 预览里点「恢复这份配置」只是打开确认，还没动任何文件。
     const confirm = page.getByRole('dialog', { name: `恢复到 ${shown} 的配置？`, exact: true })
-    await confirm.getByText('当前配置会先另存一份，恢复后需要重新打开工具。', { exact: true }).waitFor()
+    await confirm.getByText('恢复前将自动另存当前配置，恢复后需重新打开工具。', { exact: true }).waitFor()
     assert.equal(
       (await calls(page)).filter((call) => call.name === 'restore-backup')
         .length,
       0,
     )
     await confirm.getByTestId('backups-restore-confirm').click()
-    await waitForToast(page, `已恢复到 ${shown} 的配置，原来的配置已另存`)
+    await waitForToast(page, `已恢复到 ${shown} 的配置，原配置已另存`)
     assert.equal(
       (await calls(page)).find((call) => call.name === 'restore-backup').args,
       'backup-1',
@@ -2663,18 +2663,18 @@ test('the storage card lists six sizes and only cleans old backups after a confi
   const page = await fixture('page=backups')
   try {
     const card = page.getByTestId('settings-storage')
-    await card.getByTestId('settings-storage-total').getByText('一共约 3.1 GB', { exact: true }).waitFor()
+    await card.getByTestId('settings-storage-total').getByText('共约 3.1 GB', { exact: true }).waitFor()
     await card.getByTestId('settings-storage-size-works').getByText('约 2.1 GB', { exact: true }).waitFor()
     assert.equal(await card.getByTestId('settings-storage-row-chat-history').getByRole('button').count(), 0)
     assert.equal(await card.getByTestId('settings-storage-row-logs').getByRole('button').count(), 0)
-    await card.getByText('改工具配置之前自动存的旧配置，一共 24 份。', { exact: true }).waitFor()
+    await card.getByText('修改工具配置前自动保存的配置，共 24 份。', { exact: true }).waitFor()
 
     await card.getByTestId('settings-storage-clean-backups').click()
     const dialog = page.getByRole('dialog', { name: '清理旧备份？', exact: true })
-    await dialog.getByText('只留最近 10 份，更早的 14 份删掉。最近这 10 份照样能在上面的「工具配置备份」里恢复。', { exact: true }).waitFor()
+    await dialog.getByText('将保留最近 10 份，删除更早的 14 份。保留的备份仍可在上方「工具配置备份」中恢复。', { exact: true }).waitFor()
     assert.equal((await calls(page)).some((call) => call.name === 'clean-storage'), false)
     await dialog.getByTestId('settings-storage-backups-confirm').click()
-    await waitForToast(page, '已清理，腾出约 120 MB。')
+    await waitForToast(page, '已清理，释放约 120 MB。')
     assert.deepEqual((await calls(page)).filter((call) => call.name === 'clean-storage').map((call) => call.args), ['backups'])
     // 只重算清掉的那一行：剩下最近 10 份，按钮灰掉。
     await card.getByTestId('settings-storage-row-backups').getByText('仅保留最近 10 份，无需清理', { exact: true }).waitFor()
@@ -2692,7 +2692,7 @@ test('the storage card will not clean downloads while a tool is installing', asy
   const page = await fixture('page=backups&storageInstalling')
   try {
     const row = page.getByTestId('settings-storage-row-downloads')
-    await row.getByText('正在装工具，装完再清理', { exact: true }).waitFor()
+    await row.getByText('正在安装工具，请在安装完成后清理', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('settings-storage-clean-downloads').isDisabled(), true)
   } finally {
     await page.close()
@@ -3822,14 +3822,14 @@ test('the notification kinds sit under their own heading and say when the master
     await page.getByRole('tab', { name: '消息通知', exact: true }).click()
     const kinds = page.getByTestId('settings-notification-kinds')
     await kinds.getByRole('heading', { name: '提醒事项', exact: true }).waitFor()
-    assert.equal(await kinds.getByText('桌面通知关着，下面这些都不会提醒', { exact: true }).count(), 0)
+    assert.equal(await kinds.getByText('桌面通知已关闭，以下提醒均不会显示', { exact: true }).count(), 0)
     await page.getByRole('switch', { name: '桌面通知', exact: true }).click()
-    await kinds.getByText('桌面通知关着，下面这些都不会提醒', { exact: true }).waitFor()
+    await kinds.getByText('桌面通知已关闭，以下提醒均不会显示', { exact: true }).waitFor()
     assert.equal(await page.getByRole('switch', { name: '余额不足通知', exact: true }).isDisabled(), true)
     // 左栏搜出来的提醒项一样是灰的，那一句也跟着摆在搜索结果里。
     await page.getByTestId('settings-search').fill('余额不足')
     const results = page.getByTestId('settings-search-results')
-    await results.getByText('桌面通知关着，下面这些都不会提醒', { exact: true }).waitFor()
+    await results.getByText('桌面通知已关闭，以下提醒均不会显示', { exact: true }).waitFor()
     assert.equal(await results.getByRole('switch', { name: '余额不足通知', exact: true }).isDisabled(), true)
   } finally {
     await page.close()
@@ -3863,7 +3863,7 @@ test('the settings search lists matching rows in place, links back to their grou
     const results = page.getByTestId('settings-search-results')
     await results.waitFor()
     await page.getByRole('heading', { name: '搜索「托盘」', exact: true }).waitFor()
-    await page.getByText('找到 1 项，可以直接在这里修改', { exact: true }).waitFor()
+    await page.getByText('找到 1 项，可直接在此修改', { exact: true }).waitFor()
     assert.deepEqual(await results.locator('[data-anchor]').evaluateAll((rows) => rows.map((row) => row.dataset.anchor)), ['close-behavior'])
     // 搜索时左栏哪一组都不算选中。
     assert.equal(await page.getByRole('tab', { selected: true }).count(), 0)

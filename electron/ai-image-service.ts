@@ -9,11 +9,11 @@ import {
   BoundedOperationQueue,
   type BoundedOperationHandle,
 } from './bounded-operation-queue'
-import { AI_IMAGE_KEPT_IN_MEMORY_ERROR_CODE, AI_IMAGE_KEPT_UNSAVED_ERROR_CODE, inspectAiImage } from './ai-asset-store'
+import { AI_IMAGE_KEPT_IN_MEMORY_ERROR_CODE, AI_IMAGE_KEPT_UNSAVED_ERROR_CODE, describeAiAssetDownloadFailure, inspectAiImage, type AiAssetDownloadFailureDetail } from './ai-asset-store'
 import { readBoundedResponseBytes } from './bounded-response'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type { AiOperationProgressObserver, AiOperationProgressStage } from './ai-operation-progress'
-import { reportRelayAnswer, reportRelayDispatch } from './relay-request-id'
+import { readRelayRequestId, reportRelayAnswer, reportRelayDispatch } from './relay-request-id'
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
 import { networkFailureMessages } from './network-failure'
 import { classifyRelayQuotaFailure, classifySub2apiBillingFailure, extractRelayErrorDetail, relayQuotaFailureMessages } from './relay-quota-failure'
@@ -86,6 +86,34 @@ export interface AiImageEditInput extends AiImageGenerationInput {
 export interface AiImageCancelResult {
   canceled: boolean
   mayStillComplete: boolean
+}
+
+/**
+ * 图出了、钱扣了、照链接下载却没下来时进日志的那几项（11-25 客户改图那次，画布这条路只留了界面上那句话，
+ * 查不出是 404 还是连不上）。只记链接的域名，不记整条链接：链接里带着签名。请求编号是中转用量记录里那一条，
+ * 服务端拿它对得上是哪一笔、退哪一笔。
+ */
+export interface AiImageDownloadFailureLog extends AiAssetDownloadFailureDetail {
+  requestId: string
+  relayRequestId?: string
+  reason: string
+}
+
+/** 下载失败的错误换成日志那一条；原因里万一带了链接，换成占位。不是下载失败返回 null。 */
+export function buildImageDownloadFailureLog(
+  error: unknown,
+  requestId: string,
+  relayRequestId: string | null,
+): AiImageDownloadFailureLog | null {
+  const detail = describeAiAssetDownloadFailure(error)
+  if (!detail) return null
+  const raw = error instanceof Error ? error.message : String(error)
+  return {
+    requestId,
+    ...(relayRequestId ? { relayRequestId } : {}),
+    ...detail,
+    reason: raw.replace(/https?:\/\/\S+/gi, '[远程地址]').slice(0, 300),
+  }
 }
 
 /** 停止后还在收的那张图最后怎样了，只进日志。 */
@@ -283,6 +311,8 @@ export function createAiImageService(options: {
    */
   finishDispatchedAfterStop?: boolean
   onFinishedAfterStop?(outcome: AiImageAfterStopOutcome): void
+  /** 扣过费的图照链接下载、重试完仍没下来时调一次，只用来记日志。 */
+  onRemoteDownloadFailed?(entry: AiImageDownloadFailureLog): void
 }) {
   const baseUrl = new URL(options.baseUrl)
   if (baseUrl.protocol !== 'https:' || baseUrl.username || baseUrl.password) {
@@ -421,6 +451,8 @@ export function createAiImageService(options: {
           } catch (error) {
             if (signal.aborted) throw signal.reason
             if (!entry.b64Json && isAssetDownloadError(error)) {
+              const logEntry = buildImageDownloadFailureLog(error, requestId, readRelayRequestId(response.headers))
+              try { if (logEntry) options.onRemoteDownloadFailed?.(logEntry) } catch { /* logging is best effort */ }
               throw new Error('图片已生成但下载失败，本次可能已扣费，请勿立即重复提交；请先检查网络，稍后再重新生成', { cause: error })
             }
             if ((error as { code?: unknown } | null)?.code === AI_IMAGE_KEPT_UNSAVED_ERROR_CODE) {

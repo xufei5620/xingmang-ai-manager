@@ -1435,7 +1435,7 @@ export function SettingsPage({
   const hits = settings && searching ? searchSettingsItems(search).filter(shown) : []
   // 小标题右边的那句、卡片上面的那条：桌面通知关着时提醒项都不会响；线路存好了要重开才用上。
   const sectionNotes: Partial<Record<SettingsSectionId, ReactNode>> = {
-    reminders: settings?.desktopNotifications === false ? '桌面通知关着，下面这些都不会提醒' : undefined,
+    reminders: settings?.desktopNotifications === false ? '桌面通知已关闭，以下提醒均不会显示' : undefined,
   }
   const sectionLeads: Partial<Record<SettingsSectionId, ReactNode>> = settings
     ? {
@@ -1627,7 +1627,7 @@ export function SettingsPage({
             <h2>{searching ? `搜索「${search.trim()}」` : settingsGroups.find((item) => item.value === group)?.label}</h2>
             {pending > 0 && <span role="status">正在保存更改…</span>}
           </div>
-          {settings && searching && <p className="v2-settings-panel-lead">找到 {hits.length} 项，可以直接在这里修改</p>}
+          {settings && searching && <p className="v2-settings-panel-lead">找到 {hits.length} 项，可直接在此修改</p>}
           {content}
         </div>
       </div>

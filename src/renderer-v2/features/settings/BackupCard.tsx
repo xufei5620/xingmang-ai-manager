@@ -34,19 +34,19 @@ export function backupSizeText(bytes: number): string {
 /** 备份原因的小标签；校验没过的不管原因，一律「校验失败」。 */
 export function backupReasonTag(backup: Pick<Backup, 'valid' | 'reason'>): string {
   if (!backup.valid) return '校验失败'
-  return backup.reason === 'manual' ? '手工' : backup.reason === 'pre-restore' ? '恢复前' : '配置前'
+  return backup.reason === 'manual' ? '手动' : backup.reason === 'pre-restore' ? '恢复前' : '配置前'
 }
 
 /**
- * 大小和原因：「3.2 KB，改 Codex CLI 配置前自动备份」。原因只说得出改配置前和恢复前两种，
+ * 大小和原因：「3.2 KB，修改 Codex CLI 配置前自动备份」。原因只说得出改配置前和恢复前两种，
  * 手工备份没有后半句。预览弹窗里那一行接在时间后面。
  */
 export function backupDetail(backup: Pick<Backup, 'provider' | 'reason' | 'totalSize'>): string {
-  const why = backup.reason === 'pre-save' ? `，改 ${providerName(backup.provider)} 配置前自动备份` : backup.reason === 'pre-restore' ? '，恢复前自动备份' : ''
+  const why = backup.reason === 'pre-save' ? `，修改 ${providerName(backup.provider)} 配置前自动备份` : backup.reason === 'pre-restore' ? '，恢复前自动备份' : ''
   return `${backupSizeText(backup.totalSize)}${why}`
 }
 
-/** 列表那一行的说明：「Codex CLI 配置，3.2 KB，改 Codex CLI 配置前自动备份」。 */
+/** 列表那一行的说明：「Codex CLI 配置，3.2 KB，修改 Codex CLI 配置前自动备份」。 */
 export function backupDescription(backup: Pick<Backup, 'provider' | 'reason' | 'totalSize'>): string {
   return `${providerName(backup.provider)} 配置，${backupDetail(backup)}`
 }
@@ -285,7 +285,7 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
                 desc={file.existed ? backupSizeText(file.size) : '原来不存在，恢复后将移除该文件'}
               />
             ))}
-            <p className="v2-backup-preview-note">恢复前会先把当前配置另存一份，恢复后需要重新打开工具。</p>
+            <p className="v2-backup-preview-note">恢复前将自动另存当前配置，恢复后需重新打开工具。</p>
             <p className="v2-backup-preview-note">备份保存在本机，其中可能包含密钥，请勿随意提供给他人。</p>
           </>
         )}
@@ -316,9 +316,9 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
                         void checkRestored(result.provider)
                       }
                       await resource.reload()
-                      if (!result.preRestoreBackupId) throw new Error('已恢复，但未找到恢复前的备份。请在「反馈与客服 › 运行日志」中导出并发送给客服。')
+                      if (!result.preRestoreBackupId) throw new Error('已恢复，但未找到恢复前的备份。请在「反馈与客服」页导出反馈报告并发送给客服。')
                     },
-                    `已恢复到 ${restoringTime} 的配置，原来的配置已另存`,
+                    `已恢复到 ${restoringTime} 的配置，原配置已另存`,
                   )
               }}
             >
@@ -327,7 +327,7 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
           </>
         }
       >
-        <p>当前配置会先另存一份，恢复后需要重新打开工具。</p>
+        <p>恢复前将自动另存当前配置，恢复后需重新打开工具。</p>
         {restoringKey?.restoreWarning && (
           <Notice tone="warn" title="密钥不是当前账号的" body={restoringKey.restoreWarning} testId="backups-restore-key-warning" />
         )}

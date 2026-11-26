@@ -71,7 +71,7 @@ export interface TutorialTopic {
 export const macKeychainTutorialTitle = 'Mac 更新后弹出钥匙串密码框？';
 export const macKeychainTutorialDetail = 'Mac 上更新后首次打开，系统可能提示「星芒AI管理工具」要使用钥匙串中「xingmang-ai-manager Safe Storage」的信息。这是星芒在读取本机保存的登录信息：请输入本机开机密码并点击「始终允许」，更新后通常仅提示一次。如点击「拒绝」，将视同退出登录，下次打开时会再次提示。Windows 不会出现此提示。';
 
-// 「设置 › 版本更新」里「磁盘空间不够」那条提示的「怎么清理」落在这里。只讲点哪里、删什么，不出现
+// 「设置 › 版本更新」里「磁盘空间不够」那条提示的「查看清理方法」展开的就是这段。只讲点哪里、删什么，不出现
 // 缓存、临时目录这类词；删之前先看清楚是什么，别让客户把项目文件清掉。
 export const updateDiskCleanupTitle = '磁盘空间不足导致无法下载更新？';
 // 清理步骤单独导出：「必须更新」那层门里也用它，但门里进不了「设置 › 版本更新」，收尾那句换成门自己的按钮。

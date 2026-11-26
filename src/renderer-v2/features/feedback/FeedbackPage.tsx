@@ -399,7 +399,7 @@ export function FeedbackPage({
           emptyTitle={cleared ? '日志已清空' : undefined}
           emptyDescription={cleared ? '后续操作将重新记录在此处。' : '软件运行时的事件将记录在此处。'}
           filteredTitle="无符合条件的日志"
-          filteredDescription="换个筛选条件，或者关掉「只看本次启动」。"
+          filteredDescription="请调整筛选条件，或关闭「只看本次启动」。"
           errorDescription="请点击「重新加载」；如仍无法加载，请点击「打开日志文件夹」直接查看日志文件。"
         >
           {shownLogs.map(({ entry, time }) => {
