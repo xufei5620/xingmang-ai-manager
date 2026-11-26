@@ -546,6 +546,7 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
       baseUrl: definition.aiBaseUrl,
       backend: definition.backend,
       credentials: chatCredentials,
+      onRemoteDownloadFailed: (entry) => runtimeLog.log('warn', 'chat', 'image.download.failed', '图片已生成但下载失败', entry),
       assets: {
         assertWritable: (userId) => assetStore.assertWritable(userId),
         storeBase64: (userId, value, metadata) => assetStore.storeBase64(userId, value, metadata),
@@ -565,6 +566,7 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
         if ('error' in outcome) runtimeLog.log('warn', 'canvas', 'image.after-stop.failed', '停止后继续收的图没收到', outcome)
         else runtimeLog.log('info', 'canvas', 'image.after-stop.stored', '停止后继续收的图已放进素材库', outcome)
       },
+      onRemoteDownloadFailed: (entry) => runtimeLog.log('warn', 'canvas', 'image.download.failed', '图片已生成但下载失败', entry),
       assets: {
         prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
         assertWritable: (userId, projectId) => canvasProjectAssets.assertWritable(userId, projectId),
