@@ -34,6 +34,43 @@ export function buildXingmangImageMcpInvocation(
   }
 }
 
+/** 画图工具用哪一份 Node 跑：电脑上自己装的（含首页「运行环境」装的），或 Codex 桌面端自带的。 */
+export type XingmangImageNodeSource = 'system' | 'codex'
+
+/**
+ * Codex 桌面端自带的那份 Node 可能在的位置。2026-11-26 一位 Mac 客户的记录里是 bin/node；yoyo 的 Windows 电脑上
+ * 同一个 node 目录下有 bin 和 node_modules 两个文件夹，node.exe 在 bin 里还是在 node 目录下没有看到，两处都试。
+ * 只返回候选，调用方要确认文件真的在、能执行；Codex 升级换了位置时这里找不到，登记照旧报「没有找到 Node.js」。
+ */
+export function codexBundledNodeCandidates(userHome: string, platform: NodeJS.Platform = process.platform): string[] {
+  const join = platform === 'win32' ? path.win32.join : path.posix.join
+  const root = join(userHome, '.cache', 'codex-runtimes', 'codex-primary-runtime', 'dependencies', 'node')
+  return platform === 'win32'
+    ? [join(root, 'bin', 'node.exe'), join(root, 'node.exe')]
+    : [join(root, 'bin', 'node')]
+}
+
+/**
+ * 先用电脑上自己装的 Node，没有再用 Codex 桌面端自带的。很多用 Codex 桌面端的客户不是开发者，电脑上没有
+ * Node.js，以前登记整条跳过，他们就一直没有画图工具。
+ *
+ * 不拿本软件自己的程序当 Node 用（ELECTRON_RUN_AS_NODE）：发布包里 RunAsNode 是关着的
+ * （electron-builder.config.cjs 的 electronFuses），开着就等于谁都能拿签过名的本软件跑任意脚本。
+ */
+export async function resolveXingmangImageNodeExecutable(options: {
+  userHome: string
+  platform?: NodeJS.Platform
+  findSystemNode: () => Promise<string | null>
+  isExecutableFile: (filePath: string) => Promise<boolean>
+}): Promise<{ executable: string; source: XingmangImageNodeSource } | null> {
+  const system = await options.findSystemNode()
+  if (system) return { executable: system, source: 'system' }
+  for (const candidate of codexBundledNodeCandidates(options.userHome, options.platform)) {
+    if (await options.isExecutableFile(candidate)) return { executable: candidate, source: 'codex' }
+  }
+  return null
+}
+
 // 技能文件夹改名前登记的那条也是我们的：认得出来，才会跟着换到改名后的位置。
 const managedSkillDirectoryNames = new Set([XINGMANG_AI_SKILL_DIRECTORY, XINGMANG_AI_LEGACY_SKILL_DIRECTORY])
 
