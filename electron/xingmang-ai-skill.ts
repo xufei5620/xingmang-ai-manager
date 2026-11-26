@@ -60,6 +60,8 @@ export const XINGMANG_AI_BUNDLED_FILES = [
   'SKILL.md',
   'references.md',
   path.join('scripts', 'generate.mjs'),
+  // 画图工具做预览图用的，mcp-server.mjs 用到时才去读它；读不到只是没有预览，图照样存成文件。
+  path.join('scripts', 'image-preview.mjs'),
   path.join('scripts', 'mcp-server.mjs'),
 ] as const
 

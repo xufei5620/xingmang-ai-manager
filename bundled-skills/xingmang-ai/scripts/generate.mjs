@@ -2,6 +2,7 @@
 // Image generation helper for this skill. Never prints API keys.
 
 import { Buffer } from 'node:buffer'
+import diagnosticsChannel from 'node:diagnostics_channel'
 import { open, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -13,6 +14,8 @@ const DEFAULT_TIMEOUT_MS = 300_000
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 const MAX_INPUT_IMAGES = 4
 const MAX_INPUT_IMAGE_BYTES = 20 * 1024 * 1024
+// 这条命令连不上网络时用这个退出码，和别的失败（1）分开：AI 只在看到它时申请联网后重跑一次。
+const NETWORK_EXIT_CODE = 3
 
 // 认型号三处同一套（主程序 xingmang-ai-skill.ts、画图工具 mcp-server.mjs、这里），测试钉住。
 // 默认只用 OpenAI 的 gpt-image 系列；Nano Banana 和 Grok 要点名才用，只走图片模型分组的 Key。
@@ -36,11 +39,12 @@ const QUALITIES = ['low', 'medium', 'high', 'auto']
 const BACKGROUNDS = ['opaque', 'transparent', 'auto']
 
 class GenerateError extends Error {
-  constructor(message, retryable = false, upstream = false, unexplained = false) {
+  constructor(message, switchKey = false, modelUnavailable = false, unexplained = false) {
     super(message)
-    this.retryable = retryable
-    // 中转明确回了错误（不是连不上、超时）：自动挑的默认模型这样失败时，按顺序换下一个再试。
-    this.upstream = upstream
+    // 换一把 Key 可能就过了（401、403、429、503）。
+    this.switchKey = switchKey
+    // 这个型号现在用不了：自动挑的默认型号这样失败时，按顺序换下一个再试。
+    this.modelUnavailable = modelUnavailable
     // 中转回了错误却没说原因：报错时换成一句人话，不把状态码或错误类别名交给 AI 转述。
     this.unexplained = unexplained
   }
@@ -65,6 +69,80 @@ export function unexplainedFailureMessage(model, family, editing) {
   const action = editing ? '改图' : '出图'
   const next = family === 'openai' ? '可以稍后再试一次。' : '可以换回默认的 GPT 图片模型再试一次。'
   return `${model} 这次没能${action}，图片服务没说原因。${next}`
+}
+
+// 余额不足：认的是服务端自己写死的错误码和那几句话，和主程序 relay-quota-failure.ts 认的是同一套。两把 Key 是
+// 同一个账户，换 Key、换型号都一样没钱，认出来就立刻停。刻意不认光秃秃的 insufficient_quota 和「令牌额度不足」：
+// 前一个是上游渠道自己欠费，后一个是这把 Key 设了上限，叫客户充值就说错了。与画图工具一致，测试钉住。
+const INSUFFICIENT_BALANCE_STATUSES = new Set([401, 402, 403, 429])
+const INSUFFICIENT_BALANCE_PATTERN = /insufficient_user_quota|用户额度不足|预扣费额度失败|订阅额度不足|user quota is not enough|INSUFFICIENT_BALANCE|insufficient account balance/i
+
+export function isInsufficientBalance(status, code, message) {
+  return INSUFFICIENT_BALANCE_STATUSES.has(status) && INSUFFICIENT_BALANCE_PATTERN.test(`${code} ${message}`)
+}
+
+function centsOf(match) {
+  return match ? Math.round(Number(match[1]) * 100) : null
+}
+
+function moneyText(cents) {
+  return `$${(Math.max(0, cents) / 100).toFixed(2)}`
+}
+
+/**
+ * 余额不足时给 AI 和客户的那句话。金额从服务端的原话里取（「用户剩余额度: ＄0.137692, 需要预扣费额度: ＄0.200000」），
+ * 只认带美元符号的：不带符号的数字可能是站上的额度单位，不当钱写出来。取不到就不写金额。
+ */
+export function insufficientBalanceMessage(said) {
+  const text = typeof said === 'string' ? said : ''
+  const needed = centsOf(/需要预扣费额度[:：]\s*[＄$]\s*(\d+(?:\.\d+)?)/.exec(text))
+  const remainingMatch = /剩余额度[:：]\s*[＄$]\s*(-?\d+(?:\.\d+)?)/.exec(text)
+  let remaining = centsOf(remainingMatch)
+  // 四舍五入后不能写成「需要 $0.20，剩余 $0.20」：差一点不够时剩余按舍去算。
+  if (needed !== null && remaining !== null && remaining >= needed) remaining = Math.floor(Number(remainingMatch[1]) * 100)
+  const amounts = remaining === null ? '' : needed === null
+    ? `（剩余 ${moneyText(remaining)}）`
+    : `（需要 ${moneyText(needed)}，剩余 ${moneyText(remaining)}）`
+  return `当前账号余额不足，无法生成这张图片${amounts}。请在管理工具中充值后重试。`
+}
+
+// 只有「这个型号现在用不了」才换下一个型号：没有这个型号、这个分组里没有它的渠道、站上还没给它定价。
+// 内容审核不通过、参数不对、参考图有问题，换型号结果一样，还要把参考图再传一遍。与画图工具一致，测试钉住。
+const MODEL_UNAVAILABLE_CODES = new Set(['model_not_found', 'model_price_error'])
+const MODEL_UNAVAILABLE_PATTERN = /model_not_found|无可用渠道|no available channel|no available compatible accounts|倍率或价格未配置|ratio or price not set/i
+
+export function isModelUnavailable(status, code, message) {
+  return status === 404 || MODEL_UNAVAILABLE_CODES.has(code) || MODEL_UNAVAILABLE_PATTERN.test(typeof message === 'string' ? message : '')
+}
+
+// 请求一个字节都没发出去就失败了：这条命令连不上网络。AI 在命令沙箱里跑脚本时多半是这种情况，以前只打一句
+// 「fetch failed」，AI 看不出原因，接着换各种办法试上几分钟。
+class NetworkError extends GenerateError {
+  constructor() {
+    super(networkFailureMessage(process.env))
+  }
+}
+
+/**
+ * 连不上时给 AI 和客户的那句话。Codex 在禁止联网的沙箱里跑命令时会带上 CODEX_SANDBOX_NETWORK_DISABLED，
+ * 有它就把原因说死；没有就两种可能都说，不替客户猜。
+ */
+export function networkFailureMessage(env) {
+  return env?.CODEX_SANDBOX_NETWORK_DISABLED
+    ? '无法连接图片服务：这条命令被沙箱禁止联网。请允许这条命令联网后重新运行一次。'
+    : '无法连接图片服务：这条命令可能被沙箱禁止联网，也可能是当前网络不通。请允许这条命令联网后重新运行一次；仍然失败请检查网络。'
+}
+
+// 请求头发出去过几次。连不上和「发出去了、没等到回复」要分开说：后一种服务端可能已经出图并扣费，不能叫 AI 重跑。
+// 这个频道由 Node 自带的 fetch 发布；万一哪个版本没有，计数一直是 0，一律按连不上处理。
+let requestHeadersSent = 0
+try {
+  diagnosticsChannel.subscribe('undici:client:sendHeaders', (message) => {
+    // 走代理时先发给代理的 CONNECT 不算：那时图片服务还什么都没收到。
+    if (message?.request?.method !== 'CONNECT') requestHeadersSent += 1
+  })
+} catch {
+  // 订阅不上不影响出图。
 }
 
 // 不在这里 process.exit：Windows 上 fetch 的连接还在关，直接退出会打出 libuv 的 Assertion 并以 127 退出。
@@ -198,7 +276,7 @@ function printUsage() {
     '选项：',
     '  --model       默认用登录时按当前账号挑好的 OpenAI 图片模型；也可以点名 Nano Banana、Grok（只走图片模型分组）',
     '  --size        1K|2K|4K，或 宽x高（gpt-image-2 系列宽高须为 16 的倍数），默认 1K',
-    '  --aspect      16:9|9:16|1:1|4:3|3:4|3:2|2:3，配 1K/2K/4K 用，默认 1:1',
+    '  --aspect      16:9|9:16|1:1|4:3|3:4|3:2|2:3，配 1K/2K/4K 用，默认 1:1；--size 已经写了宽高时不用传',
     `  --quality     low|medium|high|auto，仅 gpt-image，默认 ${DEFAULT_QUALITY}`,
     '  --background  opaque|transparent|auto，仅 gpt-image；要透明底传 transparent',
     '  --image       参考图路径，改图用；可以给多张（最多 4 张）',
@@ -207,6 +285,8 @@ function printUsage() {
     'Key 从本技能目录的 config.json 读取，登录后自动写入。',
     '先用软件签发的 Codex Key，失败再改用生图分组 Key。',
     '不要把 Key 打进日志。',
+    '',
+    `退出码：0 成功；${NETWORK_EXIT_CODE} 这条命令连不上网络（多半是被沙箱禁止联网）；1 其他失败。`,
     '',
   ].join('\n'))
 }
@@ -254,9 +334,11 @@ export function resolveImageSize(family, sizeInput = '', aspectInput = '') {
   const tier = size && SIZE_TIERS[size] ? size : ''
   const dimensions = size && !tier ? /^(\d{2,5})X(\d{2,5})$/.exec(size) : null
   if (size && !tier && !dimensions) fail(`尺寸无效：${sizeInput}。写 1K、2K、4K，或者 宽x高`)
-  if (dimensions && aspect) fail('已经用 --size 写了宽高，就不要再给 --aspect')
   const width = dimensions ? Number(dimensions[1]) : 0
   const height = dimensions ? Number(dimensions[2]) : 0
+  if (dimensions && aspect && !sizeMatchesAspect(width, height, aspect)) {
+    fail(`--size 写的 ${width}x${height} 比例是 ${ratioText(width, height)}，--aspect 写的是 ${aspect}，两边不一致。请只保留其中一个，或把两边改成同一个比例。`)
+  }
   const ratio = dimensions ? ratioOf(width, height) : ''
 
   if (family === 'openai') {
@@ -265,7 +347,8 @@ export function resolveImageSize(family, sizeInput = '', aspectInput = '') {
     return { text: `${picked.width}x${picked.height}`, ...picked }
   }
   if (family === 'grok') return {}
-  if (dimensions && !ASPECT_RATIOS.includes(ratio)) {
+  // 同时给了对得上的 --aspect 就用它：1920x1088 这种凑整的宽高自己约不出能用的比例。
+  if (dimensions && !aspect && !ASPECT_RATIOS.includes(ratio)) {
     fail(`这个模型按比例出图，${width}x${height} 不是能用的比例。改用 --size 1K|2K|4K 加 --aspect ${ASPECT_RATIOS.join('|')}`)
   }
   const longSide = Math.max(width, height)
@@ -278,8 +361,28 @@ function ratioOf(width, height) {
   return `${width / divisor}:${height / divisor}`
 }
 
+function ratioText(width, height) {
+  const divisor = greatestCommonDivisor(width, height) || 1
+  const [left, right] = [width / divisor, height / divisor]
+  return left <= 64 && right <= 64 ? `${left}:${right}` : `约 ${(width / height).toFixed(2)}:1`
+}
+
+// --size 已经写了宽高、又给了 --aspect：比例对得上就照 --size 画，对不上才报错。宽高凑成 16 的倍数时比例会差一点，容 2%。
+function sizeMatchesAspect(width, height, aspect) {
+  const [ratioWidth, ratioHeight] = aspect.split(':').map(Number)
+  return Math.abs(width * ratioHeight - height * ratioWidth) <= 0.02 * height * ratioWidth
+}
+
 function isGptImage2(model) {
   return /^gpt-image-2(?:[.-]|$)/i.test(model)
+}
+
+// 这个型号现在用不了时换哪些：默认型号按账号列表里有的顺序往下退；点名的 GPT 图片型号（这个账号没有它、站上下线了）
+// 也改用默认的那几个，各型号同价，换了在结果里说明。点名 Nano Banana、Grok 的只用它：换成别家，价格和画风都不一样。
+function modelsToTry(requested, family, chain, fits) {
+  if (requested === chain[0]) return chain
+  if (family !== 'openai') return [requested]
+  return [requested, ...chain.filter((model) => model !== requested && fits(model))]
 }
 
 function imageMimeType(bytes) {
@@ -361,6 +464,7 @@ async function readResponseLimited(response) {
 async function send(url, init, timeoutMessage) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
+  const sentBefore = requestHeadersSent
   try {
     const response = await fetch(url, { ...init, signal: controller.signal })
     if (response.status >= 300 && response.status < 400) {
@@ -371,7 +475,8 @@ async function send(url, init, timeoutMessage) {
   } catch (error) {
     if (error instanceof GenerateError) throw error
     if (error && error.name === 'AbortError') throw new GenerateError(timeoutMessage)
-    throw new GenerateError(error instanceof Error ? error.message : '请求失败')
+    if (requestHeadersSent === sentBefore) throw new NetworkError()
+    throw new GenerateError('与图片服务的连接中途断开，这次请求可能已经送达并扣费。请先在管理工具的用量记录中确认，再决定是否重新生成。')
   } finally {
     clearTimeout(timer)
   }
@@ -397,11 +502,18 @@ function upstreamFailure(result) {
   }
   // xAI 这类上游把原因直接写成字符串 error，也算说了原因。
   const message = typeof payload?.error === 'string' ? payload.error : payload?.error?.message || payload?.message
-  const retryable = [401, 403, 429, 503].includes(result.status)
-  if (typeof message !== 'string' || isUnexplainedUpstreamMessage(message)) {
-    return new GenerateError(`图片服务没说原因（HTTP ${result.status}）`, retryable, true, true)
+  const rawCode = payload?.error?.code ?? payload?.code
+  const code = typeof rawCode === 'string' ? rawCode : ''
+  // 余额不足：不换 Key，也不换型号。
+  if (isInsufficientBalance(result.status, code, message)) {
+    return new GenerateError(insufficientBalanceMessage(message))
   }
-  return new GenerateError(redactUpstream(message), retryable, true)
+  const switchKey = [401, 403, 429, 503].includes(result.status)
+  const modelUnavailable = isModelUnavailable(result.status, code, message)
+  if (typeof message !== 'string' || isUnexplainedUpstreamMessage(message)) {
+    return new GenerateError(`图片服务没说原因（HTTP ${result.status}）`, switchKey, modelUnavailable, true)
+  }
+  return new GenerateError(redactUpstream(message), switchKey, modelUnavailable)
 }
 
 function extractImagePayload(payload) {
@@ -439,7 +551,14 @@ async function downloadImage(url) {
     throw new GenerateError('上游返回了无效图片地址')
   }
   if (parsed.protocol !== 'https:') throw new GenerateError('图片地址必须是 https')
-  const result = await send(parsed.href, { method: 'GET', redirect: 'follow' }, '下载图片超时')
+  let result
+  try {
+    result = await send(parsed.href, { method: 'GET', redirect: 'follow' }, '下载图片超时')
+  } catch (error) {
+    // 图已经画出来、钱已经扣了：不能按「连不上」退出，那会让 AI 申请联网后重画一张。
+    if (error instanceof NetworkError) throw new GenerateError('图片已经生成，但下载失败。这次已经扣费，请不要立即重新生成。')
+    throw error
+  }
   if (!result.ok) throw new GenerateError(`下载图片失败：HTTP ${result.status}`)
   return result.bytes
 }
@@ -543,13 +662,12 @@ async function main() {
   const config = await readSkillConfig(skillRootFromScript())
   const origin = assertHttpsOrigin(config.baseUrl)
 
-  // 没点名、或点的就是主程序挑好的那个：按账号列表里有的顺序往下退（站上新开的这次没画出来：还没定价、渠道没好）。
-  // 点名要别的就只用它。
   const requested = options.model || config.model || DEFAULT_MODEL
   const family = modelFamily(requested)
-  const chain = defaultModelChain(config)
-  const models = requested === chain[0] ? chain : [requested]
   const size = resolveImageSize(family, options.size, options.aspect)
+  const models = modelsToTry(requested, family, defaultModelChain(config), (model) => {
+    return !isGptImage2(model) || (size.width % 16 === 0 && size.height % 16 === 0)
+  })
   if (family === 'openai' && models.some(isGptImage2) && (size.width % 16 !== 0 || size.height % 16 !== 0)) {
     fail('gpt-image-2 系列的宽高必须是 16 的倍数')
   }
@@ -583,18 +701,19 @@ async function main() {
       } catch (error) {
         lastError = error instanceof Error ? error : new GenerateError('生成失败')
         lastModel = model
-        const retryable = error instanceof GenerateError && error.retryable
-        if (!retryable || index === keys.length - 1) break
+        const switchKey = error instanceof GenerateError && error.switchKey
+        if (!switchKey || index === keys.length - 1) break
         process.stderr.write('Codex Key 未能出图，已改用生图分组 Key。\n')
       }
     }
-    if (bytes || !(lastError instanceof GenerateError) || !lastError.upstream) break
+    if (bytes || !(lastError instanceof GenerateError) || !lastError.modelUnavailable) break
   }
   if (!bytes && lastError instanceof GenerateError && lastError.unexplained) {
     fail(unexplainedFailureMessage(lastModel, family, images.length > 0))
   }
-  if (!bytes) fail(lastError ? lastError.message : '生成失败')
-  if (usedModel !== requested) process.stderr.write(`${requested} 没能出图，已改用 ${usedModel}。\n`)
+  // 原样抛出：连不上网络的那一种要带着它的退出码出去。
+  if (!bytes) throw lastError ?? new GenerateError('生成失败')
+  if (usedModel !== requested) process.stderr.write(`${requested} 目前无法使用，已改用 ${usedModel}。\n`)
 
   const finalPath = outputPathFor(options.out, bytes)
   await writeFile(finalPath, bytes)
@@ -605,6 +724,6 @@ async function main() {
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : '生成失败'}\n`)
-    process.exitCode = 1
+    process.exitCode = error instanceof NetworkError ? NETWORK_EXIT_CODE : 1
   })
 }

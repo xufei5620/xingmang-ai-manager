@@ -1,16 +1,18 @@
 # 生图接口说明
 
-接口地址用 `config.json` 里的 `baseUrl`（登录时按当前账号的线路写好）。下面的数字是 2026-11-11 实测的。
+> 这份只是接口说明，供排查问题时对照，不是让你照着手写请求。出图只用画图工具或 `scripts/generate.mjs`；不要读取 `config.json`，不要自己写代码或命令调用这些接口。
+
+接口地址是 `config.json` 里的 `baseUrl`（登录时按当前账号的线路写好），由画图工具和脚本自己读取。下面的数字是 2026-11-11 实测的。
 
 ## 鉴权与分组
 
 - OpenAI、Grok：Header `Authorization: Bearer sk-...`
 - Nano Banana（Gemini 原生接口）：Header `x-goog-api-key: sk-...`（`Bearer` 站上也认）
 - 接口地址只用 `config.json` 的 `baseUrl`，不要改成第三方生图站
-- OpenAI 模型先用 `config.json` 的 Codex Key（`GPT`），401/403/429/503 再改用 `图片模型`（或旧名 `生图分组`）
+- OpenAI 模型先用 `config.json` 的 Codex Key（`GPT`），401/403/429/503 再改用 `图片模型`（或旧名 `生图分组`）；余额不足（403，`insufficient_user_quota`）时直接停止，不换 Key、不换型号
 - Nano Banana 和 Grok 只在 `图片模型` 分组里有，只用那把 Key；账号没有就提醒用户登录或开通
 - 不要走 `/pg/chat/completions`
-- Key 只存在本技能 `config.json`，登录时自动写入；不要读环境变量或 CLI 配置
+- Key 只存在本技能 `config.json`，登录时自动写入，由画图工具和脚本读取；不要读环境变量或 CLI 配置
 
 ## 模型和价格（每张）
 
@@ -24,7 +26,7 @@
 | `grok-imagine-image` | ¥0.2 | Images API |
 | `grok-imagine-image-2.0`、`grok-imagine-image-quality` | ¥0.5 | Images API |
 
-默认用 `config.json` 的 `model`（登录时按当前账号挑好的），失败按 `fallbackModels` 依次换；都没有就 `gpt-image-2`。`gpt-image-1` 官方已下线，`gpt-image-1.5` 站上调不通，都不要用。
+默认用 `config.json` 的 `model`（登录时按当前账号挑好的）；只有这个型号目前无法使用（404、`model_not_found`、无可用渠道）时才按 `fallbackModels` 依次换，其余报错直接返回；点名的 gpt-image 型号目前无法使用时同样改用这一串，点名 Nano Banana、Grok 的不换；都没有就 `gpt-image-2`。`gpt-image-1` 官方已下线，`gpt-image-1.5` 站上调不通，都不要用。
 
 ## OpenAI 文生图 `POST /v1/images/generations`
 

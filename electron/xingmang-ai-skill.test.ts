@@ -37,6 +37,7 @@ import {
   parseXingmangAiSkillConfig,
   publicXingmangAiSkillConfig,
   installXingmangAiSkillFiles,
+  isXingmangAiSkillInstalled,
   moveLegacyXingmangAiSkillCodexEntries,
   resolveXingmangAiBundledSkillRoot,
   resolveXingmangAiCodexSkillPath,
@@ -366,6 +367,27 @@ describe('xingmang-ai-skill', () => {
       warnings: [],
     })
     expect(await readFile(path.join(directory, 'scripts', 'generate.mjs'), 'utf8')).toContain('codexApiKey')
+  })
+
+  it('adds the preview helper to a skill an earlier version installed without it', async () => {
+    // 0.2.24 shipped no image-preview.mjs. The drawing tool it installs now loads that file to make
+    // the small preview, so an upgrade has to bring it along and leave everything else alone.
+    const userHome = await temporaryHome()
+    await installXingmangAiSkillFiles(bundledRoot, userHome)
+    const directory = resolveXingmangAiSkillDirectories(userHome)[0]
+    const helper = path.join(directory, 'scripts', 'image-preview.mjs')
+    const manifestPath = path.join(directory, XINGMANG_AI_MANAGED_MANIFEST_FILE)
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { version: 1; files: Record<string, string> }
+    expect(manifest.files['scripts/image-preview.mjs']).toMatch(/^[a-f0-9]{64}$/)
+    await rm(helper)
+    delete manifest.files['scripts/image-preview.mjs']
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
+    expect(isXingmangAiSkillInstalled(directory)).toBe(false)
+
+    await expect(installXingmangAiSkillFiles(bundledRoot, userHome)).resolves.toEqual({ installed: 1, warnings: [] })
+
+    expect(await readFile(helper, 'utf8')).toBe(await readFile(path.join(bundledRoot, 'scripts', 'image-preview.mjs'), 'utf8'))
+    expect(isXingmangAiSkillInstalled(directory)).toBe(true)
   })
 
   it('only fills missing files when a previous install is incomplete', async () => {
