@@ -1328,6 +1328,23 @@ test('MCP server never overwrites an earlier image and keeps each one under its 
   }, { clock: [2026, 10, 26, 17, 30, 5] })
 })
 
+test('MCP server does not write through an outputs folder that is a link', async () => {
+  // The server runs outside the command sandbox, and a sandboxed command may write inside the project:
+  // it could turn outputs into a link that points anywhere. The image then goes to the pictures folder.
+  await withServer({ apiKey: 'sk-test-not-real' }, ok, async ({ call, root, home, work }) => {
+    const elsewhere = path.join(root, 'elsewhere')
+    await mkdir(elsewhere)
+    // A junction needs no privilege on Windows; other systems ignore the type and make a symbolic link.
+    await symlink(elsewhere, path.join(work, 'outputs'), 'junction')
+    const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
+    assert.notEqual(generated.result.isError, true)
+    const filePath = savedPath(generated.result.content[1].text)
+    assert.equal(path.dirname(filePath), path.join(home, 'Pictures', '星芒AI'))
+    assert.equal(await readFile(filePath, 'utf8'), 'fixture-image')
+    assert.deepEqual(await readdir(elsewhere), [])
+  })
+})
+
 test('MCP server saves into the pictures folder when it was not started inside a project', async () => {
   // A desktop app starts the server in the home directory (or a system one): no outputs folder there.
   await withServer({ apiKey: 'sk-test-not-real' }, ok, async ({ call, home }) => {
