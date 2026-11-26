@@ -480,7 +480,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
   }
   // 这个窗口里的动作改的都是工具的配置文件：没权限时说「写不进配置文件」，不说安装目录（已知29）。
   const errorText = typeof error === 'string' ? error : isKeyGroupRejection(error) ? null : <FailureReason error={error.message} detail={error.detail} target="config" />
-  // 分组被拒时「换一把能用的」= 换成「自动准备」：保存时替他在能用的分组里准备好。账号信息还没读到、读不到就不给按钮。
+  // 分组被拒时「更换可用密钥」= 换成「自动准备」：保存时替他在能用的分组里准备好。账号信息还没读到、读不到就不给按钮。
   const automaticReady = signedIn && Boolean(metadata) && !metadataLoading && !metadataError && !(draft.source === 'account' && usingAutomaticKey)
   const saveSummary = <div data-testid="tool-save-summary">{draft.source === 'official' ? <p>来源：{officialName}</p> : <><p>密钥：{keyDescription.name}</p><p>分组：{keyDescription.group}</p><p>预览：{keyDescription.preview}</p><p>模型：{draft.model || '使用该分组默认模型'}</p></>}</div>
   const permissionText = !permission ? '' : permission.error ? permission.error

@@ -19,7 +19,7 @@ describe('key group rejection notice', () => {
     const markup = renderToStaticMarkup(<KeyGroupRejectedNotice failure={failure} onSwitch={() => undefined} stuckText="去换一把" testId="notice" switchTestId="notice-switch" />)
     const lead = markup.slice(0, markup.indexOf('<details'))
     expect(lead).toContain(keyGroupRejectedText)
-    expect(lead).toContain('换一把能用的')
+    expect(lead).toContain('更换可用密钥')
     expect(lead).toContain('notice-switch')
     expect(lead).not.toMatch(/403|Claude-ANTI|request id/)
     expect(markup).toContain('<summary>查看详情</summary>')

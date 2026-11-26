@@ -311,7 +311,7 @@ button.v2-promo-tier:focus-visible { outline: 2px solid var(--focus); outline-of
 .v2-client-config-path { overflow-wrap: anywhere; }
 .v2-client-config-path > summary { cursor: pointer; }
 .v2-client-config-path > p { margin: 4px 0 0; }
-/* 检测模型时分组被拒：红框里一句话加「换一把能用的」，原话收在下面的「查看详情」。 */
+/* 检测模型时分组被拒：红框里一句话加「更换可用密钥」，原话收在下面的「查看详情」。 */
 .v2-key-group-rejected { margin: 0 0 16px; }
 .v2-key-group-rejected > .v2-callout { margin: 0 0 6px; }
 .v2-key-group-rejected > details { color: var(--text-2); font-size: var(--font-small); }

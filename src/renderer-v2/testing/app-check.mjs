@@ -1223,7 +1223,7 @@ test('a key in a group the account lost says so in plain words and switches to a
     await expect(page.getByTestId('external-client-source')).toHaveAttribute('data-value', 'account:401')
     await page.getByTestId('external-client-detect').click()
     const notice = page.getByTestId('external-client-group-rejected')
-    await notice.getByRole('alert').getByText('这把密钥所在的分组，当前账号已经用不了了，换一把就好。', { exact: true }).waitFor()
+    await notice.getByRole('alert').getByText('该密钥所属的分组在当前账号下已不可用，请更换密钥。', { exact: true }).waitFor()
     // 403、分组名和请求号只在「查看详情」里。
     assert.doesNotMatch(await notice.getByRole('alert').innerText(), /403|Claude-MAX|request id/)
     assert.match(await notice.locator('details').textContent(), /查看详情[\s\S]*无权访问 Claude-MAX 分组/)
@@ -1239,7 +1239,7 @@ test('a key in a group the account lost says so in plain words and switches to a
     await openToolConfiguration(tool, 'claude')
     await pickOption(tool, 'tool-key-select', '401')
     await tool.getByTestId('tool-detect-models').click()
-    await tool.getByTestId('tool-key-group-rejected').getByText('这把密钥所在的分组，当前账号已经用不了了，换一把就好。', { exact: true }).waitFor()
+    await tool.getByTestId('tool-key-group-rejected').getByText('该密钥所属的分组在当前账号下已不可用，请更换密钥。', { exact: true }).waitFor()
     await tool.getByTestId('tool-key-group-switch').click()
     await expect(tool.getByTestId('tool-key-select')).toHaveAttribute('data-value', 'automatic')
     assert.equal(await tool.getByTestId('tool-key-group-rejected').count(), 0)

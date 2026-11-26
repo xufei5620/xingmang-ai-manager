@@ -127,7 +127,7 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
   function changeSource(next: string) {
     setSource(next); setModels([]); setModel(sourceModel(next)); setResult(null); setError(''); setSecretError(''); setDirty(true); setPickModel(false)
   }
-  // 「换一把能用的」：换过去马上再检测一次。这一刻 source、model 还没换过来，所以把新的直接交给 detect。
+  // 「更换可用密钥」：换过去马上再检测一次。这一刻 source、model 还没换过来，所以把新的直接交给 detect。
   function switchToUsable(next: string) {
     changeSource(next)
     void detect(next, sourceModel(next))
@@ -216,7 +216,7 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
     </fieldset>
     {isKeyGroupRejection(error)
       ? <KeyGroupRejectedNotice failure={error} onSwitch={usableSource ? () => switchToUsable(usableSource) : undefined}
-        stuckText="这把密钥所在的分组，当前账号已经用不了了。请在「访问密钥」里换一把，再点「检测模型」。"
+        stuckText="该密钥所属的分组在当前账号下已不可用。请在「访问密钥」中更换密钥后点击「检测模型」。"
         testId="external-client-group-rejected" switchTestId="external-client-group-switch" />
       : error && <p className="v2-callout is-bad" role="alert">{error}</p>}
     {result && <Notice tone={externalClientSavedTone(connectionView)} title="配置已保存" body={<><p>{result.message}</p>
