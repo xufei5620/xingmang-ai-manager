@@ -64,6 +64,12 @@ describe('requiredUpdateGate', () => {
       .toMatchObject({ action: 'install', manualReinstall: false })
   })
 
+  it('drops the reinstall action when a Windows PowerShell refused to run the install handoff', () => {
+    const message = '新版本已下载，但本机的安全设置不允许自动安装，重试也无法解决。请点击「打开下载页」下载新版本安装包，安装后打开即可。'
+    expect(requiredUpdateGate(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_HANDOFF_BLOCKED', message } })))
+      .toMatchObject({ action: null, manualReinstall: true, failure: message, failureTitle: '安装更新失败' })
+  })
+
   it('titles and labels a failure exactly like the updates page and the home bubble', () => {
     // 原因句里说「点「重新安装」」「点「重新下载」」，门里的按钮就得叫这个名字。
     for (const step of ['check', 'download', 'install'] as const) {

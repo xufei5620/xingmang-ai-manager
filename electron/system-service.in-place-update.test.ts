@@ -436,7 +436,7 @@ describe.runIf(process.platform !== 'win32')('updating a CLI in place on Windows
   })
 
   it('leaves Codex as it was when the remote control is still using it', async () => {
-    const busy = '手机遥控中的 Codex 正在处理任务，请待其完成后再更新，或先在设置中关闭手机遥控。'
+    const busy = '遥控中的 Codex 正在处理任务，请待其完成后再更新，或先在「遥控」页关闭遥控。'
     const fixture = createInPlaceUpdateFixture({
       provider: 'codex',
       releaseCodexRemote: async () => { throw new Error(busy) },

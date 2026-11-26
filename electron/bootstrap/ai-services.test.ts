@@ -57,6 +57,7 @@ function create(overrides: Partial<RealmBusinessesOptions> = {}) {
     systemService: { fetchAvailableModels: vi.fn(async () => []) },
     readAccountGroupHints: async () => null,
     readDocumentsDirectory: () => null,
+    canvasProjectsDirectory: () => path.join(root, '星芒画布'),
     runtimeLog: { log: vi.fn(), exception: vi.fn() } as unknown as RuntimeLogStore,
     sessionFetch: vi.fn() as unknown as typeof fetch,
     routedRelayFetch: vi.fn() as unknown as typeof fetch,

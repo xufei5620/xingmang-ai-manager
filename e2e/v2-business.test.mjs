@@ -1713,14 +1713,14 @@ test('session detail shows transcript and archives the native id after a user ac
 })
 
 // 记录页的 lead 一直写着「继续之前的对话」,但页面只有导出和归档。这条钉住
-// 兑现之后的行为:按钮把记录里的工作目录和固定的 resumeLast 一起交给主进程,
-// 续接参数本身永远不从渲染层来。Codex 另带这条记录的 id,由主进程核对后按 id
-// 接(它自己按目录找时还看连接名,切过账号就找不到)。
-test('records page resumes the most recent conversation in the folder on the row', async () => {
+// 兑现之后的行为:按钮把记录里的工作目录、固定的 resumeLast 和这条记录的 id
+// 一起交给主进程,续接参数本身永远不从渲染层来:主进程从记录里读出编号、核对
+// 过文件夹再按编号接(0.2.25 S1 起三家都这样)。
+test('records page resumes the conversation on the row', async () => {
   const page = await fixture('page=sessions')
   try {
     await page.getByTestId('sessions-resume-codex:session-1').click()
-    await waitForToast(page, '已打开Codex CLI，继续 C:/test-project 中最近的一条对话')
+    await waitForToast(page, '已打开Codex CLI，在 C:/test-project 中继续这次对话')
     assert.deepEqual(
       (await calls(page)).find((call) => call.name === 'launch-cli').args,
       { provider: 'codex', workspace: 'C:/test-project', mode: 'resumeLast', sessionId: 'codex:session-1' },
@@ -1730,14 +1730,19 @@ test('records page resumes the most recent conversation in the folder on the row
   }
 })
 
-// 续接参数是 CLI 自己按目录找最近一条,所以同一个工具、同一个目录只有最近的
-// 那条能给按钮:否则用户点第三条、接上的却是第一条。
-test('only the most recent record of a folder offers to resume it', async () => {
+// 0.2.25 S1:以前续接参数是 CLI 自己按目录找最近一条,同一个工具、同一个目录
+// 只有最近的那条给按钮。现在按这条记录的编号接,更早的那条也有按钮,点哪条接哪条。
+test('every record of a folder offers to resume that very record', async () => {
   const page = await fixture('page=sessions&sameFolder=1')
   try {
     await page.getByTestId('sessions-row-codex:session-0').waitFor()
     assert.equal(await page.getByTestId('sessions-resume-codex:session-1').count(), 1)
-    assert.equal(await page.getByTestId('sessions-resume-codex:session-0').count(), 0)
+    await page.getByTestId('sessions-resume-codex:session-0').click()
+    await waitForToast(page, '已打开Codex CLI，在 C:/test-project 中继续这次对话')
+    assert.equal(
+      (await calls(page)).find((call) => call.name === 'launch-cli').args.sessionId,
+      'codex:session-0',
+    )
   } finally {
     await page.close()
   }
@@ -3976,7 +3981,7 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     await card.getByText('在飞书中打开您创建的机器人，私聊发送这 6 位数字。10 分钟内有效。', { exact: true }).waitFor()
     // 手机那头发对了配对码：主进程推一份新快照，卡上换成绑定用户。
     await page.evaluate(() => window.remoteHarness.pair('小明'))
-    await card.getByTestId('settings-remote-feishu-peer').getByText(/^小明（尾号 9f3c），10 月 25 日 \d\d:\d\d 配对$/).waitFor()
+    await card.getByTestId('settings-remote-feishu-peer').getByText(/^小明（尾号 9f3c），10 月 25 日 \d\d:\d\d 配对。在手机上发送「帮助」可查看可用指令。$/).waitFor()
     assert.equal(await card.getByTestId('settings-remote-feishu-pair').innerText(), '重新配对')
     assert.equal(await card.getByTestId('settings-remote-feishu-next').count(), 0)
     await card.getByTestId('settings-remote-feishu-guide').getByText('如何创建飞书机器人', { exact: true }).waitFor()
@@ -3996,7 +4001,7 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     // 退出登录也先问：确认后凭据清掉、遥控关掉，回到填应用的框。
     await card.getByRole('button', { name: '退出飞书登录', exact: true }).click()
     await confirm.getByRole('heading', { name: '退出飞书登录？', exact: true }).waitFor()
-    await confirm.getByText('退出后需重新填写机器人凭据，方可继续使用手机遥控。', { exact: true }).waitFor()
+    await confirm.getByText('退出后需重新填写机器人凭据，方可继续使用遥控。', { exact: true }).waitFor()
     await confirm.getByRole('button', { name: '退出登录', exact: true }).click()
     await confirm.waitFor({ state: 'detached' })
     await card.getByTestId('settings-remote-feishu-form').waitFor()
@@ -4099,7 +4104,7 @@ test('the WeChat block logs in through the QR dialog, asks for the number on the
     await card.getByRole('button', { name: '退出微信登录', exact: true }).click()
     const logoutConfirm = card.getByTestId('settings-remote-weixin-confirm')
     await logoutConfirm.getByRole('heading', { name: '退出微信登录？', exact: true }).waitFor()
-    await logoutConfirm.getByText('退出后需重新使用微信扫码登录，方可继续使用手机遥控。', { exact: true }).waitFor()
+    await logoutConfirm.getByText('退出后需重新使用微信扫码登录，方可继续使用遥控。', { exact: true }).waitFor()
     await logoutConfirm.getByRole('button', { name: '取消', exact: true }).click()
     await logoutConfirm.waitFor({ state: 'detached' })
     assert.equal((await calls(page)).some((call) => call.name === 'remote-clear'), false)
@@ -4122,6 +4127,32 @@ test('the WeChat block logs in through the QR dialog, asks for the number on the
         ['remote-weixin-login-cancel', '0f8fad5b-d9cb-469f-a165-70867728950e'],
       ],
     )
+  } finally {
+    await page.close()
+  }
+})
+
+// 0.2.25 M1：填好飞书应用、只差文件夹时，「打开遥控」那行以前说「请先在上方选择工作文件夹。」，可文件夹那一行在下面
+// 「通用设置」里。现在说「请先选择工作文件夹。」，开关左边直接一颗「选择文件夹」，选好开关马上能打开，那颗也收起。
+test('the phone remote switch offers to choose the folder beside it when that is the only step left', async () => {
+  const page = await fixture('page=remote&remoteReady=1&remoteNoFolder=1')
+  try {
+    const card = page.getByTestId('settings-remote-card')
+    const toggle = card.getByRole('switch', { name: '打开飞书遥控', exact: true })
+    const row = card.getByTestId('settings-remote-feishu-enable')
+    await row.getByText('请先选择工作文件夹。', { exact: true }).waitFor()
+    assert.equal(await toggle.isDisabled(), true)
+    const choose = row.getByTestId('settings-remote-feishu-choose-workspace')
+    assert.equal(await choose.innerText(), '选择文件夹')
+    // 下面「通用设置」里那一行照旧在。
+    assert.equal(await card.getByTestId('settings-remote-workspace').count(), 1)
+    await choose.click()
+    await card.getByTestId('settings-remote-workspace-row').getByText('~/projects/demo', { exact: true }).waitFor()
+    await choose.waitFor({ state: 'detached' })
+    assert.equal(await toggle.isDisabled(), false)
+    assert.equal((await callsNamed(page, 'remote-workspace')).length, 1)
+    await toggle.click()
+    await card.getByTestId('settings-remote-feishu-state').getByText('已连接', { exact: true }).waitFor()
   } finally {
     await page.close()
   }
@@ -4334,7 +4365,7 @@ test('the phone remote card says why it cannot be turned on while the manager ru
   const page = await fixture('page=remote&remoteElevated=1&remoteReady=1')
   try {
     const card = page.getByTestId('settings-remote-card')
-    await card.getByTestId('settings-remote-unavailable').getByText('星芒正以管理员身份运行，为保障安全，此时无法开启手机遥控。请以普通方式重新打开星芒。').waitFor()
+    await card.getByTestId('settings-remote-unavailable').getByText('星芒正以管理员身份运行，为保障安全，此时无法开启遥控。请以普通方式重新打开星芒。').waitFor()
     assert.equal(await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).isDisabled(), true)
     assert.equal(await card.getByTestId('settings-remote-workspace').isDisabled(), true)
     assert.equal(await card.getByTestId('settings-remote-feishu-edit').isDisabled(), true)
@@ -5113,7 +5144,7 @@ test('the phone remote page continues an existing Codex conversation or goes bac
       '整理接口文档~/projects/api · 11-20 09:12',
     ])
     assert.equal(await list.getByRole('radio', { name: /^新对话/ }).getAttribute('aria-checked'), 'true')
-    await dialog.getByText('继续已有对话时，如对话原有权限超出手机遥控允许的范围，将调整为「默认」，在电脑端继续时也将保持。手机遥控的规则（不发送密钥和密码、回复简洁等）也将保留在该对话中。请勿在电脑端和手机端同时向同一对话发送消息。', { exact: true }).waitFor()
+    await dialog.getByText('继续已有对话时，如对话原有权限超出遥控允许的范围，将调整为「默认」，在电脑端继续时也将保持。遥控的规则（不发送密钥和密码、回复简洁等）也将保留在该对话中。请勿在电脑端和手机端同时向同一对话发送消息。', { exact: true }).waitFor()
     await list.getByRole('radio', { name: /整理接口文档/ }).click()
     await dialog.getByRole('button', { name: '确定', exact: true }).click()
     await dialog.waitFor({ state: 'detached' })
@@ -5152,7 +5183,7 @@ test('the phone remote conversation list explains an empty list, an unchecked Co
     const dialog = page.getByTestId('settings-remote-conversation-dialog')
     await dialog.getByRole('radio', { name: /整理接口文档/ }).click()
     await dialog.getByRole('button', { name: '确定', exact: true }).click()
-    await dialog.getByRole('alert').getByText('该对话所在的文件夹不允许用于手机遥控，请选择其他对话。', { exact: true }).waitFor()
+    await dialog.getByRole('alert').getByText('该对话所在的文件夹不允许用于遥控，请选择其他对话。', { exact: true }).waitFor()
     await page.getByTestId('settings-remote-conversation-row').getByText('新对话，将在上方文件夹中开始。', { exact: true }).waitFor()
   } finally {
     await page.close()

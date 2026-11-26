@@ -460,10 +460,14 @@ jobs:
       # runner's account is an administrator with an elevated token, so Windows
       # starts that copy without a prompt, as it does once a customer clicks Yes.
       # A stand-in setup.exe compiled on the spot records what it was started
-      # with; a wrong digest or size must never start it.
+      # with; a wrong digest or size must never start it. Last, the relaunch
+      # under a ConstrainedLanguage lockdown and an AllSigned Group Policy, both
+      # undone afterwards: PowerShell stops the script there, and the app must
+      # read that as blocked (download page), not as a declined prompt.
       - name: Run the update install handoff script against this runner
-        # Six PowerShell starts and two small compiles; each run carries its
-        # own bound, this is the backstop for a hang that outlives them.
+        # About a dozen PowerShell starts and two small compiles; each run
+        # carries its own bound, this is the backstop for a hang that outlives
+        # them.
         timeout-minutes: 8
         run: node e2e/windows-update-handoff-smoke.mjs
       # npm run verify:app with no steps: the compiled client signed in against

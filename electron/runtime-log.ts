@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { redactCommandText } from './command-runner'
+import { isRecord } from './input-guards'
 import { maskEmailAddresses } from './redaction-patterns'
 import { drainStartupFailures, redactHomeDirectory, STARTUP_LOG_FILE_NAME } from './startup-log'
 import {
@@ -137,6 +138,35 @@ const MAX_UNSAVED_ENTRIES = 200
 // anything that could itself be the failure it is recording. Re-exported here
 // so existing callers keep their import path.
 export { redactHomeDirectory }
+
+/**
+ * 反馈页「运行日志」逐条显示，「复制这一条」把那一条原样复制出去，客户多半直接贴进客服群。
+ * 落盘的日志只遮了密钥和邮箱，个人文件夹（带 Windows 用户名）要到生成反馈报告时才换成
+ * %USERPROFILE%；列表这条路以前不换，复制一条就把用户名带出去了。这里按报告同一套换掉，
+ * 文字和附带信息里每个字符串都换，结构和别的值不动。
+ */
+export function redactRuntimeLogEntriesHome(
+  entries: readonly RuntimeLogEntry[],
+  homeDirectory: string,
+  platform: NodeJS.Platform = process.platform,
+): RuntimeLogEntry[] {
+  return entries.map((entry) => ({
+    ...entry,
+    message: redactHomeDirectory(entry.message, homeDirectory, platform),
+    detail: entry.detail ? redactHomeInDetail(entry.detail, homeDirectory, platform) : entry.detail,
+  }))
+}
+
+function redactHomeInDetail(value: Record<string, unknown>, homeDirectory: string, platform: NodeJS.Platform): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, redactHomeInValue(entry, homeDirectory, platform)]))
+}
+
+function redactHomeInValue(value: unknown, homeDirectory: string, platform: NodeJS.Platform): unknown {
+  if (typeof value === 'string') return redactHomeDirectory(value, homeDirectory, platform)
+  if (Array.isArray(value)) return value.map((entry) => redactHomeInValue(entry, homeDirectory, platform))
+  if (isRecord(value)) return redactHomeInDetail(value, homeDirectory, platform)
+  return value
+}
 
 // 邮箱只留第一个字和 @ 后面（a***@qq.com）：客服让客户报一下邮箱就对得上，日志和
 // 反馈报告里却不再有完整地址（#1073 第 5 条 c）。读旧日志也过这里，老条目照样遮。

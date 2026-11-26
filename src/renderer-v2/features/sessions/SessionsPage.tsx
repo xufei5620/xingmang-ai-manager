@@ -1,6 +1,6 @@
 // 记录页（#1070 第 11 步，从 pages-management.tsx 原样搬来）：各工具的会话列表、按工具筛、搜索、详情和对话开头、
 // 接着聊、归档与恢复、导出。pages-management.tsx 照旧转出这里的导出名；工具选单在 features/tools/provider-options.ts。
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import {
   Archive,
   ChevronDown,
@@ -37,7 +37,7 @@ import {
   useReloadWhenShown,
   useResource,
 } from '../../business-common'
-import { isMissingWorkspace, latestSessionIdsByWorkspace, resumeLaunchChoice, resumeNeedsRecheck, resumeStillLatest, withoutRetiredSessions } from '../tools/recent-workspaces'
+import { isMissingWorkspace, recordResumable, recordResumeChoice, withoutRetiredSessions } from '../tools/recent-workspaces'
 import { launchDeclined, resumeSessionNotice } from '../tools/launch-notice'
 import type { V2Bridge } from '../../types'
 import type { ActiveProviderId } from '../../../../electron/catalog'
@@ -73,6 +73,22 @@ export function sessionToolCounts(
     counts.all += count
   }
   return counts
+}
+/**
+ * 工具按钮摆哪几颗：没装、也一条记录都没有的工具不挂一颗写着 0 的按钮，像是那家出了问题。装着的照旧摆，
+ * 0 条也摆；装的名单还没检测完时全摆（旧行为）；统计还没读到时先按装没装定，读到了有记录的再补上；
+ * 正选着的那颗不收。
+ */
+export function visibleSessionToolOptions<T extends { value: string }>(
+  options: readonly T[],
+  installedProviders: readonly string[] | undefined,
+  counts: Record<SessionToolFilter, number> | null,
+  selected: string,
+): T[] {
+  if (installedProviders === undefined) return [...options]
+  return options.filter((option) => option.value === selected
+    || installedProviders.includes(option.value)
+    || (isProvider(option.value) && (counts?.[option.value] ?? 0) > 0))
 }
 /** 表格标题下面那行小字：模型、几条消息；归档过的记录在后面标一句。条数不知道就不写，不写「未知 条」。 */
 export function sessionRowMeta(session: Pick<Session, 'model' | 'messageCount' | 'archived'>): string {
@@ -187,18 +203,13 @@ export function SessionsPage({
     listScanned.current = false
     return resource.reload()
   }
-  // 「继续对话」只能出现在每个(工具 × 目录)组合最近的那一条上,而当前这一页是
-  // 过滤加分页之后的切片,判断不出全局最近。所以另取一份不带过滤的最新记录来
-  // 定这件事,上限就是主进程允许的一页最大条数;更老的组合不给按钮(宁可少给)。
+  // 上面那排工具按钮的数量按全部记录算，不跟着当前的筛选和翻页走，所以另取一份不带过滤的。
+  // （0.2.25 S1 以前它还用来挑每个文件夹最近的那条挂「继续对话」，现在每条都能接，不用挑了。）
   const latestLoad = useCallback(
     () => api.listProviderSessions({ provider: 'all', page: 1, pageSize: 100 }).then(withoutRetiredSessions),
     [api],
   )
   const latestResource = useResource(latestLoad)
-  const resumable = useMemo(
-    () => latestSessionIdsByWorkspace(latestResource.data?.items ?? []),
-    [latestResource.data],
-  )
   const counts = sessionToolCounts(latestResource.error ? undefined : latestResource.data?.stats.byProvider)
   const operation = useOperation()
   // 导出存不进去时按「换个位置再存」说，不说安装目录（D16）。
@@ -313,30 +324,15 @@ export function SessionsPage({
     )
   }
   /**
-   * 「继续对话」点下去先读一份最新的对一次（已知4，同首页 resumeRecent）：窗口回到前面时的那次重读是
-   * 异步的，从终端直接点回来，这一下用的还是旧列表。点的这条已经不是它那个文件夹最近的了，就换上新列表、
-   * 这次不打开，按钮自己挪到该挂的那条上。返回 false = 不打开；读不到就照旧打开。
-   */
-  const recheckResume = async (session: Session): Promise<boolean> => {
-    const fresh = await latestLoad().catch(() => null)
-    if (!fresh) return true
-    latestResource.setData(fresh)
-    if (resumeStillLatest(session, fresh.items)) return true
-    // 刚聊的那条多半也该出现在这一页上，列表一起换。
-    void reloadList()
-    return false
-  }
-  /**
-   * 各家 CLI 的续接参数都是「按当前工作目录找最近一条」,不是按会话 id 挑。
-   * 所以按钮只长在每个(工具 × 目录)组合最近的那一条上(resumable),点到的
-   * 就是接上的。Codex 另外带上这条记录的 id:它自己按目录找时还按连接名过滤,
-   * 切过账号就找不到(resumeLaunchChoice)。归档过的记录已经被移出 CLI
-   * 自己的目录,它找不到,所以对归档记录置灰。
+   * 三家命令行都能按对话编号接(0.2.25 S1):带上这条记录的 id,主进程从记录里读出编号、
+   * 核对过文件夹再接,点哪条接哪条,所以每条没归档、记了文件夹的记录都有按钮
+   * (recordResumable),也不用像以前那样先读一份最新的对一次。归档过的记录已经被移出
+   * CLI 自己的目录,它找不到,所以归档记录不给按钮。
    */
   const resume = (session: Session) => {
     const provider = session.provider
     // 列表里本来就不收已下线工具的记录；万一漏进来一条，也不替它打开。
-    if (!resumable.has(session.id) || session.archived || session.cwdExists === false || !isProvider(provider))
+    if (!recordResumable(session) || session.cwdExists === false || !isProvider(provider))
       return
     // 「…」里的「继续对话」不置灰，点了说清楚为什么接不上；行上和详情里的按钮是灰的，悬停有同一句。
     if (notInstalled(session)) {
@@ -346,13 +342,11 @@ export function SessionsPage({
     void operation.execute(
       'resume',
       async () => {
-        // 先对一次再过下面那几道关：问完话再说「这次不打开」，客户等于白答了一遍。
-        if (resumeNeedsRecheck(session) && !(await recheckResume(session))) return null
         // 首页「继续对话」打开前要过的那几道关，这里以前一道都没过（第四十批 B）。不往下走就和
         // 问话框里点了关掉一样：什么都不打开，不报错，也不说「已打开」。
         if (beforeResume && !(await beforeResume(provider))) return null
         try {
-          const choice = resumeLaunchChoice(session)
+          const choice = recordResumeChoice(session)
           const result = await (typeof choice === 'object'
             ? api.launchCli(provider, session.cwd, 'resumeLast', choice.resumeSessionId)
             : api.launchCli(provider, session.cwd, 'resumeLast'))
@@ -386,7 +380,7 @@ export function SessionsPage({
       ? '该记录的文件夹已不存在，无法继续上次的对话'
       : notInstalled(session)
         ? `需先安装 ${providerName(session.provider)}`
-        : '继续此文件夹中最近一次对话'
+        : '继续这次对话'
   /**
    * 只传会话 id,不传路径:工作目录由主进程从记录里取并校验(必须是真实存在的
    * 文件夹),界面没有办法让资源管理器去打开别的位置。目录已经不在的那一行按钮
@@ -444,7 +438,7 @@ export function SessionsPage({
     >
       <PageHead
         title="记录"
-        lead="通过首页打开工具产生的对话均在此处"
+        lead="本机各命令行工具的对话均在此处，可查看并继续对话。"
         actions={
           <Button
             variant="ghost"
@@ -463,7 +457,7 @@ export function SessionsPage({
           value={provider}
           options={[
             { value: 'all', label: '全部', count: counts?.all, testId: 'sessions-tool-all' },
-            ...providerOptions.map((option) => ({
+            ...visibleSessionToolOptions(providerOptions, installedProviders, counts, provider).map((option) => ({
               value: option.value,
               label: option.label,
               count: counts && isProvider(option.value) ? counts[option.value] : undefined,
@@ -549,7 +543,7 @@ export function SessionsPage({
                 // 原位但按不动,悬停说一句为什么——把它藏起来的话,用户只会觉得
                 // 「昨天还有的按钮今天没了」。
                 const missingWorkspace = session.cwdExists === false
-                const canResume = resumable.has(session.id) && !session.archived
+                const canResume = recordResumable(session)
                 const title = sessionTitle(session)
                 const operations = capabilityOf(session)?.operations
                 return (
@@ -658,7 +652,7 @@ export function SessionsPage({
                       取消归档
                     </Button>
                   )
-                : resumable.has(selected.id) && (
+                : recordResumable(selected) && (
                     <Button
                       variant="primary"
                       icon={Play}

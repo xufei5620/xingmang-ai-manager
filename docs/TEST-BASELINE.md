@@ -317,6 +317,20 @@ click stall evidence, taken 7004ms after the click started (each probe waits at 
 - 复现：在 Linux 上把这批文件的修改时间设成同一刻，就是同一个红。
 - 写法：用例要靠「谁新谁旧」的，别指望连着写出来的文件修改时间不同，自己用 `utimesSync` 设好；同理别拿 `Date.now()` 当先后（见上一节）。
 
+## 真开登录 shell 核 PATH：macOS 会先把 PATH 重排一遍（2026-11-23，#2142）
+
+`antigravity-macos-environment.test.ts` 起登录 bash 时把 `~/.local/bin` 放在 PATH 最前，想核「已经在的原位不动」。Linux 上绿，macOS runner 上红（指纹：`expected { count: 1, last: true } to deeply equal { count: 1, last: false }`）：macOS 的 `/etc/profile`、`/etc/zprofile` 先跑 `path_helper`，把 `/etc/paths` 里的系统目录排到最前，继承来的目录挪到后面，轮不到我们那一段说话。
+
+- 修法：登录 shell 里只核「有几个、最后一个是不是」这类重排改不了的；「原位不动」改成单独 `. 那一段` 核，不经过系统的启动文件。
+- 写法：真开登录 shell 的用例别断言继承来的 PATH 的先后，系统启动文件（还有 runner 镜像自己加的目录）会动它；要断言我们写的那一段怎么改 PATH，就在 `/bin/sh` 里直接读那一段。
+
+## 改了窗口尺寸立刻量版面：侧栏自动收起要等一拍（2026-11-25，#2168）
+
+`src/renderer-v2/testing/app-check.mjs`「the start cards sit fully above the composer in a short window…」（#2164 加的）把窗口从 1280 × 820 改成 1100 × 740、1100 × 680，每改一次立刻量起始页两张卡有没有落到输入框后面。宽不到 1272 时侧栏自动收成 60 宽，那是 `Shell.tsx` 的 `useNarrowWindow` 收到 `matchMedia` 回调再让 React 重画，比 `setViewportSize` 晚一拍；这一拍里窗口已经窄了、侧栏还是 224，正文窄约 160、卡高出约 20（容器里 740 高时量到卡底离输入框只剩 3 像素，侧栏收好以后是 63）。快机器上 680 那一下量的时候侧栏早收好了，慢 runner 上没收好，就量成两张卡都被挡（指纹：`680px tall`，`hidden` 实际 `[ 'create-card-video', 'create-card-canvas' ]`；11-25 在 #2166 的 linux-renderer-v2-browser (2)、#2168 的 windows-test (renderer-v2-browser-1) 各红一次）。
+
+- 修法：只改高、宽留在 1280，侧栏不动，量到的就是纯 CSS 排出来的那一版。1366 × 768 的笔记本侧栏本来就是展开的，这也正是那条改动要守的情形。
+- 写法：用例改窗口尺寸后要量版面的，别让尺寸跨过 1272 这条宽（或 660 这条高）；非跨不可的，先等侧栏到了该有的宽（`.v2-sidebar` 的宽是 60 或 224）再量，不要拿固定的毫秒数去等。
+
 ## 随机输入测试红了：是真问题，不是偶发红（2026-11-17）
 
 `fast-check` 写的随机输入测试（各测试文件末尾 `… with random inputs` 那几节：打码、外链白名单、会话编号、换线路改配置、粘贴密钥整理、PowerShell 单引号和通配符转义）每次跑用不同的随机种子，同一条这次绿、下次红是可能的。红的那次是库碰巧造出了一个打破规矩的输入，**代码真有这个缺口**：不按「重跑就过」放过，也不许把生成器改窄躲过去。
@@ -324,3 +338,4 @@ click stall evidence, taken 7004ms after the click started (each probe waits at 
 - 报错里有 `{ seed: …, path: "…" }` 和缩到最小的反例 `Counterexample: …`。复现：把这两个值原样加进那条 `fc.assert` 的第二个参数（比如 `{ numRuns: 300, seed: -1936744136, path: '4462:0:1' }`），本地单跑那个文件，每次都红在同一个输入上；修好代码再把它们删掉。
 - 生成器里刻意排除的输入，旁边都写了为什么（比如命令行参数名里不抽 `sk` 这一段，`--sk-api-key` 会先被密钥形状那条规则藏掉名字）。修那个缺口时先把排除去掉，旧代码当场红，就是 `AGENTS.md` 第 8 节「先写一条在旧代码上会红的用例」。带转义引号的密钥字段、结尾是 `-` 的 `sk-` 密钥原来也排除着，2026-11-17 都修好放开了；前者现在值里多抽引号和反斜杠，按 JSON 的写法转义后再查。
 - 想多找几轮：临时把 `numRuns` 调到几万，加 `--testTimeout 900000` 单跑那个文件，别提交。CI 上每条控制在几百轮，整个文件一秒上下。
+- 只有一种情况可以改生成器：反例根本不在那句话管的范围里，而代码对它的处理是有意的。这时先用一条手写例子把代码对这个输入的处理钉住，再在生成器里排除，旁边写明为什么。例子：`third-party-user-agent.test.ts` 那句是「认得出的自家地址一定拿到完整的那串」，标签生成器造出 `xn--a.solov.cc`（「xn--」开头却解不出国际化域名，`new URL` 报 `Invalid URL`），代码按认不出的网址当外人看，这是有意的；2026-11-24 把它钉进「unreadable address」那条，自家主机的生成器排除「xn--」开头的标签（#2153 的 macos-test 撞过一次）。造主机名的生成器都留意这一点：`ab--c`、能解出来的 `xn--fiqs8s` 都没事，解不出的 `xn--` 开头标签会让整个网址作废。

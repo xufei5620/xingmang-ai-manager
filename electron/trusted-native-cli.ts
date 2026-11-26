@@ -21,6 +21,13 @@ export interface NativeCliSignature {
   issuer?: string | null
 }
 
+/**
+ * Whose Windows signature to expect. Antigravity's agy is not a ProviderId (it is provisioned on
+ * demand, not at every sign-in, see account-cli-provisioner.ts), but its binary is checked the
+ * same way, so it has its own entry here.
+ */
+export type NativeCliPublisherId = ProviderId | 'antigravity'
+
 interface TrustedNativeCliPublisher {
   /** Every pattern must match the signer certificate's subject. */
   subject: readonly RegExp[]
@@ -36,7 +43,7 @@ function nameComponent(attribute: string, value: string): RegExp {
   return new RegExp(`(?:^|,\\s*)(?:${attribute})="?${escaped}"?(?:,|$)`, 'i')
 }
 
-const expectedPublishers: Partial<Record<ProviderId, readonly TrustedNativeCliPublisher[]>> = {
+const expectedPublishers: Partial<Record<NativeCliPublisherId, readonly TrustedNativeCliPublisher[]>> = {
   codex: [{ subject: [/(?:^|,\s*)(?:CN|O)="?OpenAI OpCo, LLC"?(?:,|$)/i], issuer: [] }],
   claude: [{ subject: [/(?:^|,\s*)(?:CN|O)="?Anthropic, PBC"?(?:,|$)/i], issuer: [] }],
   // xAI 从 Grok 1.0.54（2026-10-12）起改用 X Corp. 的证书签名，1.0.53 及更早（含推荐版本 1.0.52）
@@ -57,6 +64,20 @@ const expectedPublishers: Partial<Record<ProviderId, readonly TrustedNativeCliPu
         nameComponent('C', 'US'),
       ],
       issuer: [nameComponent('CN', 'GlobalSign GCC R45 CodeSigning CA 2020'), nameComponent('O', 'GlobalSign nv-sa')],
+    },
+  ],
+  // agy.exe（1.5.15，2026-11-23 在 GitHub 的 Windows 机器上读到的；桌面端安装包也是这一张）。
+  // scripts/sync-antigravity-cli-cos.cjs 的 WINDOWS_SIGNER 是同一份，改一处要改两处（那边的测试逐条核对）。
+  antigravity: [
+    {
+      subject: [
+        nameComponent('CN', 'Google LLC'),
+        nameComponent('O', 'Google LLC'),
+        nameComponent('L', 'Mountain View'),
+        nameComponent('S|ST', 'California'),
+        nameComponent('C', 'US'),
+      ],
+      issuer: [nameComponent('CN', 'DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1'), nameComponent('O', 'DigiCert, Inc.')],
     },
   ],
 }
@@ -100,7 +121,7 @@ export function parseNativeCliSignature(value: unknown): NativeCliSignature {
 }
 
 export function validateNativeCliSignature(
-  provider: ProviderId,
+  provider: NativeCliPublisherId,
   signature: NativeCliSignature,
 ): void {
   const publishers = expectedPublishers[provider]
@@ -162,7 +183,7 @@ export interface VerifiedNativeCliFile {
 }
 
 export async function verifyOfficialNativeCliFile(
-  provider: ProviderId,
+  provider: NativeCliPublisherId,
   filePath: string,
 ): Promise<VerifiedNativeCliFile> {
   const source = requirePlainExecutable(filePath)

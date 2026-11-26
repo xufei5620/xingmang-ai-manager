@@ -48,6 +48,8 @@ export interface CanvasAccountLibraryQuery extends AiMediaLibraryQuery {
  * 2026-11-22): the works the library shows from there go along with the account library's own.
  */
 export interface CanvasLibraryFolder {
+  /** The project whose folder this is: its works go along with the project when the project goes too. */
+  projectId: string
   /** The root of the folder's asset stores: user-<id>/<date>/xingmang-<id>.<ext> below it, the account library's layout. */
   outputRoot: string
   metadata: Pick<AiAssetMetadataStore, 'getAll'>
@@ -56,6 +58,12 @@ export interface CanvasLibraryFolder {
    * project listed earlier also holds, is listed from there and is not among them.
    */
   assetIds: string[]
+}
+
+/** One project folder's media as 「迁移到新电脑」 copies them: user-<id>/<date>/xingmang-<id>.<ext> below outputRoot. */
+export interface CanvasTransferFolder {
+  outputRoot: string
+  metadata: Pick<AiAssetMetadataStore, 'getAll' | 'importMissing'>
 }
 
 export interface CanvasProjectImageMetadata extends AiAssetMetadata {
@@ -135,6 +143,23 @@ export class CanvasProjectAssetManager {
     this.contextRoots.set(context, outputRoot)
     context.images.ensureOutputDirectory()
     return context
+  }
+
+  /**
+   * Where a project keeps its own media, for 「迁移到新电脑」 to copy every file of it: the root of its folder's
+   * stores and their metadata. Null for a project without a folder of its own, whose media sit in the account
+   * library; a folder that cannot be reached right now throws, as forProject() does.
+   */
+  async transferFolder(userId: number, projectId: string): Promise<CanvasTransferFolder | null> {
+    const context = await this.forProject(userId, projectId)
+    const outputRoot = context === this.global ? undefined : this.contextRoots.get(context)
+    return outputRoot ? { outputRoot, metadata: context.metadata } : null
+  }
+
+  /** The same for the new, empty folder an imported project is about to move into (see forNewWorkspace). */
+  transferTarget(workspaceDirectory: string): CanvasTransferFolder {
+    const context = this.forNewWorkspace(workspaceDirectory)
+    return { outputRoot: this.contextRoots.get(context) as string, metadata: context.metadata }
   }
 
   /** Drops the remembered folder of a project bound to another folder, so the next use reads the new one. */
@@ -311,7 +336,7 @@ export class CanvasProjectAssetManager {
       try {
         const context = await this.forProject(userId, projectId)
         const outputRoot = this.contextRoots.get(context)
-        if (outputRoot) folders.push({ outputRoot, metadata: context.metadata, assetIds })
+        if (outputRoot) folders.push({ projectId, outputRoot, metadata: context.metadata, assetIds })
       } catch {
         // Its folder went away since the library read it: it adds nothing, as on the page.
       }

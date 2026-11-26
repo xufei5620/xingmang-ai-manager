@@ -84,8 +84,12 @@ describe('updateFailureTone', () => {
 
 describe('updateNeedsManualReinstall', () => {
   // 主进程 updater.test.ts 钉住同一个字面量，两边改一边就会红。
-  it('sends only a Mac signature rejection to the download page', () => {
+  it('sends only a Mac signature rejection and a Windows handoff PowerShell refused to run to the download page', () => {
     expect(updateNeedsManualReinstall(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_SIGNATURE_REJECTED', message: '校验没通过' } }))).toBe(true)
+    expect(updateNeedsManualReinstall(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_HANDOFF_BLOCKED', message: '本机的安全设置不允许自动安装' } }))).toBe(true)
+    // A declined prompt or a handoff that failed some other way can still be retried.
+    expect(updateNeedsManualReinstall(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_INSTALL_CANCELLED', message: '已取消安装' } }))).toBe(false)
+    expect(updateNeedsManualReinstall(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_HANDOFF_FAILED', message: '安装程序未能启动' } }))).toBe(false)
     expect(updateNeedsManualReinstall(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_ERROR', message: '更新程序未能启动' } }))).toBe(false)
     expect(updateNeedsManualReinstall(snapshot())).toBe(false)
     expect(updateNeedsManualReinstall(null)).toBe(false)
@@ -100,6 +104,7 @@ describe('updateOffersDownloadPage', () => {
     // 停住了照样能「重新下载」：换个网络、过一会儿再点也可能就好了。
     expect(updateNeedsManualReinstall(stalled)).toBe(false)
     expect(updateOffersDownloadPage(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_SIGNATURE_REJECTED', message: '校验没通过' } }))).toBe(true)
+    expect(updateOffersDownloadPage(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_HANDOFF_BLOCKED', message: '本机的安全设置不允许自动安装' } }))).toBe(true)
   })
 
   it('offers the download page when the update check itself stalls', () => {

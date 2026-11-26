@@ -1,0 +1,72 @@
+# 一键装 Antigravity 命令行（agy）要的谷歌官方原件放进腾讯云 COS，星芒装 agy 时先从这里下。
+# 只问谷歌的 agy 版本清单（每种系统两种芯片各一份），版本变了才下；Windows 的 .exe 在 Windows 机器上核
+# Google LLC 的 Authenticode 签名（钉住 DigiCert 签发机构），Mac 的 tar.gz 在 Mac 机器上解开、核 EQHXZ8M8AV 团队的
+# Developer ID 签名和芯片，都对上才传。两台机器各写各的索引（windows.json、macos.json），互不等待。
+name: sync-antigravity-cli-cos
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cos-antigravity-cli-publish
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: ${{ github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' && vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}
+    runs-on: ${{ matrix.runner }}
+    environment: cos-sync
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Synchronize Google-signed Antigravity CLI binaries to Tencent COS
+        env:
+          COS_BUCKET: ${{ vars.COS_BUCKET || 'xingmang-downloads-1342302199' }}
+          COS_REGION: ${{ vars.COS_REGION || 'ap-shanghai' }}
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+          XINGMANG_COS_MULTIPART_ENABLED: ${{ vars.XINGMANG_COS_MULTIPART_ENABLED || 'false' }}
+          XINGMANG_COS_MULTIPART_CONCURRENCY: ${{ vars.XINGMANG_COS_MULTIPART_CONCURRENCY || '8' }}
+          XINGMANG_COS_ACCELERATE: ${{ vars.XINGMANG_COS_ACCELERATE || 'false' }}
+        run: node scripts/sync-antigravity-cli-cos.cjs
+
+  # 定时同步连续两次失败就开一条 issue 报警（指派给仓库负责人），之后的失败只改这一条，
+  # 下一次定时同步成功就留言并关闭；手动运行不算。只有这个作业能写 issue，它不碰 COS 凭据。
+  alert:
+    needs: [sync]
+    if: ${{ always() && github.event_name == 'schedule' && github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' && vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Open, update or close the sync failure alert issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SYNC_WORKFLOW_FILE: sync-antigravity-cli-cos.yml
+          SYNC_NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/cos-sync-alert.cjs

@@ -455,7 +455,7 @@ alipay@0.2.23|0.2.24@windows wxpay
 | 填的名字 | 是什么 | 关掉以后 |
 |---|---|---|
 | `video-studio` | 视频剪辑 | 页面换成「视频剪辑暂时停用」，不能写分镜、不能出新片段；已经交出去的片段照常取回（那是付过钱的） |
-| `codex-remote` | 手机遥控 Codex | 开着的渠道当场停掉（手机上收到现成那句「手机遥控已在电脑上关闭。」），放开以前打不开 |
+| `codex-remote` | 手机遥控 Codex | 开着的渠道当场停掉（手机上收到现成那句「遥控已在电脑上关闭。」），放开以前打不开 |
 | `mac-idle-install` | Mac 闲着时自己装更新 | 不再趁没人用电脑自己装，「下好了」那句不再说「你不用电脑时星芒也会自己装好」；照旧退出时、下次打开时装 |
 | `tray-release` | 缩到托盘久了关界面省内存 | 缩到托盘不再关界面，客户看不出来 |
 | `acceleration` | 网络加速 | 不能新连（加速页、托盘、打开 Codex / Claude 桌面端时替他连的那次，最后那个照常打开、只是不连）；已经连着的照常用、照常能断 |
@@ -466,7 +466,8 @@ alipay@0.2.23|0.2.24@windows wxpay
 | `launch:工具` | 从星芒打开某个工具 | 点打开被拦下，弹同一个框 |
 
 工具写 `claude`（Claude Code）、`codex`（Codex CLI）、`grok`（Grok CLI）、`codexDesktop`（Codex 桌面端）、
-`claudeDesktop`（Claude Desktop）、`workbuddy`（WorkBuddy）、`opencode`（OpenCode），大小写不分。安装、打开的按钮本身
+`claudeDesktop`（Claude Desktop）、`workbuddy`（WorkBuddy）、`opencode`（OpenCode）、`antigravityCli`（Antigravity 命令行）、
+`antigravityDesktop`（Antigravity 桌面端，后两样只有带 Antigravity 的版本认），大小写不分。安装、打开的按钮本身
 不变灰（入口太多：首页、工具页、托盘、搜索、最近对话），点了才弹框。客户看到的每一句都是 yoyo 2026-10-28 回「停用改」批的，
 逐字见 `/mnt/project-files/商业级差距/G04-第二批开关-界面字.md`。
 

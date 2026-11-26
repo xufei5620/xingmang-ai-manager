@@ -31,6 +31,8 @@ export interface VideoStudioLibrary {
   /** 列在左边那一列里的视频，新的在前。刚新建、什么都还没写的那一条不在里面。 */
   items: VideoStudioItem[]
   warning: string
+  /** 这一次没读出来时，客户点「重新读取」再读一遍。 */
+  reload(): void
   /** 开一条空的，画面比例、模型这些设置照最近那一条；已经有一条空的就还是它。存满了是 null。 */
   create(): string | null
   /** 这一条的名字、时间和工程；没有这一条是 null。 */
@@ -76,6 +78,7 @@ export function useVideoStudioLibrary(bridge: VideoStudioLibraryBridge, scope: s
   const [status, setStatus] = useState<VideoStudioLibrary['status']>('loading')
   const [warning, setWarning] = useState('')
   const [, setRevision] = useState(0)
+  const [attempt, setAttempt] = useState(0)
   const dirty = useRef(new Set<string>())
   const removed = useRef(new Set<string>())
   const versions = useRef(new Map<string, number>())
@@ -121,6 +124,7 @@ export function useVideoStudioLibrary(bridge: VideoStudioLibraryBridge, scope: s
   useEffect(() => {
     let current = true
     mounted.current = true
+    if (attempt) setStatus('loading')
     void loadVideoStudioLibrary(bridge, scope, storage).then((loaded) => {
       if (!current) return
       // 读回来之前已经在这一页里新建、改过的那几条照留，读回来的不盖它们。
@@ -131,7 +135,7 @@ export function useVideoStudioLibrary(bridge: VideoStudioLibraryBridge, scope: s
       redraw()
     })
     return () => { current = false }
-  }, [bridge, scope, storage])
+  }, [bridge, scope, storage, attempt])
 
   useEffect(() => {
     // 关窗、刷新时页面先收到 pagehide：手上攒着的那一笔这时交出去。退出软件走主进程问的那一声（同聊天记录）。
@@ -208,7 +212,7 @@ export function useVideoStudioLibrary(bridge: VideoStudioLibraryBridge, scope: s
     redraw()
   }
 
-  return { status, items: listed, warning, create, get: (id: string) => entries.current.get(id)?.item ?? null, source, replace, revision, rename, remove, flush }
+  return { status, items: listed, warning, reload: () => setAttempt((value) => value + 1), create, get: (id: string) => entries.current.get(id)?.item ?? null, source, replace, revision, rename, remove, flush }
 }
 
 /**

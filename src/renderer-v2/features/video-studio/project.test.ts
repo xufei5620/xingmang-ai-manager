@@ -650,7 +650,7 @@ describe('video studio project', () => {
     expect(videoStudioDraftProgress(createVideoStudioProject())).toBe('尚未编写分镜')
     const made = { ...film, shots: film.shots.map((shot, index) => index ? shot : { ...shot, clip: clip('a'), status: 'done' as const }) }
     expect(videoStudioDraftProgress(made)).toBe('3 个镜头 · 已生成 1 段')
-    expect(videoStudioDraftProgress({ ...made, exported: clip('z') })).toBe('3 个镜头 · 已生成 1 段 · 已合成成片')
+    expect(videoStudioDraftProgress({ ...made, exported: clip('z') })).toBe('已合成 · 3 个镜头')
   })
 
   // 0.2.24 及以前草稿箱在 localStorage 里的写法（当时的 serializeVideoStudioDrafts）。新版不再写它，只在头一次打开时读一遍。

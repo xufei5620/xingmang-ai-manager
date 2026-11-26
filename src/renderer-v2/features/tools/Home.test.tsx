@@ -2111,6 +2111,8 @@ describe('Home sections and balance labels', () => {
       return render({}, undefined, { snapshot: { ...base, platform } as ToolboxSnapshot })
     }
     expect(withFailures({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })).toContain('已安装的工具均已配置')
+    // 页头不替运行环境打包票：好不好看状态栏和「检查」页（yoyo 2026-11-26「页头不提环境」）。
+    expect(withFailures({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })).not.toContain('运行环境正常')
     const one = withFailures({ claude: cliStatus, codex: cliStatus, grok: failed, gemini: cliStatus })
     expect(one).toContain('1 个工具检测失败，请点击卡片上的「重新检测」。')
     expect(one).not.toContain('已安装的工具均已配置')
@@ -2393,5 +2395,52 @@ describe('renderer-v2 home desktop app updates on macOS', () => {
       expect(row(markup, tool), tool).toContain('更新失败，旧版本仍可正常使用')
       expect(row(markup, tool), tool).toContain(`data-testid="tool-${tool}-why"`)
     }
+  })
+})
+
+describe('renderer-v2 home Antigravity cards', () => {
+  const noop = () => undefined
+  function row(markup: string, id: string): string {
+    const start = markup.indexOf(`data-testid="tool-row-${id}"`)
+    const next = markup.indexOf('data-testid="tool-row-', start + 1)
+    expect(start, `没有渲染出 ${id} 那一行`).toBeGreaterThan(-1)
+    return markup.slice(start, next < 0 ? undefined : next)
+  }
+
+  it('leaves the cards out until the check says this computer can run Antigravity', () => {
+    expect(render({})).not.toContain('tool-row-antigravity')
+    expect(render({}, undefined, { antigravity: { supported: false, cliInstalled: false, desktopInstalled: false, configured: false } })).not.toContain('tool-row-antigravity')
+  })
+
+  it('offers install on a missing program and open on an installed one, next to the other vendors', () => {
+    const markup = render({}, undefined, { antigravity: { supported: true, cliInstalled: false, desktopInstalled: true, configured: true }, onInstallAntigravity: noop, onOpenAntigravity: noop })
+    const cli = row(markup, 'antigravityCli')
+    expect(cli).toContain('Antigravity 命令行')
+    expect(cli).toContain('未安装')
+    expect(cli).toContain('<span>安装</span></button>')
+    expect(cli).toContain('命令行编程助手')
+    const desktop = row(markup, 'antigravity')
+    expect(desktop).toContain('<span>打开</span></button>')
+    expect(desktop).toContain('data-testid="tool-antigravity-source"')
+    // 装好以后中间那行不再是没装时的介绍（yoyo 2026-11-26「谷歌卡介绍改」）。
+    expect(desktop).toContain('打开时自动使用当前账号')
+    expect(desktop).not.toContain('可使用当前账号')
+    expect(markup.indexOf('tool-row-codexDesktop')).toBeLessThan(markup.indexOf('tool-row-antigravityCli'))
+    expect(markup.indexOf('tool-row-antigravity"')).toBeLessThan(markup.indexOf('tool-row-grok'))
+  })
+
+  it('still offers open when the settings are not the current account, since opening writes them', () => {
+    const desktop = row(render({}, undefined, { antigravity: { supported: true, cliInstalled: true, desktopInstalled: true, configured: false } }), 'antigravity')
+    expect(desktop).toContain('待连接')
+    expect(desktop).toContain('<span>打开</span></button>')
+    expect(desktop).toContain('打开时自动使用当前账号')
+  })
+
+  it('shows the install progress on the card that is installing', () => {
+    const label = '正在校验下载文件的完整性…'
+    const cli = row(render({ antigravityCli: { label, percent: 42, log: [label] } }, undefined, { antigravity: { supported: true, cliInstalled: false, desktopInstalled: false, configured: false } }), 'antigravityCli')
+    expect(cli).toContain(label)
+    expect(cli).toContain('42%')
+    expect(cli).not.toContain('tool-antigravityCli-primary')
   })
 })

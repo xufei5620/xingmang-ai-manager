@@ -131,6 +131,7 @@ import { ProviderExtensionService } from './provider-extensions'
 import { ProviderSessionsService } from './provider-sessions'
 import { guardProcessOutputStreams } from './process-stream-errors'
 import { ensureCiUserAgentMarker } from './ci-user-agent'
+import { installThirdPartyUserAgentPolicy } from './third-party-user-agent'
 import { configureRelocatedFolderAccess } from './relocated-folders'
 import { createRemoteFeatureGate } from './remote-feature-gate'
 import { RuntimeLogStore } from './runtime-log'
@@ -227,6 +228,9 @@ guardProcessOutputStreams()
 // GitHub Actions 里起的星芒，请求的 UA 末尾带「 ci」，服务端数装机量时剔掉（ci-user-agent.ts）。
 // 要赶在任何会话、任何请求之前，所以放在这里。
 ensureCiUserAgentMarker(app, process.env)
+// 发给自家站点以外的请求，UA 里不带「xingmang-ai-manager/版本」，外人从访问记录查不到仓库；自家站点照旧
+// （third-party-user-agent.ts）。改的是默认 UA，同样要赶在任何会话之前，并且在 CI 记号之后。
+const applyThirdPartyUserAgentPolicy = installThirdPartyUserAgentPolicy(app)
 
 const applicationPackage = require('../package.json') as {
   xingmangAccelerationBundle?: unknown
@@ -995,6 +999,8 @@ if (!hasSingleInstanceLock) {
       allowedPermissions.has(permission),
     )
     session.defaultSession.setDevicePermissionHandler(() => false)
+    // 默认会话建出来时 session-created 已经挂过了，这里只是保底，同一个会话不会挂两遍。
+    applyThirdPartyUserAgentPolicy(session.defaultSession)
     session.defaultSession.webRequest.onHeadersReceived(
       { urls: [`${canvasProtocolScheme}://*/*`] },
       (details, callback) => callback({
@@ -1319,6 +1325,13 @@ if (!hasSingleInstanceLock) {
         runtimeLog.exception('network', 'codex-payload.notify-failed', cause)
       }
     }
+    // 替 Antigravity 跟上了账号、线路：界面只重读那两张卡。主窗口建得比这里晚，用到时才读；没有窗口时不用叫，
+    // 首屏读那两张卡时读到的就是新设置。
+    function notifyAntigravitySettingsFollowed(): void {
+      const main = managedMainWindow
+      if (!main || main.isDestroyed() || main.webContents.isDestroyed()) return
+      main.webContents.send(ipcEventChannels.onAntigravitySettingsFollowed, undefined)
+    }
     let readCurrentManagedCliKeys: () => Promise<readonly StoredManagedCliKey[]> = async () => []
     let readOtherManagedCliKeyAccounts: () => Promise<readonly { owner: string; keys: readonly StoredManagedCliKey[] }[]> = async () => []
     let readBillingAccountScope: () => string = () => 'xm-account:guest'
@@ -1373,6 +1386,7 @@ if (!hasSingleInstanceLock) {
       cliModelHints: readCliModelHints,
       // 改完界面重读设置和配置：首页的线路标签、重开提示都在那里面。
       onToolRouteFollowed: () => notifyRelayRouteChanged(),
+      onAntigravityFollowed: () => notifyAntigravitySettingsFollowed(),
       onCodexPayloadRestart: () => notifyCodexPayload('codexPayloadSwitched', String(Date.now())),
       codexPayloadNotice: () => codexPayloadNotices.current(),
       windowsExecutionMode: windowsCliExecutionMode,
@@ -2037,6 +2051,10 @@ if (!hasSingleInstanceLock) {
           }
           // 没登录时双击的画布项目文件，登录好了接着打开。
           openPendingCanvasProjectFile()
+          // Antigravity 的设置写在用户环境变量（Mac 是终端启动文件读的那份）里，客户从开始菜单打开它也用：星芒替
+          // 上一个账号写的那份换成这个账号的（复查 A 第 1 轮第 3 条）。开机恢复登录那一次等安静期过了再看。
+          void startupQuiet.whenOver().then(() => systemService.antigravity?.follow('account-changed'))
+            .catch((error) => runtimeLog.exception('config', 'antigravity.follow.failed', error))
         }
       },
     })
@@ -2218,6 +2236,8 @@ if (!hasSingleInstanceLock) {
     })
     let lastUpdateForUsage: UsageUpdateView | null = null
     const accountWork = createAccountWorkGate({ assertReady: accounts.assertReady, revision: () => accountService.getSessionRevision!() })
+    // 新建画布项目默认放这里（Mac 的访达里叫「文稿」）；读到 Documents 要的系统授权说明在 electron-builder 的 NSDocumentsFolderUsageDescription。
+    const defaultCanvasProjectsDirectory = () => path.join(app.getPath('documents'), '星芒画布')
     const { businesses, ensureBusiness, subscribeCanvasRuns } = createRealmBusinesses({
       managerDataDirectory,
       projectRoot: path.join(__dirname, '..'),
@@ -2227,6 +2247,7 @@ if (!hasSingleInstanceLock) {
       systemService,
       readAccountGroupHints,
       readDocumentsDirectory,
+      canvasProjectsDirectory: defaultCanvasProjectsDirectory,
       runtimeLog,
       sessionFetch,
       routedRelayFetch,
@@ -2320,8 +2341,6 @@ if (!hasSingleInstanceLock) {
       },
       readPricing: async () => accountService.getModelPricing ? accountService.getModelPricing() : null,
     })
-    // 新建画布项目默认放这里（Mac 的访达里叫「文稿」）；读到 Documents 要的系统授权说明在 electron-builder 的 NSDocumentsFolderUsageDescription。
-    const defaultCanvasProjectsDirectory = () => path.join(app.getPath('documents'), '星芒画布')
     const canvasController = createCanvasWindowController({
       accountWork,
       canvasDistRoot: canvasDistRoot(),

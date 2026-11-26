@@ -44,6 +44,8 @@ import type {
 export type { ExternalToolConfigOptions, ExternalToolConfigSaveResult, ExternalToolId } from './external-tool-config'
 import type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientInstallProgress, ExternalClientLaunchProgress, ExternalClientLaunchResult } from './external-client-contract'
 import type { ExternalClientCheckResult } from './external-client-connection'
+import type { AntigravityDesktopLaunchResult, AntigravityInstallResult, AntigravityProgress, AntigravityStatus, AntigravityTarget } from './antigravity-service'
+export type { AntigravityDesktopLaunchResult, AntigravityInstallResult, AntigravityProgress, AntigravityStatus, AntigravityTarget } from './antigravity-service'
 export type { ExternalClientCheckResult } from './external-client-connection'
 export type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress, ExternalClientLaunchProgress, ExternalClientLaunchResult } from './external-client-contract'
 import type {
@@ -860,7 +862,12 @@ export interface DataTransferWorksSummary {
   images: number
   videos: number
   audios: number
+  /** 一共多大：作品，带画布项目时连同项目里的文件。 */
   bytes: number
+  /** 跟着导出的画布项目几个（第三轮复查第 6 条）；没有就不带。 */
+  canvasProjects?: number
+  /** 文件夹现在找不到、导不出去的画布项目几个；只在导出前报数时有。 */
+  canvasProjectsUnreachable?: number
 }
 
 export interface DataTransferExportResult {
@@ -869,8 +876,8 @@ export interface DataTransferExportResult {
   conversations: number
   /** 带走了几条视频；旧版本不回。 */
   videoProjects?: number
-  /** 带作品导出时才有：新建的文件夹叫什么、实际导出了几件作品。 */
-  works?: { folderName: string; count: number }
+  /** 带作品导出时才有：新建的文件夹叫什么、实际导出了几件作品、几个画布项目（没有项目不带）。 */
+  works?: { folderName: string; count: number; canvasProjects?: number }
 }
 
 /**
@@ -883,10 +890,30 @@ export type DataTransferWorksPreview = DataTransferWorksSummary & (
   | { state: 'missing' | 'unreadable' }
 )
 
-/** 导入作品的结果。no-space：空间不够，一件都没导，neededBytes 是要复制的那几件加起来多大。 */
+/**
+ * 导入的文件旁边「画布项目」文件夹的样子，文件里说带了画布项目才有。ready 时跟作品用同一个 token 导；
+ * 「作品」文件夹不在或读不出来时，画布项目也导不了，跟它报同一个样子。count 在 ready 时是清单里的，另两种是文件里记的。
+ */
+export interface DataTransferCanvasProjectsPreview {
+  count: number
+  state: 'ready' | 'missing' | 'unreadable'
+}
+
+/** 画布项目导进来几个；existing：本机已有同一个项目；full：本机项目数到了上限；failed：读不出来或没放成。 */
+export interface DataTransferCanvasProjectsImportResult {
+  added: number
+  existing: number
+  full: number
+  failed: number
+}
+
+/**
+ * 导入作品的结果。no-space：空间不够，一件都没导，neededBytes 是要复制的那几件（带画布项目时连同项目）加起来多大。
+ * canvasProjects：带了画布项目才有。
+ */
 export type DataTransferWorksImportResult =
-  | { status: 'done'; added: number; existing: number; failed: number }
-  | { status: 'no-space'; neededBytes: number; availableBytes: number }
+  | { status: 'done'; added: number; existing: number; failed: number; canvasProjects?: DataTransferCanvasProjectsImportResult }
+  | { status: 'no-space'; neededBytes: number; availableBytes: number; canvasProjects?: DataTransferCanvasProjectsImportResult }
 
 /**
  * 「搬到新电脑」导入读出来的内容，还没有写进任何地方。对话由渲染层逐条严格校验后
@@ -909,10 +936,19 @@ export interface DataTransferImportPreview {
   anonymousUsage?: boolean
   /** 同上，这台电脑上关过、文件里是开的：和 conflictingSettings 一起先问，设置名已经在 conflictLabels 里。 */
   conflictingAnonymousUsage?: boolean
+  /**
+   * 文件里「给 AI 的长期嘱咐」，这台电脑上还没写过、可以直接换的（第三轮复查第 7 条）。它要写进三家工具的说明文件，
+   * 设置页走 config:save-standing-instructions 写，不进 settings:save。旧文件没有、和这台一样的都没有这一项。
+   */
+  standingInstructions?: string
+  /** 同上，这台电脑上写过另一段：和 conflictingSettings 一起先问，设置名已经在 conflictLabels 里。 */
+  conflictingStandingInstructions?: string
   /** 文件里「创作」的视频，渲染层逐条认过再合并。旧文件没有这一项。 */
   videoProjects?: VideoStudioProjectFile[]
   /** 导出时带了作品才有。 */
   works?: DataTransferWorksPreview
+  /** 导出时带了画布项目才有。 */
+  canvasProjects?: DataTransferCanvasProjectsPreview
 }
 
 /**
@@ -1142,6 +1178,14 @@ export interface XingmangInvokeContract {
   cancelExternalClientInstall: IpcInvokeDefinition<'external-clients:cancel-install', [tool: ExternalToolId], InstallCancelResult>
   /** 回打开以后还要客户知道的事（ExternalClientLaunchResult），没有就是空对象。 */
   launchExternalClient: IpcInvokeDefinition<'external-clients:launch', [tool: ExternalToolId], ExternalClientLaunchResult>
+  /** Antigravity 命令行和桌面端装没装、设置是不是当前账号这条线路的（只看本机，不带密钥，I3）。 */
+  inspectAntigravity: IpcInvokeDefinition<'antigravity:inspect', [], AntigravityStatus>
+  /** 一键装命令行或桌面端，装好接着按需签密钥写设置；进度走 antigravity:install-progress。 */
+  installAntigravity: IpcInvokeDefinition<'antigravity:install', [target: AntigravityTarget], AntigravityInstallResult>
+  /** 写好设置再打开桌面端；开着的那一份拿不到这次的设置时不打开，回 closeFirst 请客户先关掉。 */
+  openAntigravityDesktop: IpcInvokeDefinition<'antigravity:open-desktop', [], AntigravityDesktopLaunchResult>
+  /** 写好设置，在选的文件夹里开一个终端跑 agy；workspace 缺省用记住的那个工作目录。 */
+  openAntigravityCli: IpcInvokeDefinition<'antigravity:open-cli', [workspace?: string], void>
   /**
    * 首页 Claude Desktop 卡上的一键切换：只改它登录页那个选择（官方登录 / 第三方），星芒那份配置留着。
    * 只有 Claude Desktop 支持；切回当前账号时那份用不上了回 reconnect，界面接着打开配置窗口。
@@ -1269,8 +1313,9 @@ export interface XingmangInvokeContract {
   checkCodexDesktopUpdate: IpcInvokeDefinition<'desktop:check-update-codex', [], DesktopAppStatus>
   /**
    * mode 省略 = 开新对话(旧行为);resumeLast 由主进程按工具映射成固定参数。
-   * sessionId 只给 Codex 的 resumeLast:那条记录自己的 id(`codex:<UUID>`),主进程在
-   * 记录里核对过、且就在 workspace 里才按 id 接,否则照旧按目录找最近一条。
+   * sessionId 只给 Codex、Claude Code、Grok CLI 的 resumeLast:那条记录自己的 id(`codex:<UUID>`,
+   * `claude:` / `grok:` 加 64 位十六进制),主进程在记录里核对过、且就在 workspace 里,才按
+   * 记录里读出的编号接,否则照旧按目录找最近一条。
    */
   launchCli: IpcInvokeDefinition<
     'cli:launch',
@@ -1794,6 +1839,13 @@ export interface XingmangEventContract {
   onExternalClientInstallProgress: IpcEventDefinition<'external-clients:install-progress', ExternalClientInstallProgress>
   /** 点「打开」以后替它准备的进度（Windows 上替 Claude Desktop 放 Claude Code 程序），只发给点了「打开」的那个窗口。 */
   onExternalClientLaunchProgress: IpcEventDefinition<'external-clients:launch-progress', ExternalClientLaunchProgress>
+  /** Antigravity 一键安装的进度，只发给点了安装的那个窗口。 */
+  onAntigravityInstallProgress: IpcEventDefinition<'antigravity:install-progress', AntigravityProgress>
+  /**
+   * 换账号、换线路以后主进程替 Antigravity 改完了设置（antigravity-service.ts 的 follow）。载荷为空：界面只重读
+   * 那两张卡，不借线路那一声，免得把三个外部客户端再检测一遍（复查 A 第 2 轮第 2 条）。
+   */
+  onAntigravitySettingsFollowed: IpcEventDefinition<'antigravity:settings-followed', undefined>
   onAccountSessionChanged: IpcEventDefinition<'account:session-changed', AccountSessionState>
   onAccountUsageChanged: IpcEventDefinition<'account:usage-changed', AccountUsageChangedEvent>
   /** 本机账号存储被重建。载荷为空：备份文件名与账号内容都不跨 IPC。 */
@@ -1879,6 +1931,10 @@ export const ipcInvokeChannels = {
   installExternalClient: 'external-clients:install',
   cancelExternalClientInstall: 'external-clients:cancel-install',
   launchExternalClient: 'external-clients:launch',
+  inspectAntigravity: 'antigravity:inspect',
+  installAntigravity: 'antigravity:install',
+  openAntigravityDesktop: 'antigravity:open-desktop',
+  openAntigravityCli: 'antigravity:open-cli',
   switchExternalClientSource: 'external-clients:switch-source',
   switchToOfficialAccount: 'config:switch-to-official-account',
   switchAccountSource: 'config:switch-account-source',
@@ -2121,6 +2177,8 @@ export const ipcInvokeChannels = {
 export const ipcEventChannels = {
   onExternalClientInstallProgress: 'external-clients:install-progress',
   onExternalClientLaunchProgress: 'external-clients:launch-progress',
+  onAntigravityInstallProgress: 'antigravity:install-progress',
+  onAntigravitySettingsFollowed: 'antigravity:settings-followed',
   onAccountSessionChanged: 'account:session-changed',
   onAccountUsageChanged: 'account:usage-changed',
   onAccountVaultRecovered: 'account:vault-recovered',

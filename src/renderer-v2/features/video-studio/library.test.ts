@@ -154,8 +154,8 @@ describe('upgrading from the drafts 0.2.24 kept in localStorage', () => {
     const storage = legacyStorage()
     const drafts = readLegacyVideoStudioDrafts(storage, scope, now)
     expect(drafts.map((item) => [item.id, videoStudioItemName(item), videoStudioDraftProgress(item.project), item.updatedAt])).toEqual([
-      [legacyCurrentVideoStudioItemId, '橘猫回家', '3 个镜头 · 已生成 1 段 · 已合成成片', now],
-      ['0b6f3c1e-8a52-4c8e-9d0a-2f7c5a1e9b10', '新品口红 15 秒', '3 个镜头 · 已生成 3 段 · 已合成成片', now - 3_600_000],
+      [legacyCurrentVideoStudioItemId, '橘猫回家', '已合成 · 3 个镜头', now],
+      ['0b6f3c1e-8a52-4c8e-9d0a-2f7c5a1e9b10', '新品口红 15 秒', '已合成 · 3 个镜头', now - 3_600_000],
       ['5d2a9f04-1c3b-4e6f-8a7d-9b0c1d2e3f40', '海边日落，镜头慢慢拉远', '尚未编写分镜', now - 86_400_000],
       ['9e8d7c6b-5a49-4382-b716-0f1e2d3c4b5a', '咖啡', '2 个镜头 · 已生成 1 段', now - 3 * 86_400_000],
     ])
@@ -179,8 +179,8 @@ describe('upgrading from the drafts 0.2.24 kept in localStorage', () => {
     expect(loaded.status).toBe('ready')
     expect(loaded.items).toHaveLength(4)
     expect(loaded.items.map((item) => [videoStudioItemName(item), videoStudioDraftProgress(item.project)])).toEqual([
-      ['橘猫回家', '3 个镜头 · 已生成 1 段 · 已合成成片'],
-      ['新品口红 15 秒', '3 个镜头 · 已生成 3 段 · 已合成成片'],
+      ['橘猫回家', '已合成 · 3 个镜头'],
+      ['新品口红 15 秒', '已合成 · 3 个镜头'],
       ['海边日落，镜头慢慢拉远', '尚未编写分镜'],
       ['咖啡', '2 个镜头 · 已生成 1 段'],
     ])

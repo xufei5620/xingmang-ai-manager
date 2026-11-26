@@ -20,7 +20,9 @@ import { OfficialQuotaDialog } from './features/tools/OfficialQuotaDialog'
 import { Home, homeWalletEmpty } from './features/tools/Home'
 import { rescanFingerprint } from './features/tools/rescan-change'
 import { workspaceChoiceChanged } from './features/tools/recent-workspaces'
-import { externalClientReady, visibleExternalClients } from './features/tools/external-model'
+import { externalClientReady, presentExternalClients, visibleExternalClients } from './features/tools/external-model'
+import { presentAntigravity } from './features/tools/antigravity'
+import { installedToolCount } from './features/tools/installed-count'
 import { createToolsApi } from './features/tools/api'
 import { logoutJobsNote } from './features/tools/launch-notice'
 import { modelSwapConfirmLabel, modelSwapKeepLabel, modelSwapQuestion, modelSwapTitle } from './features/tools/model-check'
@@ -98,6 +100,7 @@ import { useToolLaunch } from './features/tools/useToolLaunch'
 import { useDesktopAppUpdate } from './features/tools/useDesktopAppUpdate'
 import { isMacDesktopUpdate } from './features/tools/desktop-update'
 import { useToolInstall } from './features/tools/useToolInstall'
+import { useAntigravityActions } from './features/tools/useAntigravityActions'
 import { jobToolName } from './features/tools/tool-jobs'
 import { resolveToolKeySyncFailure } from './features/tools/key-sync-failure'
 import './business.css'
@@ -311,6 +314,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     accountKeysReady: accountBootstrap?.scope === scope && accountBootstrap.result !== undefined,
     runAccountBootstrap, refreshRecent, navigate, setAuth, setConfirmation, setOperationError, setExternalClient,
   })
+  const { installAntigravity, openAntigravity } = useAntigravityActions({ toolsApi, toolbox, toast, session, mounted, accountEpoch, setAuth })
   // Mac 上桌面端的「可更新到 v…」（yoyo 2026-10-27「桌面端更新改」）：星芒关掉的那一份更新完走首页同一个「打开」。
   const { desktopUpdateTargets, desktopUpdateFailures, requestDesktopUpdate, showDesktopUpdateFailure } = useDesktopAppUpdate({
     toolsApi, toolbox, toast, offline, mounted, accountEpoch, setConfirmation, setOperationError,
@@ -465,6 +469,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       onScan={() => {
         setRescanBefore(rescanFingerprint(toolbox.snapshot, toolbox.externalClients))
         refreshRecent(); void toolbox.refresh(true, { recheckRoutes: true }).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined)
+        void toolbox.refreshAntigravity()
       }} onInstall={(id, version, intent) => {
         if (isMacDesktopUpdate(toolbox.snapshot, id, intent) && version) { void requestDesktopUpdate(id, version); return }
         installFromHome(id, version, intent)
@@ -481,6 +486,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       onRepairHooks={(id) => void perform('修提醒设置', () => repairToolHooks(id), id)}
       onRepairConfig={(id) => repairBrokenConfig(id)}
       onOpenConfigDirectory={(id) => void perform('打开配置文件夹', () => toolsApi.openConfigDirectory(id))}
+      antigravity={toolbox.antigravity} onInstallAntigravity={(target) => void perform(target === 'cli' ? '安装工具' : '安装客户端', () => installAntigravity(target))}
+      onOpenAntigravity={(target, chooseFolder) => void perform(target === 'cli' ? '打开工具' : '打开客户端', () => openAntigravity(target, chooseFolder))}
       onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onCancelInstallExternal={(id) => void perform('取消安装', () => cancelInstall(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))}
       onSwitchExternalSource={(id, target) => void perform(target === 'account' ? '改用当前账号' : '切回官方账号', () => switchExternalSource(id, target))} onOpenExternalDownload={(url) => void perform('打开下载页', () => app.openExternal(url))}
       onConfigureExternal={setExternalClient} onCodexModels={() => { setCodexModelFilter('non-gpt'); setConfigTool(platform?.codexDesktop.launch ? 'codexDesktop' : 'codex') }}
@@ -488,7 +495,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       : null}
     {(Object.keys(visitedPages) as PageId[]).filter((id) => visitedPages[id] === scope || id === page).map((id) => <div key={id === 'settings' ? `settings:${settingsRequest}` : id === 'health' ? `health:${healthRequest}` : id} hidden={page !== id} inert={page !== id}>
       <Suspense fallback={pageLoading}>
-        <BusinessPage api={native} page={id} active={page === id} onLogout={logoutVoluntarily} logoutNote={logoutJobsNote(toolbox.jobs, jobToolName)} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} onAccountTabChange={setShownAccountTab} accountRechargeAmount={accountTab.rechargeAmount} accountSession={session} accountKeyTools={accountKeyTools} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)}
+        <BusinessPage api={native} page={id} active={page === id} onLogout={logoutVoluntarily} logoutNote={logoutJobsNote(toolbox.jobs, jobToolName)} accountTab={accountTab.value} accountTabRequest={accountTab.sequence} onAccountTabChange={setShownAccountTab} accountRechargeAmount={accountTab.rechargeAmount} accountSession={session} accountKeyTools={accountKeyTools} tutorialTopic={tutorialTopic ?? undefined} paymentReturn={paymentReturn} navigate={navigate} openLogin={(target) => { setAuthTarget(target ?? null); setAuth('login') }} openHelp={() => setHelp(true)} openLegal={setLegal}
           switchAccount={() => setSwitcher(true)} appSettings={settings ?? undefined}
           updateAvailable={Boolean(update && !update.error && (update.phase === 'available' || update.phase === 'downloading' || update.phase === 'downloaded'))}
           accelerating={acceleration.snapshot.state?.phase === 'active'}
@@ -537,7 +544,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           remoteActive={remoteActive}
           tourOpen={tourOpen} onTourClose={() => { rememberTourSeen(scope); setTourOpen(false) }}
           environment={buildEnvironmentStatus(diagnosticsCounts, toolbox.snapshot?.system.runtime)} version={update?.currentVersion}
-          unread={unread} installedCount={toolbox.snapshot ? presentTools(toolbox.snapshot).filter((tool) => tool.status.installed).length + visibleExternalClients(os, toolbox.externalClients).filter((tool) => tool.installed).length : undefined}
+          unread={unread} installedCount={toolbox.snapshot ? installedToolCount(presentTools(toolbox.snapshot), presentExternalClients(visibleExternalClients(os, toolbox.externalClients)), presentAntigravity(toolbox.antigravity), toolbox.jobs) : undefined}
           updatableCount={toolUpdates.length}
           network={latestNetworkLocation(toolbox.snapshot?.system.network, networkLocation.snapshot.network)}
           networkRefreshing={networkLocation.snapshot.busy}

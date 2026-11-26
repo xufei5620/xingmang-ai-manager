@@ -154,6 +154,30 @@ describe('data transfer file', () => {
     }
   })
 
+  // 第三轮复查第 7 条：「给 AI 的长期嘱咐」以前不跟着走。
+  it('carries the standing instructions, and leaves them out when none were written or the stored ones are broken', () => {
+    const raw = buildDataTransferFile(settings({ standingInstructions: '回答请尽量简洁。\n我从事外贸行业。' }), { conversations: [] }, new Date())
+    expect(JSON.parse(raw).settings.standingInstructions).toBe('回答请尽量简洁。\n我从事外贸行业。')
+    expect(parseDataTransferFile(raw).standingInstructions).toBe('回答请尽量简洁。\n我从事外贸行业。')
+    // 手改坏了的（带控制字符、带星芒自己的标记）不带：带了新电脑那边会整份拒收。
+    for (const standingInstructions of [undefined, '', '带\u0007响铃', '星芒AI管理工具：给 AI 的长期嘱咐（开始）']) {
+      const without = buildDataTransferFile(settings({ standingInstructions }), { conversations: [] }, new Date())
+      expect(JSON.parse(without).settings).not.toHaveProperty('standingInstructions')
+      expect(parseDataTransferFile(without)).not.toHaveProperty('standingInstructions')
+    }
+  })
+
+  it('reads the standing instructions the way the settings page would save them, and rejects the whole file when they are off', () => {
+    const valid = JSON.parse(buildDataTransferFile(settings(), { conversations: [] }, new Date()))
+    const read = (standingInstructions: unknown) => parseDataTransferFile(JSON.stringify({ ...valid, settings: { ...valid.settings, standingInstructions } }))
+    expect(read('  回答请尽量简洁。\r\n我从事外贸行业。  ').standingInstructions).toBe('回答请尽量简洁。\n我从事外贸行业。')
+    // 空的当没带：不能借导入把这台电脑上写过的嘱咐清掉。
+    expect(read('   ')).not.toHaveProperty('standingInstructions')
+    for (const standingInstructions of [1, null, {}, ['x'], 'x'.repeat(2001), '带\u0000空字符', '星芒AI管理工具：给 AI 的长期嘱咐']) {
+      expect(() => read(standingInstructions)).toThrow(dataTransferInvalidMessage)
+    }
+  })
+
   it('validates the phrases in the export request from the renderer', () => {
     expect(parseDataTransferExportInput({ conversations: [], phrases: ['回答尽量简短'] }).phrases).toEqual(['回答尽量简短'])
     expect(() => parseDataTransferExportInput({ conversations: [], phrases: 'x' })).toThrow('导出的常用的话格式无效')
@@ -175,6 +199,17 @@ describe('creation in the data transfer file', () => {
     expect(JSON.parse(plain)).not.toHaveProperty('works')
     expect(parseDataTransferFile(plain)).toMatchObject({ videoProjects: [] })
     expect(parseDataTransferFile(plain)).not.toHaveProperty('works')
+  })
+
+  it('carries how many canvas projects went along with the works, and leaves it out when none did', () => {
+    const raw = buildDataTransferFile(settings(), { conversations: [] }, new Date(), undefined, { ...works, canvasProjects: 4 })
+    expect(JSON.parse(raw).works).toEqual({ folder: '作品', ...works, canvasProjects: 4 })
+    expect(parseDataTransferFile(raw).works).toEqual({ ...works, canvasProjects: 4 })
+    expect(parseDataTransferFile(buildDataTransferFile(settings(), { conversations: [] }, new Date(), undefined, works)).works).not.toHaveProperty('canvasProjects')
+    const valid = JSON.parse(raw)
+    for (const canvasProjects of [-1, 1.5, '4', 501]) {
+      expect(() => parseDataTransferFile(JSON.stringify({ ...valid, works: { ...valid.works, canvasProjects } }))).toThrow(dataTransferInvalidMessage)
+    }
   })
 
   it('rejects the whole file when a video or the works count is off', () => {
@@ -256,6 +291,25 @@ describe('planPortableSettingsImport', () => {
       expect(planPortableSettingsImport(settings(), {}, anonymousUsage)).toEqual({ settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels: [] })
     }
     expect(planPortableSettingsImport(settings(), {})).toEqual({ settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels: [] })
+  })
+
+  it('applies the standing instructions where none were written here, and asks before replacing other ones', () => {
+    expect(planPortableSettingsImport(settings(), {}, undefined, { here: '', incoming: '回答请尽量简洁。' })).toEqual({
+      settings: { version: 2 },
+      conflictingSettings: { version: 2 },
+      conflictLabels: [],
+      standingInstructions: '回答请尽量简洁。',
+    })
+    expect(planPortableSettingsImport(settings({ theme: 'dark' }), { theme: 'light' }, { here: false, incoming: true }, { here: '用中文回答。', incoming: '回答请尽量简洁。' })).toEqual({
+      settings: { version: 2 },
+      conflictingSettings: { version: 2, theme: 'light' },
+      conflictLabels: ['主题', '匿名使用统计', '给 AI 的长期嘱咐'],
+      conflictingAnonymousUsage: true,
+      conflictingStandingInstructions: '回答请尽量简洁。',
+    })
+    for (const standingInstructions of [{ here: '用中文回答。' }, { here: '' }, { here: '用中文回答。', incoming: '用中文回答。' }]) {
+      expect(planPortableSettingsImport(settings(), {}, undefined, standingInstructions)).toEqual({ settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels: [] })
+    }
   })
 
   it('has nothing to do when the file matches this computer', () => {

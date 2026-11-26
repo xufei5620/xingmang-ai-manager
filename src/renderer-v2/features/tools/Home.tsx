@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowRight, BookOpen, Check, ChevronRight, Download, FolderOpen, Info, MessageSquare, Play, Plug, Plus, RefreshCw, RotateCcw, TriangleAlert, X, Zap } from 'lucide-react'
-import type { AccountBalance, AccountProfile, AccountSourceTarget, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount, ProviderId, WindowsRestartResult } from '../../../../electron/ipc-contract'
+import type { AccountBalance, AccountProfile, AccountSourceTarget, AntigravityStatus, AntigravityTarget, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount, ProviderId, WindowsRestartResult } from '../../../../electron/ipc-contract'
 import { presentExternalClients } from './external-model'
+import { presentAntigravity, type AntigravityPresentation } from './antigravity'
+import { installedToolCount } from './installed-count'
 import { desktopUpdateFailedLine, externalUpdateTarget, type DesktopUpdateTool } from './desktop-update'
 import { useSharedBalanceSelector, useSharedBalanceStore } from '../app/balance-context'
 import { sameFlatRecord, subscribeBalanceReads } from '../app/balance-store'
@@ -13,7 +15,7 @@ import type { ToolJob } from './useToolbox'
 import { accountKeyChangeInProgress, accountKeyChangePending, bootstrapOnlyFollowedRoute, type AccountBootstrapProgress, type AccountBootstrapResult } from './account-bootstrap'
 import type { PageId } from '../../registry/pages'
 import { macDesktopTutorialTopic, macRuntimeTutorialTopic, otherAppsAnchor } from '../../registry/business'
-import { homeToolBlurbs, homeToolOrder, officialAccountNames, shortcutTools, tools as toolRegistry } from '../../registry/tools'
+import { antigravityInstalledMeta, homeToolBlurbs, homeToolOrder, officialAccountNames, shortcutTools, tools as toolRegistry } from '../../registry/tools'
 import { statuses } from '../../registry/status'
 import { FirstRunSteps } from './FirstRun'
 import { bootstrapErrorText, isAccountNotEnabledFailure, keySyncFailureText, networkBlockedNotice } from './key-sync-failure'
@@ -130,6 +132,11 @@ export interface HomeProps {
    * 缺省 = 来源牌照旧不可点（旧行为）。
    */
   onSwitchExternalSource?(tool: ExternalToolId, target: AccountSourceTarget): void
+  /** Antigravity 命令行和桌面端的检测结果；缺省 / null = 首页不摆这两张卡（旧行为）。 */
+  antigravity?: AntigravityStatus | null
+  onInstallAntigravity?(target: AntigravityTarget): void
+  /** chooseFolder：命令行那张卡「…」里的「选择其他文件夹…」，不用记住的那个文件夹。 */
+  onOpenAntigravity?(target: AntigravityTarget, chooseFolder?: boolean): void
   /** 一键安装用不了时打开客户端官网下载页；缺省 = 不给这颗按钮，仍是「暂不支持」（旧行为）。 */
   onOpenExternalDownload?(url: string): void
   onCodexModels(): void
@@ -302,7 +309,7 @@ const homeNoticeLimit = 2
 // 卡片「改用…」统一不带用户名（批 04 字表）：长邮箱会把按钮撑出卡片。
 const useAccountLabel = '改用当前账号'
 /** 首页 Codex CLI 卡片「…」菜单里去手机遥控那张卡的那一项（YF-6）。 */
-export const remoteMenuLabel = '手机遥控'
+export const remoteMenuLabel = '遥控'
 
 /** npm 是随 Node.js 一起装的：Node.js 在、它却确实不在（不是没查出来）才算缺。 */
 export function nodeInstallerPartMissing(runtime: ToolboxSnapshot['system']['runtime'] | undefined) {
@@ -648,7 +655,8 @@ export function Home(props: HomeProps) {
   const externalBusy = props.externalLoading || externalCached
   const undetectedExternal = (tool: ExternalPresentation) => !tool.status.installed && !jobs[tool.id] && Boolean(tool.status.detectionError)
   const installedExternal = external.filter((tool) => tool.status.installed || jobs[tool.id])
-  const installedCount = installed.length + installedExternal.length
+  const antigravityCards = presentAntigravity(props.antigravity ?? null)
+  const installedCount = installedToolCount(tools, external, antigravityCards, jobs)
   const undetectedCount = tools.filter(undetected).length + external.filter(undetectedExternal).length
   // 第一次检测还没回来：工具区只放灰色占位。
   const firstScan = loading && !snapshot
@@ -1136,12 +1144,36 @@ export function Home(props: HomeProps) {
       ] : undefined} menuLabel={`${spacedName(tool.name)}更多操作`} testId={`tool-row-${tool.id}`} />
   }
 
+  /**
+   * Antigravity 两张卡只有「安装」「打开」两件事。打开时主进程现签密钥、现写设置，所以没关联当前账号的
+   * 照样给「打开」，角标写「待连接」；关联上了写「当前账号」，同外接客户端那块。
+   */
+  function renderAntigravity(card: AntigravityPresentation) {
+    const installJob = jobs[card.id], launchJob = jobs[`launch:${card.id}`], job = launchJob ?? installJob
+    const meta = job?.label ?? (card.installed ? antigravityInstalledMeta : homeToolBlurbs[card.id])
+    const remembered = card.target === 'cli' ? snapshot?.config.rememberedWorkspace : undefined
+    const badge = installJob ? typeof installJob.percent === 'number' ? undefined : <span className="v2-tool-card-busy" role="status"><Spinner label={installJob.label} /></span>
+      : !card.installed ? <span className="v2-tool-card-off">{statuses.tool.missing[0]}</span>
+      : card.configured ? <span className="v2-source-chip is-static" title="费用从当前账号余额中扣除" data-testid={`tool-${card.id}-source`}>{sourceChipLabels.account}</span>
+        : <Pill tone={statuses.tool.unconfigured[1]} dot><span title={statuses.tool.unconfigured[0]}>{statuses.tool.unconfigured[0]}</span></Pill>
+    const actions = installJob ? null
+      : <Button size="sm" variant={card.installed ? 'primary' : 'secondary'} loading={Boolean(launchJob)} disabled={Boolean(job)}
+        title={card.installed && remembered ? `在 ${remembered} 打开` : undefined} icon={card.installed ? undefined : Download}
+        onClick={() => card.installed ? props.onOpenAntigravity?.(card.target) : props.onInstallAntigravity?.(card.target)} testId={`tool-${card.id}-primary`}>{launchJob ? '打开中' : card.installed ? '打开' : '安装'}</Button>
+    const menu = card.target === 'cli' && card.installed && !job
+      ? [{ label: chooseWorkspaceLabel, testId: `tool-${card.id}-choose-workspace`, onSelect: () => props.onOpenAntigravity?.(card.target, true) }] : undefined
+    return <ToolCard key={card.id} tool={card.id} off={!card.installed && !installJob} meta={meta} metaTitle={meta} badge={badge} actions={actions}
+      progress={typeof installJob?.percent === 'number' ? installJob.percent : undefined} menu={menu} menuLabel={`${spacedName(card.name)}更多操作`} testId={`tool-row-${card.id}`} />
+  }
+
   // 工具区按厂商排（v4）：命令行工具和外接客户端混在一起。Linux 上没有 Codex 桌面端、也没有外接客户端，跳过。
   const cards = homeToolOrder.flatMap((id) => {
     const cli = tools.find((tool) => tool.id === id)
     if (cli) return [renderTool(cli)]
     const client = external.find((tool) => tool.id === id)
-    return client ? [renderExternal(client)] : []
+    if (client) return [renderExternal(client)]
+    const antigravityCard = antigravityCards.find((card) => card.id === id)
+    return antigravityCard ? [renderAntigravity(antigravityCard)] : []
   })
 
   // 顶部大卡：第一个装好的命令行工具（按厂商顺序）。一个都没装时放 Claude Code 的「还没装」。
@@ -1299,7 +1331,6 @@ export function Home(props: HomeProps) {
   const unrecognizedNames = tools.filter((tool) => !jobs[tool.id] && !tool.error && isUnrecognizedInstall(tool.status)).map((tool) => tool.name)
   const unconnected = [...cliStates.filter((entry) => entry.status === 'unconfigured').map((entry) => entry.tool.name),
     ...installedExternal.filter((tool) => tool.status.installed && tool.configurationStatus === 'unconfigured' && !tool.status.detectionError).map((tool) => tool.name)]
-  const nodeReady = Boolean(snapshot && (snapshot.system.runtime.node.installed || nodeOptional) && !nodeInstallerPartMissing(snapshot.system.runtime))
   const lead = cachedPhase ? <span data-testid="home-cached-scan">正在检测本机工具，当前显示上次结果。</span>
     : loading || props.externalLoading && !external.length ? '正在检测本机工具和运行环境…'
     : offline ? '网络未连接，已安装的工具仍可正常使用。'
@@ -1310,7 +1341,8 @@ export function Home(props: HomeProps) {
     // 检测失败的卡不算装着（installed 为假），不先拦下来就会落到「还没装工具」或「都配好了」，跟下面红着的卡对不上（D12）。
     : undetectedCount > 0 ? `${undetectedCount} 个工具检测失败，请点击卡片上的「重新检测」。`
     : installedCount === 0 ? '尚未安装工具，请从下方选择。'
-    : nodeReady && !runtimeUndetected ? '已安装的工具均已配置，运行环境正常。' : '已安装的工具均已配置。'
+    // 运行环境好不好只看状态栏和「检查」页：页头原来写「运行环境正常」只看了装没装，状态栏还灰着「环境待检测」，两处各说各的（yoyo 2026-11-26「页头不提环境」）。
+    : '已安装的工具均已配置。'
 
   // 余额卡：金额、订阅、按最近用量还能用几天、近 7 天花费。
   const runwayLine = props.supportsUsage === false ? '请在官方网站查看消费记录。'
@@ -1425,7 +1457,7 @@ export function Home(props: HomeProps) {
       <section className="v2-home-well v2-home-try" data-testid="home-suggestions">
         <div className="v2-home-well-head"><h2>推荐功能</h2></div>
         <ListRow icon={Plug} title="为 AI 连接浏览器和文件夹" onOpen={() => props.onNavigate('mcp')} actions={<ArrowRight size={16} aria-hidden="true" />} testId="home-suggestion-mcp" />
-        <ListRow icon={MessageSquare} title="无需终端，直接在星芒中对话" onOpen={() => props.onNavigate('chat')} actions={<ArrowRight size={16} aria-hidden="true" />} testId="home-suggestion-chat" />
+        <ListRow icon={MessageSquare} title="无需终端，在「创作」中直接提问" onOpen={() => props.onNavigate('chat')} actions={<ArrowRight size={16} aria-hidden="true" />} testId="home-suggestion-chat" />
         {!codexInUse && <ListRow icon={BookOpen} title="Codex 入门：4 步快速上手" onOpen={() => props.onNavigate('tutorial')} actions={<ArrowRight size={16} aria-hidden="true" />} testId="home-suggestion-codex" />}
       </section>
     </div>

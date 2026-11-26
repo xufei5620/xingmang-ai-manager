@@ -1,4 +1,4 @@
-import type { ExternalToolId, ProviderId } from '../../../electron/ipc-contract'
+import type { AntigravityTarget, ExternalToolId, ProviderId } from '../../../electron/ipc-contract'
 import type { ActiveProviderId } from '../../../electron/catalog'
 
 export const clientConnections: ReadonlyArray<{
@@ -14,6 +14,16 @@ export const clientConnections: ReadonlyArray<{
   { id: 'workbuddy', name: 'WorkBuddy', vendor: '腾讯', brandIcon: 'WorkBuddy', kind: 'desktop', description: '腾讯 WorkBuddy 自定义模型', preferredProvider: 'codex' },
   { id: 'claudeDesktop', name: 'Claude Desktop', vendor: 'Anthropic', brandIcon: 'Claude', kind: 'desktop', description: 'Claude 桌面端第三方推理网关', preferredProvider: 'claude' },
   { id: 'opencode', name: 'OpenCode', vendor: 'OpenCode', brandIcon: 'OpenCode', kind: 'cli', description: 'OpenCode CLI 与桌面端共享配置', preferredProvider: 'codex' },
+]
+
+/**
+ * 首页 Antigravity 的两张卡。它们不是外接客户端（不借哪个工具的密钥、不进配置弹窗），主进程按 target 认是哪一个；
+ * 编号只在界面里用，跟 ExternalToolId、ProviderId 都不重名。
+ */
+export type AntigravityToolId = 'antigravityCli' | 'antigravity'
+export const antigravityTools: ReadonlyArray<{ id: AntigravityToolId; target: AntigravityTarget; name: string; vendor: string; brandIcon: string; kind: 'cli' | 'desktop' }> = [
+  { id: 'antigravityCli', target: 'cli', name: 'Antigravity 命令行', vendor: 'Google', brandIcon: 'Antigravity', kind: 'cli' },
+  { id: 'antigravity', target: 'desktop', name: 'Antigravity', vendor: 'Google', brandIcon: 'Antigravity', kind: 'desktop' },
 ]
 
 // 外部客户端能借用哪个工具的 Key。已下线的 CLI（Gemini）不在其中：界面不再替它做任何事。

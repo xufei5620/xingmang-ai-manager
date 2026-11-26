@@ -17,6 +17,7 @@ import { AI_CHAT_STREAM_LIMITS, createAiChatService } from '../ai-chat-service'
 import { createAiImageService } from '../ai-image-service'
 import { createAiMediaAssetService, type AiMediaAssetService } from '../ai-media-asset-service'
 import { createAccountWorksTransfer } from '../data-transfer-works'
+import { createCanvasProjectsMigration } from '../data-transfer-canvas'
 import { chooseAiOutputRoot, migrateLegacyAiOutput, resolveLegacyAiOutputRoot } from '../ai-output-location'
 import { AiUnsavedImageStash, unsavedImageLogEntry, type AiUnsavedImagePlace } from '../ai-unsaved-image-stash'
 import { AiVideoAssetStore } from '../ai-video-asset-store'
@@ -153,6 +154,8 @@ export interface RealmBusinessesOptions {
   systemService: Pick<SystemService, 'fetchAvailableModels'>
   readAccountGroupHints: () => Promise<AccountGroupHints | null>
   readDocumentsDirectory: () => string | null
+  /** 新建画布项目默认放的「文档 › 星芒画布」；「迁移到新电脑」导入的画布项目也放这里。 */
+  canvasProjectsDirectory: () => string
   runtimeLog: RuntimeLogStore
   sessionFetch: typeof fetch
   routedRelayFetch: typeof fetch
@@ -163,7 +166,7 @@ export interface RealmBusinessesOptions {
 export function createRealmBusinesses(options: RealmBusinessesOptions) {
   const {
     managerDataDirectory, projectRoot, accounts, mainWindow, credentialPersistence, systemService,
-    readAccountGroupHints, readDocumentsDirectory, runtimeLog, sessionFetch, routedRelayFetch,
+    readAccountGroupHints, readDocumentsDirectory, canvasProjectsDirectory, runtimeLog, sessionFetch, routedRelayFetch,
   } = options
   // Each realm moves its own subtree once per launch; a second realm object for
   // the same subtree must not start a second walk over files already moving.
@@ -414,12 +417,18 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
         { ...context, reason: error instanceof Error ? error.message : String(error) },
       ),
     })
-    // 「迁移到新电脑」带上这个账号作品库里的作品（「搬作品改」），连同作品库页列出的画布项目里生成的那些（「画布也搬」）。
+    // 「迁移到新电脑」带上这个账号作品库里的作品（「搬作品改」），连同作品库页列出的画布项目里生成的那些（「画布也搬」），
+    // 和画布项目本身（节点、连线和项目文件夹里的素材，第三轮复查第 6 条）。
     // 元数据跟作品库共用这一个 store，导入时补记录和收藏、改名排在同一个队里。
     const worksTransfer = createAccountWorksTransfer({
       outputRoot: aiOutputRoot,
       metadata: assetMetadata,
       canvasFolders: (userId) => canvasProjectAssets.listLibraryFolders(userId),
+      canvasProjects: createCanvasProjectsMigration({
+        projects: canvasProjects,
+        assets: canvasProjectAssets,
+        projectsDirectory: canvasProjectsDirectory,
+      }),
     })
     const assetThumbnails = createAssetThumbnailService({
       store: new AssetThumbnailStore({ cacheRoot: roots.assetThumbnailsDirectory }),

@@ -45,14 +45,14 @@ describe('codex remote page', () => {
   it('reads the state before drawing anything else', () => {
     const markup = renderToStaticMarkup(<CodexRemotePage api={{} as V2Bridge} />)
     expect(markup).toContain('data-testid="page-remote"')
-    expect(markup).toContain('<h1>手机遥控</h1>')
+    expect(markup).toContain('<h1>遥控</h1>')
     expect(markup).toContain('正在读取…')
   })
 
   // 0.2.25（yoyo 2026-11-19「改」）：字逐字钉住。
   it('says the approved words for the page head, the two ways to connect and the closing warning', () => {
     expect(codexRemotePageText).toEqual({
-      title: '手机遥控',
+      title: '遥控',
       lead: '不在电脑前时，在手机上私聊您的机器人，即可远程操作本机的 Codex，使用当前账号的额度。',
       methodsTitle: '连接方式',
       methodsMeta: '开启一种即可，也可同时开启两种',
@@ -69,7 +69,7 @@ describe('codex remote page', () => {
     expect(codexRemoteModelText.follow()).toBe('与电脑端相同')
     expect(codexRemoteModelText).toMatchObject({ title: '手机端使用的模型', followHint: '如需更换，请前往首页 Codex 的「配置」修改，电脑端与手机端同时生效。', ownHint: '仅手机端使用此模型，电脑端的 Codex 不受影响。' })
     const markup = render(snapshot())
-    expect(markup).toContain('<h1>手机遥控</h1><p>不在电脑前时，在手机上私聊您的机器人，即可远程操作本机的 Codex，使用当前账号的额度。</p>')
+    expect(markup).toContain('<h1>遥控</h1><p>不在电脑前时，在手机上私聊您的机器人，即可远程操作本机的 Codex，使用当前账号的额度。</p>')
     expect(markup).toMatch(/<p class="v2-remote-safety" data-testid="settings-remote-safety">仅响应已配对的用户。任何能使用您绑定的飞书或微信发送消息的人，均可操作本机，请勿将账号借予他人。<\/p><\/div><\/section>$/)
     // 旧卡片开头那段不再出现，也不说「星芒的线路」。
     expect(markup).not.toContain('v2-remote-intro')
@@ -173,6 +173,24 @@ describe('codex remote page', () => {
     expect(switchMarkup(markup)).toContain('disabled=""')
     // 还没填应用时不摆配对那一行。
     expect(markup).not.toContain('data-testid="settings-remote-feishu-peer"')
+  })
+
+  // 0.2.25 M1：凭据填好了、只差文件夹时，开关说明不再叫人去「上方」找（文件夹那一行其实在下面「通用设置」里），
+  // 开关左边直接摆一颗「选择文件夹」；选好以后、开着的时候、还没填凭据的时候都不摆。
+  it('offers to choose the folder right beside the switch when that is the only step left', () => {
+    const waiting = render(snapshot({ workspaceDirectory: null }, { hasCredential: true, accountLabel: 'cli_a1b2c3d4' }))
+    expect(waiting).toContain('请先选择工作文件夹。')
+    expect(waiting).not.toContain('请先在上方选择工作文件夹。')
+    expect(waiting).toMatch(/<button[^>]*data-testid="settings-remote-feishu-choose-workspace"[^>]*>.*?<span>选择文件夹<\/span><\/button>/)
+    expect(buttonMarkup(waiting, 'settings-remote-feishu-choose-workspace')).not.toContain('disabled=""')
+    expect(waiting.indexOf('settings-remote-feishu-choose-workspace')).toBeLessThan(waiting.indexOf('data-testid="settings-remote-feishu-switch"'))
+    // 下面「通用设置」里那一行照旧在。
+    expect(buttonMarkup(waiting, 'settings-remote-workspace')).toBeTruthy()
+    expect(render(snapshot({ workspaceDirectory: '~/projects/demo' }, { hasCredential: true, accountLabel: 'cli_a1b2c3d4' })))
+      .not.toContain('settings-remote-feishu-choose-workspace')
+    expect(render(snapshot({ workspaceDirectory: null }))).not.toContain('settings-remote-feishu-choose-workspace')
+    const locked = render(snapshot({ workspaceDirectory: null, available: false, unavailableReason: '星芒正以管理员身份运行。' }, { hasCredential: true, accountLabel: 'cli_a1b2c3d4' }))
+    expect(buttonMarkup(locked, 'settings-remote-feishu-choose-workspace')).toContain('disabled=""')
   })
 
   // YF-4：六步下面两颗，飞书开发者后台交给浏览器，教程是星芒自己的那一章；不给跳页的就只摆前一颗。
@@ -322,7 +340,7 @@ describe('codex remote page', () => {
       { available: false, unavailableReason: '星芒正以管理员身份运行。', workspaceDirectory: '~/projects/demo' },
       { hasCredential: true, accountLabel: 'cli_a1b2c3d4' },
     ))
-    expect(markup).toContain('本机当前无法开启手机遥控')
+    expect(markup).toContain('本机当前无法开启遥控')
     expect(markup).toContain('星芒正以管理员身份运行。')
     expect(switchMarkup(markup)).toContain('disabled=""')
     expect(markup).toMatch(/data-testid="settings-remote-workspace" disabled=""/)
@@ -335,7 +353,7 @@ describe('codex remote page', () => {
     expect(markup).toContain(`<span>${codexRemoteAdminAccountNotice}</span>`)
     expect(markup.indexOf('</h1>')).toBeLessThan(markup.indexOf('data-testid="settings-remote-admin-account"'))
     expect(markup.indexOf('data-testid="settings-remote-admin-account"')).toBeLessThan(markup.indexOf('data-testid="remote-methods"'))
-    expect(markup).not.toContain('本机当前无法开启手机遥控')
+    expect(markup).not.toContain('本机当前无法开启遥控')
     expect(switchMarkup(markup)).not.toContain('disabled=""')
     expect(render(snapshot())).not.toContain('settings-remote-admin-account')
   })
@@ -364,8 +382,8 @@ describe('codex remote page', () => {
     expect(codexRemoteConfirmText.logout.title('飞书')).toBe('退出飞书登录？')
     expect(codexRemoteConfirmText.logout.title('微信')).toBe('退出微信登录？')
     // 退出以后怎么登回来，飞书和微信不一样：飞书重新填凭据，微信重新扫码。
-    expect(remoteChannelSections.feishu.logoutHint).toBe('退出后需重新填写机器人凭据，方可继续使用手机遥控。')
-    expect(remoteChannelSections.weixin.logoutHint).toBe('退出后需重新使用微信扫码登录，方可继续使用手机遥控。')
+    expect(remoteChannelSections.feishu.logoutHint).toBe('退出后需重新填写机器人凭据，方可继续使用遥控。')
+    expect(remoteChannelSections.weixin.logoutHint).toBe('退出后需重新使用微信扫码登录，方可继续使用遥控。')
     expect(codexRemoteConfirmText.logout.ok).toBe('退出登录')
   })
 

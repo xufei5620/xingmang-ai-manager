@@ -107,9 +107,11 @@ describe('cliVerifiedVersions coverage', () => {
     // 2.1.319 add more gateway retries (a beta header refused by name, tool search's
     // tool_reference blocks) and no new gateway regression; 2.1.321-2.1.326 add a
     // non-streaming recovery from a rejected beta header and stop third-party gateways
-    // hitting a context length error every turn; 2.1.326 behaves the same there.
-    expect(cliVerifiedVersions.claude.recommended?.version).toBe('2.1.326')
-    expect(findBlockedCliVersion('claude', '2.1.326')).toBeNull()
+    // hitting a context length error every turn; 2.1.327-2.1.330 add no gateway
+    // regression either (2.1.329 dropped the max_tokens retry and 2.1.330 restored
+    // it); 2.1.330 behaves the same there.
+    expect(cliVerifiedVersions.claude.recommended?.version).toBe('2.1.330')
+    expect(findBlockedCliVersion('claude', '2.1.330')).toBeNull()
     expect(findBlockedCliVersion('claude', '2.1.276')?.fixed).toBe('2.1.277')
     expect(findBlockedCliVersion('claude', '2.1.304')?.fixed).toBe('2.1.305')
     expect(findBlockedCliVersion('claude', '2.1.305')).toBeNull()
@@ -122,9 +124,10 @@ describe('cliVerifiedVersions coverage', () => {
     // customer who pressed "更新" in that window installed exactly 0.155.0.
     // 0.156.1 is the first release whose bundled catalog knows gpt-6-sol and
     // gpt-6-luna; on 0.155.1 they run on fallback metadata. The bundled model
-    // catalog is copied from rust-v0.169.1, the recommended release's patch that
-    // only adds GPT-6.2 Sol and Astra (codex-model-catalog.ts).
-    expect(cliVerifiedVersions.codex.recommended?.version).toBe('0.169.0')
+    // catalog is copied from rust-v0.171.0, the recommended release's own tag; its
+    // models.json is byte-identical to rust-v0.169.1, the patch that added GPT-6.2
+    // Sol and Astra (codex-model-catalog.ts).
+    expect(cliVerifiedVersions.codex.recommended?.version).toBe('0.171.0')
     expect(findBlockedCliVersion('codex', '0.155.0')?.fixed).toBe('0.155.1')
     expect(findBlockedCliVersion('codex', '0.155.1')).toBeNull()
     expect(findBlockedCliVersion('codex', '0.154.0')).toBeNull()
@@ -136,9 +139,9 @@ describe('cliVerifiedVersions coverage', () => {
   })
 
   it('pins Grok to a release that is both npm latest and the xAI stable channel', () => {
-    expect(cliVerifiedVersions.grok.recommended?.version).toBe('1.0.77')
+    expect(cliVerifiedVersions.grok.recommended?.version).toBe('1.0.92')
     expect(cliVerifiedVersions.grok.blocked).toEqual([])
-    expect(resolveCliInstallVersion('grok')).toEqual({ version: '1.0.77', source: 'recommended' })
+    expect(resolveCliInstallVersion('grok')).toEqual({ version: '1.0.92', source: 'recommended' })
     expect(resolveCliInstallVersion('grok', { alwaysLatest: true })).toEqual({ version: 'latest', source: 'latest' })
   })
 })
@@ -250,7 +253,7 @@ describe('buildCliVersionAdvice', () => {
 
   it('tells a Codex user on the blocked release to move forward, not back', () => {
     const advice = buildCliVersionAdvice('codex', '0.155.0')
-    expect(advice.recommendedVersion).toBe('0.169.0')
+    expect(advice.recommendedVersion).toBe('0.171.0')
     expect(advice.blockedReason).toMatch(/拒绝/)
     expect(advice.rollbackAvailable).toBe(true)
     expect(advice.recommendedIsNewer).toBe(true)

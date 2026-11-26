@@ -12,6 +12,7 @@ import { PageLoading } from '../app/PageLoading'
 import { ChatPage, type ChatPageCreate, type ChatPageProps, type ChatPageVideo } from '../chat/ChatPage'
 import type { ChatVideoFilm } from '../chat/ChatVideo'
 import { chatAssetSaveErrorMessage, type ChatSite } from '../chat/state'
+import { createVideoStudioCatalogCache } from '../video-studio/catalog-cache'
 import { cleanVideoStudioItemName, maxVideoStudioItemNameLength, maxVideoStudioProjects, videoStudioItemName, type VideoStudioItem } from '../video-studio/library'
 import { useVideoStudioPriceList, videoStudioPerCallUsd, videoStudioQuoteText } from '../video-studio/prices'
 import { appendVideoStudioClip, canAddVideoStudioShot, createVideoStudioProjectFromClip, createVideoStudioProjectFromClips, videoStudioDraftProgress, type VideoStudioClipSource } from '../video-studio/project'
@@ -122,6 +123,8 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
   const toast = useToast()
   const library = useVideoStudioLibrary(bridge, accountScope)
   const session = useVideoStudioSession(library)
+  // 换着开几条视频时共用一份模型表；这一层按账号挂（CreatePage 的 key），换账号自然丢掉。
+  const [studioOptions] = useState(() => ({ catalog: createVideoStudioCatalogCache() }))
   const canvas = useCanvasProjects(bridge, active)
   const canvasProjectsRef = useRef(canvas.projects)
   canvasProjectsRef.current = canvas.projects
@@ -147,9 +150,14 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
   const balance = useSharedBalanceSelector((state) => state.scope === accountScope ? state.balance : null)
   const prices = useVideoStudioPriceList(bridge, accountScope, false)
   // 列表的行是 memo 的：同一条视频、同一个项目没变时交出去的还是同一个对象。
-  const rows = useRef({ videos: new WeakMap<VideoStudioItem, CreateExtraItem>(), projects: new WeakMap<CanvasProjectListEntry, CreateExtraItem>(), films: new WeakMap<VideoStudioItem, ChatVideoFilm>() })
+  const rows = useRef({ videos: new WeakMap<VideoStudioItem, CreateExtraItem>(), busyVideos: new WeakMap<VideoStudioItem, CreateExtraItem>(), projects: new WeakMap<CanvasProjectListEntry, CreateExtraItem>(), films: new WeakMap<VideoStudioItem, ChatVideoFilm>() })
+  // 工作台在编写分镜、出片、合成的那一条，第二行写「正在处理…」：以前要等点别的视频被拦下来才知道它在忙
+  // （创作页复查第 7 条，yoyo 11-26 回「视频忙时提示」）。
+  const busyVideoId = session.busy ? session.openId : null
   const items: CreateExtraItem[] = [
-    ...videos.map((item) => cached<VideoStudioItem, CreateExtraItem>(rows.current.videos, item, () => ({ kind: 'video', id: item.id, title: videoStudioItemName(item), detail: videoStudioDraftProgress(item.project), updatedAt: item.updatedAt }))),
+    ...videos.map((item) => item.id === busyVideoId
+      ? cached<VideoStudioItem, CreateExtraItem>(rows.current.busyVideos, item, () => ({ kind: 'video', id: item.id, title: videoStudioItemName(item), detail: '正在处理…', updatedAt: item.updatedAt }))
+      : cached<VideoStudioItem, CreateExtraItem>(rows.current.videos, item, () => ({ kind: 'video', id: item.id, title: videoStudioItemName(item), detail: videoStudioDraftProgress(item.project), updatedAt: item.updatedAt }))),
     ...canvas.projects.map((entry) => cached<CanvasProjectListEntry, CreateExtraItem>(rows.current.projects, entry, () => ({ kind: 'canvas', id: entry.id, title: entry.name, detail: '画布项目', updatedAt: entry.updatedAt }))),
   ]
   const stableItems = useStableList(items)
@@ -307,6 +315,15 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
     else if (library.items[0]) showVideo(library.items[0].id)
     else if (videoAccess === 'ready') startVideo()
   }, [active, openVideo, library.status])
+  // 上次关软件、重启装更新时还在出的片段：工作台挂上才去接回，以前要客户点开那条视频才挂。读完列表、右边没开着视频时，
+  // 把有片段在出的那一条悄悄挂上（不切过去），同对话里出视频一开页面就接。只在读完的那一次看。
+  const resumeChecked = useRef(false)
+  useEffect(() => {
+    if (resumeChecked.current || library.status !== 'ready' || videoAccess !== 'ready') return
+    resumeChecked.current = true
+    const pending = session.openId ? null : library.items.find((item) => item.project.shots.some((shot) => shot.status === 'generating' && shot.requestId))
+    if (pending) session.open(pending.id)
+  }, [library.status, videoAccess])
   // 顶部搜索的「作品库」。
   useEffect(() => {
     if (!active || !openLibrary) return
@@ -331,7 +348,7 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
       </div></header>
       <div className="create-studio"><Suspense fallback={<PageLoading />}>
         <VideoStudioPage key={`${openItem.id}:${library.revision(openItem.id)}`} bridge={bridge} accountScope={accountScope} site={site} access={videoAccess} active={active && videoShown}
-          source={library.source(openItem.id)} onBusyChange={session.setBusy} onOpenAccount={chat.onOpenAccount} library={studioLibrary} />
+          source={library.source(openItem.id)} onBusyChange={session.setBusy} onOpenAccount={chat.onOpenAccount} library={studioLibrary} options={studioOptions} />
       </Suspense></div>
     </div>}
   </>
@@ -354,7 +371,7 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
     intro: (conversationCount) => <CreateIntro state={intro} ready={active && library.status !== 'loading' && canvas.status !== 'loading'}
       hasEarlierWork={conversationCount > 0 || library.items.length > 0 || canvas.projects.length > 0}
       onDecide={(show) => { rememberIntroSeen(); setIntro(show ? 'shown' : 'gone') }} onDismiss={() => setIntro('gone')} />,
-    notes: [...(videosListed && library.status === 'unreadable' ? ['历史视频读取失败'] : []), ...(canvas.status === 'unreadable' ? ['画布项目读取失败'] : [])],
+    notes: [...(videosListed && library.status === 'unreadable' ? [{ text: '历史视频读取失败', retry: library.reload }] : []), ...(canvas.status === 'unreadable' ? [{ text: '画布项目读取失败' }] : [])],
     video: {
       access: videoAccess,
       quote: (model, group) => videoStudioQuoteText(videoStudioPerCallUsd(prices.list, model, group), 1, true),

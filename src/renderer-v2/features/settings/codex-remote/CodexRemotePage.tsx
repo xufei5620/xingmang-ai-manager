@@ -33,7 +33,7 @@ import {
  * 用的是原来卡片说明末尾那两句（第五批已定的正式说法）。
  */
 export const codexRemotePageText = {
-  title: '手机遥控',
+  title: '遥控',
   lead: '不在电脑前时，在手机上私聊您的机器人，即可远程操作本机的 Codex，使用当前账号的额度。',
   methodsTitle: '连接方式',
   methodsMeta: '开启一种即可，也可同时开启两种',
@@ -56,7 +56,7 @@ export const codexRemoteAdminAccountNotice = '本机登录的 Windows 账号自�
 /** 凭据存不到下次打开时卡上那条（Linux 没有系统钥匙串时只记在内存里，见 codex-remote-store.ts）。 */
 export const codexRemotePersistenceNotices = {
   'session-only': { tone: 'neutral', title: '凭据仅在本次运行期间保存', body: '本机没有系统钥匙串，下次打开星芒时需重新填写。' },
-  unavailable: { tone: 'warn', title: '凭据无法保存', body: '本机无法安全保存凭据，手机遥控暂不可用。' },
+  unavailable: { tone: 'warn', title: '凭据无法保存', body: '本机无法安全保存凭据，遥控暂不可用。' },
 } as const
 
 /**
@@ -293,13 +293,28 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, navig
         title="打开遥控"
         description={remoteSwitchHint(snapshot, channel, definition.credentialHint, isMac)}
         control={
-          <Switch
-            checked={channel.enabled}
-            disabled={disabled || (!channel.enabled && !canEnable)}
-            onChange={(enabled) => void run(`${id}-switch`, () => api.setCodexRemoteChannelEnabled(id, enabled))}
-            aria-label={`打开${definition.title}遥控`}
-            testId={`settings-remote-${id}-switch`}
-          />
+          <>
+            {/* 0.2.25 M1：开关只差文件夹时，就在开关左边给一颗「选择文件夹」，不用往下找「通用设置」那一行。 */}
+            {channel.hasCredential && !channel.enabled && !snapshot.workspaceDirectory && (
+              <Button
+                size="sm"
+                icon={FolderOpen}
+                disabled={disabled}
+                loading={busy === 'workspace'}
+                onClick={() => void run('workspace', () => api.chooseCodexRemoteWorkspace())}
+                testId={`settings-remote-${id}-choose-workspace`}
+              >
+                {codexRemoteWorkspaceText.choose}
+              </Button>
+            )}
+            <Switch
+              checked={channel.enabled}
+              disabled={disabled || (!channel.enabled && !canEnable)}
+              onChange={(enabled) => void run(`${id}-switch`, () => api.setCodexRemoteChannelEnabled(id, enabled))}
+              aria-label={`打开${definition.title}遥控`}
+              testId={`settings-remote-${id}-switch`}
+            />
+          </>
         }
         testId={`settings-remote-${id}-enable`}
       />
@@ -535,7 +550,7 @@ export function CodexRemotePageView({ snapshot, api, busy, run, error, navigate,
         )}
         <div className="v2-remote-notices">
           {!snapshot.available && snapshot.unavailableReason && (
-            <Notice tone="warn" title="本机当前无法开启手机遥控" body={snapshot.unavailableReason} testId="settings-remote-unavailable" />
+            <Notice tone="warn" title="本机当前无法开启遥控" body={snapshot.unavailableReason} testId="settings-remote-unavailable" />
           )}
           {snapshot.codexStartFailed && (
             <Notice

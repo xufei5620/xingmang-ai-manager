@@ -46,7 +46,7 @@ import { shortcutTools } from '../../registry/tools'
 import { AppUninstallRow } from '../app/AppUninstall'
 import { BackupCard } from './BackupCard'
 import { StorageCard } from './StorageCard'
-import { StandingInstructionsField } from './StandingInstructions'
+import { StandingInstructionsField, standingInstructionsMissedLines } from './StandingInstructions'
 import { VersionCard } from './VersionCard'
 import { RelayRouteRestartNotice, RelayRouteRow } from '../app/RelayRouteSettings'
 import { ThemeCards, type ThemeCardValue } from '../app/ThemeCards'
@@ -63,11 +63,15 @@ import {
   dataTransferExportMessage,
   dataTransferImportMessage,
   settingsPatchFrom,
+  standingInstructionsFrom,
   worksCount,
   worksExportingText,
-  worksExportNote,
+  worksExportNoteFor,
   worksExportQuestion,
+  worksExportTitle,
+  worksExportWorthAsking,
   worksImportingText,
+  type DataTransferCanvasProjectsOutcome,
   type DataTransferWorksOutcome,
 } from '../app/data-transfer'
 import { useBackgroundWork } from '../../background-work'
@@ -216,6 +220,7 @@ export function SettingsPage({
   api,
   navigate,
   onSettingsChanged,
+  openLegal,
   openGuide,
   replayTour,
   uiScale,
@@ -416,9 +421,6 @@ export function SettingsPage({
     }
   }, [api, resource.setData])
   const [saveError, setSaveError] = useState('')
-  const [legal, setLegal] = useState<Awaited<
-    ReturnType<V2Bridge['getLegalDocument']>
-  > | null>(null)
   const [shortcuts, setShortcuts] = useState(false)
   // 显示方式要重开软件才生效：改完就在这一行下面给「现在重开」「稍后」。
   const [displayRelaunch, setDisplayRelaunch] = useState(false)
@@ -472,6 +474,8 @@ export function SettingsPage({
   // 「搬作品改」：作品可能要复制好几分钟，那一行下面写一句正在做什么；这期间界面不让主进程收掉（省内存那一下）。
   const [worksBusy, setWorksBusy] = useState<'export' | 'import' | null>(null)
   useBackgroundWork('data-transfer-works', worksBusy !== null)
+  // 导入的长期嘱咐有工具没写上：「工具管理」那一格下面照样列出是哪家、为什么，保存按钮可以直接再点（第三轮复查第 7 条）。
+  const [standingInstructionsMissed, setStandingInstructionsMissed] = useState<{ lines: string[] } | null>(null)
   // 对话先导入：它更可能出错，出错时设置还没动。作品最后导：最慢，也最可能缺空间，前面的不受它影响。
   const applyImport = async (
     preview: DataTransferImportPreview,
@@ -507,31 +511,70 @@ export function SettingsPage({
         throw settingsFailed()
       }
     }
-    const works = chatTransfer ? await importWorks(preview.works) : undefined
-    if (works?.kind === 'done' && works.added) chatTransfer?.reloadCreate()
+    // 「给 AI 的长期嘱咐」也不在 settings.json：走设置页保存嘱咐那一条，写进三家工具的说明文件。
+    const instructions = standingInstructionsFrom(preview, overwrite)
+    let instructionsMissed = false
+    if (instructions !== undefined) {
+      const saved = await api.saveStandingInstructions(instructions).catch((error: unknown) => {
+        setSaveError(errorMessage(error))
+        throw settingsFailed()
+      })
+      const missed = standingInstructionsMissedLines(saved)
+      // 三家都没写上时这段话没记下：跟设置没存上一样说，页顶红条说是哪家、为什么。
+      if (!saved.tools.some((tool) => tool.outcome !== 'skipped' && tool.outcome !== 'failed')) {
+        setSaveError(missed.join(' '))
+        throw settingsFailed()
+      }
+      resource.setData((previous) =>
+        previous ? { ...previous, settings: { ...previous.settings, standingInstructions: saved.text || undefined } } : previous,
+      )
+      instructionsMissed = missed.length > 0
+      setStandingInstructionsMissed(instructionsMissed ? { lines: missed } : null)
+    }
+    const { works, canvasProjects } = chatTransfer ? await importWorks(preview) : {}
+    // 导进来的画布项目里生成的作品也进了作品库，创作页同样要重读。
+    if ((works?.kind === 'done' && works.added) || (canvasProjects?.kind === 'done' && canvasProjects.added)) chatTransfer?.reloadCreate()
     return dataTransferImportMessage({
       fileConversations: conversations.length,
       fileVideos: videoProjects.length,
       fileWorks: preview.works ? worksCount(preview.works) : 0,
+      fileCanvasProjects: preview.canvasProjects?.count ?? 0,
       added,
       updated,
       skipped,
       videosAdded,
       videosSkipped,
       ...(works ? { works } : {}),
+      ...(canvasProjects ? { canvasProjects } : {}),
       signedIn: Boolean(chatTransfer),
-      settingsChanged: Boolean(patch) || anonymousUsage !== undefined,
+      settingsChanged: Boolean(patch) || anonymousUsage !== undefined || instructions !== undefined,
+      ...(instructionsMissed ? { standingInstructionsMissed: true } : {}),
     })
   }
-  const importWorks = async (works: DataTransferImportPreview['works']): Promise<DataTransferWorksOutcome | undefined> => {
-    if (!works) return undefined
-    if (works.state !== 'ready') return works.state === 'missing' ? { kind: 'missing' } : { kind: 'unreadable', count: worksCount(works) }
+  // 画布项目跟作品走同一次导入：要从「作品」里拿回项目生成的作品，空间也是一起估的。
+  const importWorks = async (
+    preview: DataTransferImportPreview,
+  ): Promise<{ works?: DataTransferWorksOutcome; canvasProjects?: DataTransferCanvasProjectsOutcome }> => {
+    const { works, canvasProjects: projects } = preview
+    if (!works) return {}
+    // 「画布项目」文件夹没有或读不出来：作品照导，项目那句单说。
+    const projectsNotReady: DataTransferCanvasProjectsOutcome | undefined = projects && projects.state !== 'ready'
+      ? projects.state === 'missing' ? { kind: 'missing' } : { kind: 'unreadable', count: projects.count }
+      : undefined
+    if (works.state !== 'ready') {
+      const outcome: DataTransferWorksOutcome = works.state === 'missing' ? { kind: 'missing' } : { kind: 'unreadable', count: worksCount(works) }
+      return { works: outcome, ...(projectsNotReady ? { canvasProjects: projectsNotReady } : {}) }
+    }
     setWorksBusy('import')
     try {
       const result = await api.importAppWorks(works.token)
-      return result.status === 'no-space'
+      // 空间是跟作品一起估的：不够时项目一个没导（主进程不回项目的数）；项目导完以后作品才缺空间的，照报项目的数。
+      const canvasProjects: DataTransferCanvasProjectsOutcome | undefined = projectsNotReady
+        ?? (result.canvasProjects ? { kind: 'done', ...result.canvasProjects } : result.status === 'no-space' && projects ? { kind: 'no-space' } : undefined)
+      const outcome: DataTransferWorksOutcome = result.status === 'no-space'
         ? { kind: 'no-space', neededBytes: result.neededBytes, availableBytes: result.availableBytes }
         : { kind: 'done', added: result.added, existing: result.existing, failed: result.failed }
+      return { works: outcome, ...(canvasProjects ? { canvasProjects } : {}) }
     } finally {
       setWorksBusy(null)
     }
@@ -594,7 +637,7 @@ export function SettingsPage({
       async () => {
         if (chatTransfer) {
           const works = await api.inspectAppWorks().catch(() => null)
-          if (works && worksCount(works) > 0) {
+          if (works && worksExportWorthAsking(works)) {
             setExportAsk(works)
             return null
           }
@@ -1011,11 +1054,13 @@ export function SettingsPage({
           api={api}
           saved={settings.standingInstructions ?? ''}
           busy={Boolean(operation.busy)}
+          missedAfterImport={standingInstructionsMissed}
           save={(run, done) =>
             void operation.execute(
               'standing-instructions',
               async () => {
                 const result = await run()
+                setStandingInstructionsMissed(null)
                 resource.setData((previous) =>
                   previous
                     ? { ...previous, settings: { ...previous.settings, standingInstructions: result.text || undefined } }
@@ -1312,38 +1357,20 @@ export function SettingsPage({
           </Button>
         </>,
       ),
-      legal: row(
+      // 协议两个账号共用一份：交给 App 里欢迎页、登录框用的那个弹窗读（固定读星芒账号那一份、按排版显示、
+      // 有「重新读取」）。设置页以前自己按当前账号读，历史账号那边没有协议，点了只报「当前账号暂不支持此功能」。
+      legal: openLegal ? row(
         'legal',
         null,
         <>
-          <Button
-            size="sm"
-            onClick={() =>
-              void operation.execute(
-                'legal',
-                async () =>
-                  setLegal(await api.getLegalDocument('user-agreement')),
-                '',
-              )
-            }
-          >
+          <Button size="sm" onClick={() => openLegal('user-agreement')} testId="settings-legal-user-agreement">
             用户协议
           </Button>
-          <Button
-            size="sm"
-            onClick={() =>
-              void operation.execute(
-                'legal',
-                async () =>
-                  setLegal(await api.getLegalDocument('privacy-policy')),
-                '',
-              )
-            }
-          >
+          <Button size="sm" onClick={() => openLegal('privacy-policy')} testId="settings-legal-privacy-policy">
             隐私政策
           </Button>
         </>,
-      ),
+      ) : undefined,
       'update-check': row(
         'update-check',
         null,
@@ -1635,7 +1662,7 @@ export function SettingsPage({
       </Dialog>
       <Dialog
         open={Boolean(exportAsk)}
-        title="是否同时导出作品？"
+        title={exportAsk ? worksExportTitle(exportAsk) : ''}
         onClose={() => setExportAsk(null)}
         footer={
           <>
@@ -1657,15 +1684,7 @@ export function SettingsPage({
         }
       >
         <p data-testid="settings-transfer-works-summary">{exportAsk ? worksExportQuestion(exportAsk) : ''}</p>
-        <p>{worksExportNote}</p>
-      </Dialog>
-      <Dialog
-        open={Boolean(legal)}
-        title={legal?.kind === 'privacy-policy' ? '隐私政策' : '用户协议'}
-        width={640}
-        onClose={() => setLegal(null)}
-      >
-        <pre className="v2-business-legal">{legal?.markdown}</pre>
+        <p>{exportAsk ? worksExportNoteFor(exportAsk) : ''}</p>
       </Dialog>
       <Dialog
         open={shortcuts}

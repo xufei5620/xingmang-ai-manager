@@ -11,7 +11,7 @@ import type { ExternalToolId } from './external-tool-config'
  *
  * 零依赖：渲染层照这里的说法认出「这个功能暂时停用了」（operation-error.ts），主进程照这里拼话。
  */
-export const remoteFeatureTools = ['claude', 'codex', 'grok', 'codexDesktop', 'claudeDesktop', 'workbuddy', 'opencode'] as const satisfies readonly (ActiveProviderId | 'codexDesktop' | ExternalToolId)[]
+export const remoteFeatureTools = ['claude', 'codex', 'grok', 'codexDesktop', 'claudeDesktop', 'workbuddy', 'opencode', 'antigravityCli', 'antigravityDesktop'] as const satisfies readonly (ActiveProviderId | 'codexDesktop' | ExternalToolId | 'antigravityCli' | 'antigravityDesktop')[]
 export type RemoteFeatureTool = typeof remoteFeatureTools[number]
 
 /**
@@ -25,7 +25,8 @@ export type RemoteFeatureTool = typeof remoteFeatureTools[number]
  *   下载站）。关掉就照常打开，让它自己去官网下（客户看不到任何话）。
  * - claude-desktop-workspace-seed：装好 Claude Desktop、开机、从星芒打开它时，从下载站替它放好 Cowork 工作区
  *   （约 1.3 GB）和工作区里那份 Linux 版 Claude Code。关掉就不放，让它自己去官网下（客户看不到任何话）。
- * - install:工具 / launch:工具：某个工具的安装和更新、从星芒打开它。
+ * - install:工具 / launch:工具：某个工具的安装和更新、从星芒打开它。Antigravity 的命令行和桌面端各算一个工具
+ *   （antigravityCli、antigravityDesktop）：谷歌那边自动更新快，哪一样被它改坏了可以单独关。
  */
 export const remoteFeatureIds = [
   'video-studio',
@@ -73,7 +74,7 @@ function possessive(name: string): string {
 
 // 客户看得到的这几句是 yoyo 2026-10-28 回「停用改」批的，正式口吻那版 11-23 随正式化补漏 2 一起请他确认；改字要先问他。
 export const videoStudioOffMessage = `视频剪辑已暂时停用，${remoteFeatureOffMarker}。`
-export const codexRemoteOffMessage = `手机遥控已暂时停用，${remoteFeatureOffMarker}。`
+export const codexRemoteOffMessage = `遥控已暂时停用，${remoteFeatureOffMarker}。`
 export const accelerationOffMessage = `网络加速已暂时停用，${remoteFeatureOffMarker}。`
 export const codexDesktopChineseOffMessage = `Codex 已打开，中文界面已暂时停用，本次使用英文界面，${remoteFeatureOffMarker}。`
 

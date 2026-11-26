@@ -155,6 +155,54 @@ test('the signed-in workspace draws no canvas behind the pages', async () => {
   } finally { await page.close() }
 })
 
+// 段落最后一行只剩一个字看着像排版出错（创作页那句折成「……共用同一账」「号。」）。先用浏览器原来的
+// 折法在这台机器的字体下找出会只剩一个字的宽度，再看界面自己的折法在同样宽度下不再这样；
+// 宽度按实际字体量出来，换了字体也找得到。打字的地方不按这个排。
+test('paragraphs in the signed-in workspace never end on a single character, but text being typed is laid out as before', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('shell-topbar').waitFor()
+    const result = await page.evaluate(() => {
+      const probe = document.createElement('p')
+      probe.style.cssText = 'position: absolute; left: 0; top: 0; margin: 0; font-size: 13px; line-height: 1.6'
+      probe.textContent = '提问、写作、绘图、制作视频均可在下方输入框中完成，额度与工具共用同一账号。'
+      document.querySelector('.v2-workspace').append(probe)
+      const text = probe.firstChild
+      const range = document.createRange()
+      function lastLine() {
+        let top = -Infinity
+        let line = ''
+        for (let index = 0; index < text.length; index += 1) {
+          range.setStart(text, index)
+          range.setEnd(text, index + 1)
+          const at = range.getBoundingClientRect().top
+          if (at > top + 1) { top = at; line = '' }
+          line += text.data[index]
+        }
+        return line.replace(/[。，、；：！？」』）]/g, '')
+      }
+      const widths = []
+      probe.style.setProperty('text-wrap-style', 'auto')
+      for (let width = 160; width <= 520; width += 1) {
+        probe.style.width = `${width}px`
+        if (lastLine().length === 1) widths.push(width)
+      }
+      probe.style.removeProperty('text-wrap-style')
+      const lines = widths.map((width) => { probe.style.width = `${width}px`; return lastLine() })
+      probe.remove()
+      const field = document.createElement('textarea')
+      document.querySelector('.v2-workspace').append(field)
+      const typing = getComputedStyle(field).getPropertyValue('text-wrap-style')
+      field.remove()
+      return { widths, lines, typing }
+    })
+    assert.ok(result.widths.length > 0, 'the default wrapping should leave a single character at some width')
+    assert.deepEqual(result.lines.filter((line) => line.length < 2), [])
+    assert.equal(result.typing, 'auto')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // Runs before the fixture mounts: the page reports a Mac the way Chromium does
 // on macOS, and every state the startup windows reach is recorded as it is
 // committed, so a frame laid out for the wrong system cannot slip by between
@@ -603,6 +651,83 @@ test('opening a desktop client while another tool installs neither claims to wai
     await page.evaluate(() => window.v2Test.releaseInstall())
     await page.getByTestId('tool-grok-source').waitFor()
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchExternalClient').map((entry) => entry.args[0])), ['workbuddy'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// Antigravity 两张卡（11-23）：装完在同一个任务里写好设置，卡片换成「打开」；命令行在选的文件夹里开；
+// 桌面端开着、拿不到这次的设置时不打开，请客户先退出。
+test('installing the Antigravity command line connects it, opens it in a chosen folder, and asks to quit a running desktop app first', async () => {
+  const page = await open('antigravity=missing')
+  try {
+    const cli = page.getByTestId('tool-row-antigravityCli')
+    await cli.getByText('未安装').waitFor()
+    await page.getByTestId('tool-antigravityCli-primary').click()
+    await waitForToast(page, 'Antigravity 命令行已安装，并已关联当前账号')
+    await cli.getByTestId('tool-antigravityCli-source').waitFor()
+    await expect(page.getByTestId('tool-antigravityCli-primary')).toHaveText('打开')
+    await page.getByTestId('tool-antigravityCli-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'openAntigravityCli'))
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openAntigravityCli').map((entry) => entry.args)), [['C:\\Selected Project']])
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'installAntigravity').map((entry) => entry.args)), [['cli']])
+    await clean(page)
+  } finally { await page.close() }
+  const running = await open('antigravity=closeFirst')
+  try {
+    const desktop = running.getByTestId('tool-row-antigravity')
+    await desktop.getByTestId('tool-antigravity-source').waitFor()
+    await running.getByTestId('tool-antigravity-primary').click()
+    await waitForToast(running, 'Antigravity 正在运行，新的连接设置需重新启动后生效。请先完全退出 Antigravity，再点击「打开」。')
+    await clean(running)
+  } finally { await running.close() }
+})
+
+// 记住的项目文件夹被删掉以后点 Antigravity 命令行的「打开」：跟 Claude Code、Codex 那几张卡一样提示一句再弹选择窗口，
+// 不弹「操作没有完成」；选好的那个记下了，再点直接进它，不再提示、不再弹。
+test('the Antigravity command line says the remembered folder is gone, asks for another one, and keeps it', async () => {
+  const page = await open('antigravity=installed&antigravityWorkspaceGone=1')
+  const opens = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openAntigravityCli').map((entry) => entry.args))
+  const choices = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'chooseWorkspace').length)
+  try {
+    const primary = page.getByTestId('tool-antigravityCli-primary')
+    await expect(primary).toHaveText('打开')
+    await primary.click()
+    await waitForToast(page, '上次使用的目录已不存在，请重新选择。')
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'openAntigravityCli').length === 2)
+    assert.deepEqual(await opens(), [['C:\\work\\deleted-project'], ['C:\\Selected Project']])
+    assert.equal(await choices(), 1)
+    assert.equal(await page.getByRole('dialog', { name: '操作未完成' }).count(), 0)
+    await expect(primary).toHaveText('打开')
+    await expect(primary).toBeEnabled()
+    await primary.click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'openAntigravityCli').length === 3)
+    assert.deepEqual((await opens())[2], ['C:\\Selected Project'])
+    assert.equal(await choices(), 1)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 换账号、换线路以后主进程替 Antigravity 改完设置叫的那一声：只重读这两张卡，三个外部客户端不跟着重新检测、
+// 设置和配置也不重读（复查 A 第 2 轮第 2 条；原来借的是线路那一声）。
+test('when the main process moves Antigravity onto the new account, home rereads only its two cards', async () => {
+  const page = await open('antigravity=unconfigured')
+  try {
+    const desktop = page.getByTestId('tool-row-antigravity')
+    await desktop.waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'inspectAntigravity') && window.v2Test.calls.some((entry) => entry.method === 'scanExternalClients'))
+    await settleStartupBootstrap(page)
+    assert.equal(await desktop.getByTestId('tool-antigravity-source').count(), 0)
+    const count = (method) => page.evaluate((name) => window.v2Test.calls.filter((entry) => entry.method === name).length, method)
+    const before = { scans: await count('scanExternalClients'), settings: await count('getSettings'), config: await count('getConfig'), inspects: await count('inspectAntigravity') }
+    await page.evaluate(() => {
+      window.v2Test.setAntigravityConfigured(true)
+      window.v2Test.emit('onAntigravitySettingsFollowed', undefined)
+    })
+    await desktop.getByTestId('tool-antigravity-source').waitFor()
+    assert.ok(await count('inspectAntigravity') > before.inspects)
+    assert.equal(await count('scanExternalClients'), before.scans, '外部客户端不重新检测')
+    assert.equal(await count('getSettings'), before.settings, '设置不重读')
+    assert.equal(await count('getConfig'), before.config, '配置不重读')
     await clean(page)
   } finally { await page.close() }
 })
@@ -1137,12 +1262,12 @@ test('a replaced manual client key cannot save the previous key first detected m
   } finally { await page.close() }
 })
 
-// YF-6：首页 Codex CLI 的「…」里有一项直接去手机遥控，桌面端不给；0.2.25 起去的是左侧栏「手机遥控」那一页。
+// YF-6：首页 Codex CLI 的「…」里有一项直接去手机遥控，桌面端不给；0.2.25 起去的是左侧栏「遥控」那一页（原名「手机遥控」）。
 test('the home Codex CLI menu leads to the phone remote page', async () => {
   const page = await open()
   try {
     await page.getByRole('button', { name: 'Codex CLI 更多操作', exact: true }).click()
-    await page.getByRole('menuitem', { name: '手机遥控', exact: true }).click()
+    await page.getByRole('menuitem', { name: '遥控', exact: true }).click()
     const remote = page.getByTestId('page-remote')
     await remote.waitFor()
     await remote.getByTestId('settings-remote-card').waitFor()
@@ -1701,6 +1826,8 @@ test('the records table puts each record on one row with tool chips that count',
     await page.waitForFunction(() => document.querySelector('[data-testid="sessions-tool-all"] .xm-chip-count')?.textContent === '4')
     assert.equal(await sessions.getByTestId('sessions-tool-claude').locator('.xm-chip-count').innerText(), '3')
     assert.equal(await sessions.getByTestId('sessions-tool-gemini').count(), 0)
+    // 装着的工具一条记录都没有也照旧有按钮（没装又没记录的才不出）。
+    assert.equal(await sessions.getByTestId('sessions-tool-grok').locator('.xm-chip-count').innerText(), '0')
     assert.equal(await sessions.getByTestId('sessions-tool-all').getAttribute('aria-pressed'), 'true')
     await sessions.getByTestId('sessions-tool-codex').click()
     assert.equal(await sessions.getByTestId('sessions-tool-codex').getAttribute('aria-pressed'), 'true')
@@ -2025,9 +2152,9 @@ async function recordsReads(page) {
     .filter((entry) => entry.method === 'listProviderSessions' && entry.args[0]?.pageSize === size).length))
 }
 
-// 记录页去过一次以后，在终端里聊完再回来还是第一次进来时那份：刚聊的那条不在，「继续对话」还挂在同一文件夹更早的那条上，
-// 而 Claude Code 按文件夹接最近一条（#292），点下去接上的是刚聊的那条。
-test('the records page reads both lists again when it is shown again, so 接着聊 sits on the newest record of the folder', async () => {
+// 记录页去过一次以后，在终端里聊完再回来还是第一次进来时那份：刚聊的那条不在。再显示时两份都重读。
+// 0.2.25 S1 起每条都按编号接，同一文件夹更早的那条照旧带「继续对话」，接上的就是它自己。
+test('the records page reads both lists again when it is shown again, so the chat just made shows up with its own 接着聊', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
   try {
     await page.getByTestId('nav-sessions').click()
@@ -2040,16 +2167,16 @@ test('the records page reads both lists again when it is shown again, so 接着�
     await page.getByTestId('nav-sessions').click()
     await page.getByTestId('sessions-resume-claude:6').waitFor()
     assert.deepEqual(await recordsReads(page), [list + 1, latest + 1])
-    // 刚聊的排第一、带「继续对话」；my-app 里更早的 claude:1 不再带，不会接到别的对话上。
+    // 刚聊的排第一、带「继续对话」；my-app 里更早的 claude:1 也照旧带。
     assert.equal(await page.locator('[data-testid^="sessions-row-"]').first().getAttribute('data-testid'), 'sessions-row-claude:6')
-    assert.equal(await page.getByTestId('sessions-resume-claude:1').count(), 0)
+    assert.equal(await page.getByTestId('sessions-resume-claude:1').count(), 1)
     await clean(page)
   } finally { await page.close() }
 })
 
-// 已知4：记录页同一下。停在记录页时在终端里又聊了一条，半分钟内回到窗口不重读；这时点同一文件夹更早那条的「继续对话」，
-// 先读一份最新的对一次，不是最近的就这次不打开，列表换成新的、按钮挪到刚聊的那条上。
-test('the records page 接着聊 checks the newest records first and holds back when a newer chat took over the folder (已知4)', async () => {
+// 0.2.25 S1：以前（已知4）停在记录页时在终端里又聊了一条，点同一文件夹更早那条的「继续对话」，要先读一份最新的对一次，
+// 因为 Claude Code 按文件夹接最近一条，接上的会是刚聊的那条。现在带着这条记录的 id 按编号接，点哪条接哪条，不用再对。
+test('the records page 接着聊 on an older record of a folder resumes that very record by its id, without reading the records first', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
   try {
     await page.getByTestId('nav-sessions').click()
@@ -2058,12 +2185,10 @@ test('the records page 接着聊 checks the newest records first and holds back 
     const [list, latest] = await recordsReads(page)
     await page.evaluate(() => window.v2Test.addRecentSession('6', 'claude', 'C:\\work\\my-app', 500))
     await resume.click()
-    await page.getByTestId('sessions-resume-claude:6').waitFor()
-    assert.deepEqual(await recordsReads(page), [list + 1, latest + 1])
-    assert.equal(await page.getByTestId('sessions-resume-claude:1').count(), 0)
-    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli')), false)
-    // 什么都没打开：不说「已打开」，也不报错。
-    assert.equal(await page.locator('.v2-business-notice.is-error').count(), 0)
+    await waitForToast(page, '已打开Claude Code，在 C:\\work\\my-app 中继续这次对话')
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args)),
+      [['claude', 'C:\\work\\my-app', 'resumeLast', 'claude:1']])
+    assert.deepEqual(await recordsReads(page), [list, latest])
     await clean(page)
   } finally { await page.close() }
 })
@@ -2483,8 +2608,8 @@ test('after 接着聊 on the records page the next return to the window reads ag
     })
     await focusWindow()
     await drawer.getByText('刚在终端里问的').waitFor()
-    // 「最新 100 条」多读的那一次是点「继续对话」时先对的一下（已知4）。
-    assert.deepEqual(await recordsReads(page), [list + 1, latest + 2])
+    // 0.2.25 S1 起按编号接，点「继续对话」不再先读一份最新的对一次，两份各多读一次。
+    assert.deepEqual(await recordsReads(page), [list + 1, latest + 1])
     await expect(drawer.getByText('上回问到这里')).toBeVisible()
     assert.equal(await page.evaluate(() => window.__sawTranscriptLoading), false)
     await clean(page)
@@ -4201,6 +4326,122 @@ test('the column lists what it could read and names the kind it could not', asyn
   }
 })
 
+// 创作页复查第 9 条：视频列表这一次没读出来，小字后面有「重新读取」，点了再读一遍；读出来那行字就没了。画布那一类没有这个按钮。
+test('the unread films note offers a reread that lists them once they can be read', async () => {
+  const page = await openCreate('videoFilms=1&canvasProjects=1')
+  try {
+    await page.evaluate(() => { window.v2Test.fail = 'readVideoStudioProjects' })
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-item-canvas-fixture-canvas-poster').waitFor()
+    const retry = page.getByTestId('create-list-note-retry')
+    await retry.waitFor()
+    assert.equal(await retry.textContent(), '重新读取')
+    // 还读不出来：照旧那一行字，按钮还在。
+    const before = await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'readVideoStudioProjects').length)
+    await retry.click()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((call) => call.method === 'readVideoStudioProjects').length > count && document.querySelector('[data-testid="create-list-note-retry"]'), before)
+    assert.deepEqual(await page.getByTestId('create-list-note').allTextContents(), ['历史视频读取失败'])
+    assert.equal(await page.getByTestId('create-item-video-fixture-film-cat').count(), 0)
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await page.getByTestId('create-list-note-retry').click()
+    await page.getByTestId('create-item-video-fixture-film-cat').waitFor()
+    await page.getByTestId('create-list-note').waitFor({ state: 'detached' })
+    await page.getByTestId('create-start').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+  const canvas = await openCreate('videoFilms=1&canvasProjects=1')
+  try {
+    await canvas.evaluate(() => { window.v2Test.fail = 'listCanvasProjects' })
+    await canvas.getByTestId('nav-chat').click()
+    await canvas.getByTestId('create-item-video-fixture-film-cat').waitFor()
+    await canvas.getByTestId('create-list-note').waitFor()
+    assert.equal(await canvas.getByTestId('create-list-note-retry').count(), 0)
+    await canvas.evaluate(() => { window.v2Test.fail = '' })
+    await clean(canvas)
+  } finally { await canvas.close() }
+})
+
+// 创作页复查第 2 条：上次关软件时还在出的那一段，重开后不用点开那条视频就去接回；右边照旧是起始页。
+test('a clip still generating at the last quit is picked up when the page opens, without opening its film', async () => {
+  const page = await openCreate('videoFilms=pending&chatVideo=1')
+  try {
+    await page.getByTestId('nav-chat').click()
+    const row = page.getByTestId('create-item-video-fixture-film-cat')
+    await row.waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'resumeAiVideo'))
+    assert.deepEqual([...new Set((await fixtureCalls(page, 'resumeAiVideo')).map(([id]) => id))], ['fixture-pending-clip'])
+    assert.equal(await fixtureCalls(page, 'generateAiVideo').then((calls) => calls.length), 0)
+    await page.getByTestId('create-start').waitFor()
+    assert.equal(await page.getByTestId('create-video-pane').isHidden(), true)
+    await page.evaluate(() => window.v2Test.releaseChatVideo())
+    await expect(row).toContainText('已生成 1 段')
+    await page.getByTestId('create-start').waitFor()
+    // 点开它：接回来的那一段已经在第一镜上。
+    await row.click()
+    await page.getByTestId('create-video-pane').waitFor()
+    await expect(page.locator('.video-studio-shot').first()).toHaveAttribute('data-status', 'done')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 创作页复查第 3 条：换着开几条视频，模型表和价目只在开第一条时读；「刷新模型」照样重读。
+test('switching films reuses the models and prices read for the first one, and refreshing models still reads again', async () => {
+  const page = await openCreate('videoFilms=1&chatVideo=1')
+  try {
+    await page.getByTestId('nav-chat').click()
+    // 对话那边自己读的分组不算在里面：等它读完再数。
+    await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.preparing === 'false')
+    const reads = async () => ({ groups: (await fixtureCalls(page, 'listAiChatGroups')).length, prepares: (await fixtureCalls(page, 'prepareAiChatGroup')).length, prices: (await fixtureCalls(page, 'getAccountPriceList')).length })
+    const textModelSettled = () => page.waitForFunction(() => document.querySelector('[data-testid=create-video-pane]:not([hidden]) [data-testid=video-text-model]')?.dataset.model === 'gpt-test')
+    const before = await reads()
+    await page.getByTestId('create-item-video-fixture-film-cat').click()
+    await textModelSettled()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'getAccountPriceList'))
+    const first = await reads()
+    // 开第一条时读（开发版 StrictMode 挂上时把这一下跑两遍，所以只看读了没有）。
+    assert.ok(first.groups > before.groups && first.prepares > before.prepares && first.prices > before.prices)
+    for (const id of ['fixture-film-sea', 'fixture-film-cat', 'fixture-film-sea']) {
+      await page.getByTestId(`create-item-video-${id}`).click()
+      await page.waitForFunction((key) => document.querySelector('[data-testid=create-video-pane]:not([hidden])') && document.querySelector('[data-testid=create-item-video-' + key + ']')?.getAttribute('aria-current') !== null, id)
+      await textModelSettled()
+    }
+    assert.deepEqual(await reads(), first)
+    await page.getByTestId('video-text-model').click()
+    await page.getByTestId('video-text-model-refresh').click()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'listAiChatGroups').length > count, first.groups)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 创作页复查第 7 条（yoyo 11-26 回「视频忙时提示」）：工作台手上有事的那一条，左边第二行写「正在处理…」，忙完换回原样。
+test('the column says a film is being worked on while its workbench is busy, and shows its progress again afterwards', async () => {
+  const page = await openCreate('videoFilms=pending&chatVideo=1')
+  try {
+    await page.getByTestId('nav-chat').click()
+    const row = page.getByTestId('create-item-video-fixture-film-cat')
+    await expect(row).toHaveText('橘猫回家正在处理…')
+    // 别的那条照旧。
+    await expect(page.getByTestId('create-item-video-fixture-film-sea')).toHaveText('海边那条尚未编写分镜')
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'resumeAiVideo'))
+    await page.evaluate(() => window.v2Test.releaseChatVideo())
+    await expect(row).toHaveText('橘猫回家2 个镜头 · 已生成 1 段')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 创作页复查第 8 条（yoyo 11-26 回「成片放前面」）：合成过的先说合成了，224 宽的那一列里不再被截成「…」。
+test('a joined film says so first in the column, where the narrow column no longer cuts it off', async () => {
+  const page = await openCreate('library=1&videoFilms=library')
+  try {
+    await page.getByTestId('nav-chat').click()
+    const row = page.getByTestId('create-item-video-fixture-film-cat')
+    await expect(row).toHaveText('橘猫回家已合成 · 2 个镜头')
+    assert.equal(await row.locator('.chat-conversation-text > span').evaluate((line) => line.scrollWidth <= line.clientWidth), true)
+    await expect(page.getByTestId('create-item-video-fixture-film-sea')).toHaveText('海边那条尚未编写分镜')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a film opens from the column into its workbench on the right, and is renamed and deleted from there', async () => {
   const page = await openCreate('videoFilms=1')
   try {
@@ -4458,6 +4699,88 @@ test('the start page offers a film and the canvas under the examples, and says o
   } finally { await page.close() }
 })
 
+// 窗口矮时（1366 × 768 的笔记本）下面那几张卡落到输入框后面，只露出上半截，客户想不到往下滚。
+// 起始页的留白随窗口高度连续收紧，卡整张露在输入框上面；820 高时和原来一样。
+test('the start cards sit fully above the composer in a short window without changing the start page at the design height', async () => {
+  const page = await openCreate()
+  try {
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-start').waitFor()
+    assert.equal(await page.getByTestId('create-intro').count(), 0)
+    await page.getByTestId('chat-example-1').waitFor()
+    const layout = () => page.getByTestId('chat-empty').evaluate((empty) => {
+      const messages = empty.closest('.chat-messages')
+      const bottom = messages.getBoundingClientRect().bottom
+      const cards = [...messages.querySelectorAll('.create-card')]
+      return {
+        top: getComputedStyle(empty).paddingTop,
+        scrolled: messages.scrollTop,
+        cards: cards.length,
+        hidden: cards.filter((card) => card.getBoundingClientRect().bottom > bottom + 0.5).map((card) => card.dataset.testid),
+      }
+    })
+    assert.deepEqual(await layout(), { top: '28px', scrolled: 0, cards: 2, hidden: [] })
+    // 只改高、宽留在 1280：宽不到 1272 时侧栏要等 matchMedia 回调、React 重画才收成窄条，改完尺寸立刻量会量到
+    // 「窗口已经窄了、侧栏还是 224」的那一瞬，正文窄、卡高，慢 runner 上 680 那一下就量成被挡（#2166、#2168 各红一次）。
+    // 1366 × 768 的笔记本侧栏本来就是展开的，量这种才是要守的情形。
+    for (const height of [740, 680]) {
+      await page.setViewportSize({ width: 1280, height })
+      const shown = await layout()
+      assert.deepEqual({ ...shown, top: undefined }, { top: undefined, scrolled: 0, cards: 2, hidden: [] }, `${height}px tall`)
+    }
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 升级上来的客户头一次进来，起始页上面多一条「已合并至此页」的提示，三张卡都在时最挤：820 高露不全，740、680 挡掉一截。
+test('the start cards stay above the composer in a short window while the merge notice sits on top', async () => {
+  const page = await openCreate('library=1&videoFilms=library&chatVideo=1&canvasProjects=1')
+  try {
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-intro').waitFor()
+    await page.getByTestId('create-card-clips').waitFor()
+    await page.getByTestId('chat-example-1').waitFor()
+    const layout = () => page.getByTestId('chat-empty').evaluate((empty) => {
+      const messages = empty.closest('.chat-messages')
+      const bottom = messages.getBoundingClientRect().bottom
+      const cards = [...messages.querySelectorAll('.create-card')]
+      const lowest = Math.max(...cards.map((card) => card.getBoundingClientRect().bottom))
+      return { scrolled: messages.scrollTop, cards: cards.length, hidden: cards.filter((card) => card.getBoundingClientRect().bottom > bottom + 0.5).map((card) => card.dataset.testid), spare: Math.round(bottom - lowest) }
+    })
+    // 宽留在 1280，理由同上一条（侧栏收窄要等一拍）。余量随字体差十几二十像素（CI 的 Chromium 上提示那句话会多折一行），
+    // 红了先看报出来的 spare 差多少。
+    for (const height of [820, 740, 680]) {
+      await page.setViewportSize({ width: 1280, height })
+      const { spare, ...seen } = await layout()
+      assert.deepEqual(seen, { scrolled: 0, cards: 3, hidden: [] }, `${height}px tall, ${spare}px left under the cards`)
+    }
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 起始页那句说明原来宽度上限 460，正好差一点放不下，最后「账号。」两个字掉到第二行（yoyo 2026-11-26「说明排一行」）。
+// 常用的 1280 × 820 和 1100 × 680 小窗口里都要排成一行；1100 宽时侧栏收成窄条，等它收好了再量。
+test('the start page line stays on one line at the design size and in the small window', async () => {
+  const page = await openCreate()
+  try {
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-start').waitFor()
+    const lead = page.getByTestId('chat-empty').locator('p').first()
+    await lead.waitFor()
+    assert.equal(await lead.innerText(), '提问、写作、绘图、制作视频均可在下方输入框中完成，额度与工具共用同一账号。')
+    const lines = () => lead.evaluate((paragraph) => {
+      const range = document.createRange()
+      range.selectNodeContents(paragraph)
+      return new Set([...range.getClientRects()].filter((rect) => rect.width > 0).map((rect) => Math.round(rect.top))).size
+    })
+    assert.equal(await lines(), 1, '1280 × 820')
+    await page.setViewportSize({ width: 1100, height: 680 })
+    await page.waitForFunction(() => document.querySelector('.v2-shell')?.dataset.narrow === 'true')
+    assert.equal(await lines(), 1, '1100 × 680')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('an account with nothing made before is not told about the merge, now or after it has made something', async () => {
   const page = await openCreate()
   try {
@@ -4516,6 +4839,14 @@ test('a historical account gets conversations and canvas projects on the create 
     assert.equal(await videoMode.getAttribute('title'), '当前账号不支持生成视频')
     assert.equal(await page.getByTestId('create-card-video').count(), 0)
     assert.equal(await page.getByTestId('create-card-canvas').count(), 1)
+    // 只剩这一张时不拉满整行：跟三张并排时一张一样宽，放在中间（创作页复查第 6 条）。
+    const card = await page.getByTestId('create-card-canvas').evaluate((element) => {
+      const row = element.parentElement.getBoundingClientRect()
+      const box = element.getBoundingClientRect()
+      return { share: box.width / ((row.width - 20) / 3), left: box.left - row.left, right: row.right - box.right }
+    })
+    assert.ok(Math.abs(card.share - 1) < 0.01, `one third of the row, got ${card.share}`)
+    assert.ok(Math.abs(card.left - card.right) <= 1, `centered, got ${card.left} / ${card.right}`)
     await clean(page)
   } finally { await page.close() }
 })
@@ -5117,8 +5448,9 @@ test('a picture is added to a canvas project the user picks, or to a new one, fr
     await add.waitFor()
     assert.equal((await add.textContent()).trim(), '添加到画布')
     assert.equal(await add.getAttribute('title'), '将此图添加到画布项目的素材库')
-    assert.deepEqual(await page.locator('.chat-asset-actions').first().locator('button').evaluateAll((buttons) => buttons.map((button) => button.getAttribute('data-testid'))),
-      ['chat-asset-reuse', 'chat-asset-animate', 'chat-asset-canvas', 'chat-asset-copy', 'chat-asset-save', 'chat-asset-menu'])
+    // 0.2.25 C2：这条回复只有一张图，「重新生成」「删除消息」接在这一排最后（testid 带消息 id，这里只比前缀）。
+    assert.deepEqual(await page.locator('.chat-asset-actions').first().locator('button').evaluateAll((buttons) => buttons.map((button) => button.getAttribute('data-testid').replace(/^(chat-message-(?:retry|delete))-.+$/, '$1'))),
+      ['chat-asset-reuse', 'chat-asset-animate', 'chat-asset-canvas', 'chat-asset-copy', 'chat-asset-save', 'chat-asset-menu', 'chat-message-retry', 'chat-message-delete'])
     assert.deepEqual(await fixtureCalls(page, 'addImageToCanvasProject'), [])
 
     // 菜单：标题、「新建画布项目」、左边那一列里的画布项目和各自什么时候改的。
@@ -6083,6 +6415,33 @@ test('the renderer remembers its page for a reload and tells the host it is busy
   } finally { await page.close() }
 })
 
+// 设置客服反馈复查第 3 条：留言写了还没复制出去时，缩到托盘久了界面不能被收走，不然字就没了；复制出去以后没再改过的不算。
+test('an unsent feedback message keeps the renderer from being released until it has been copied', async () => {
+  const page = await open()
+  try {
+    await page.evaluate(() => {
+      window.xingmang.getRuntimeLogs = async () => ({ generatedAt: new Date().toISOString(), directory: 'C:/logs', filePath: 'C:/logs/runtime.log', sizeBytes: 0,
+        total: 0, truncated: false, counts: { debug: 0, info: 0, warn: 0, error: 0 }, sources: [], currentProcessId: 4242, startedAt: '2026-10-06T00:00:00.000Z', entries: [] })
+      window.xingmang.copyFeedbackReport = async () => ({ entries: 0 })
+    })
+    const latestReport = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportWindowActivity').at(-1)?.args[0].busy)
+    await page.getByTestId('nav-feedback').click()
+    await page.getByTestId('page-feedback').waitFor()
+    await expect.poll(latestReport).toBe(false)
+    const description = page.getByTestId('feedback-description')
+    await description.fill('打开 Codex 时提示无法连接')
+    await expect.poll(latestReport).toBe(true)
+    await page.getByTestId('feedback-send').click()
+    await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'copyFeedbackReport').length)).toBe(1)
+    await expect.poll(latestReport).toBe(false)
+    await description.fill('打开 Codex 时提示无法连接，重启后依旧')
+    await expect.poll(latestReport).toBe(true)
+    await description.fill('   ')
+    await expect.poll(latestReport).toBe(false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('startup environment findings are a notice with a way in, not an error and not a dialog', async () => {
   const page = await open('diagnostics=1&diagnosticIssues=2&diagnosticWarnings=3')
   try {
@@ -6292,6 +6651,27 @@ test('restoring the normal display offers a relaunch from the same corner', asyn
     await page.getByTestId('startup-notice-display-relaunch-primary').click()
     await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'relaunchApp').length)).toBe(1)
     await expect.poll(() => page.getByTestId('startup-notice-display-relaunch').count()).toBe(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 设置 › 隐私数据的协议跟欢迎页、登录框是同一个弹窗：固定读星芒账号那一份（两个账号共用），按排版显示。
+// 以前设置页自己按当前账号读：历史账号报「当前账号暂不支持此功能」，星芒账号显示的是带 # 的源码。
+for (const [label, query] of [['NewAPI', ''], ['Sub2API', 'sub2api=1']]) test(`settings opens the agreement and privacy policy in the shared legal dialog for signed-in ${label}`, async () => {
+  const page = await open(query)
+  try {
+    const settings = await openSettingsGroup(page, '隐私数据')
+    for (const [testId, title] of [['settings-legal-user-agreement', '用户协议'], ['settings-legal-privacy-policy', '隐私政策']]) {
+      await settings.getByTestId(testId).click()
+      const dialog = page.getByRole('dialog', { name: title, exact: true })
+      await dialog.getByRole('heading', { name: '本地协议', exact: true }).waitFor()
+      assert.equal(await dialog.getByText('# 本地协议').count(), 0)
+      await dialog.getByTestId('legal-document-close').click()
+      await dialog.waitFor({ state: 'detached' })
+    }
+    // 开发版的 StrictMode 会把读协议的 effect 跑两遍：只看读了哪几份、是不是都读的星芒账号那一份。
+    const legalCalls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'getLegalDocument').map((entry) => entry.args.join(' ')))
+    assert.deepEqual([...new Set(legalCalls)], ['user-agreement solov', 'privacy-policy solov'])
     await clean(page)
   } finally { await page.close() }
 })
@@ -6977,18 +7357,21 @@ test('an automatic update check that fails stays off the home bubble but shows o
   } finally { await page.close() }
 })
 
-// Mac 校验新版本签名没通过时，同一个包装多少遍都一样：版本更新卡和首页气泡都不再给
-//「重新安装」，改给「打开下载页」，让客户手动装一次。
-test('a Mac signature rejection offers the download page instead of reinstalling', async () => {
+// Mac 校验新版本签名没通过，或者 Windows 上 PowerShell 不让更新安装脚本运行（受限语言模式、组策略只许
+// 运行签名脚本，授权窗口根本不弹）时，同一个包装多少遍都一样：版本更新卡和首页气泡都不再给「重新安装」，
+// 改给「打开下载页」，让客户手动装一次。右上角也不再说「重启后生效」。两个代码跟主进程 updater.ts 一致。
+for (const [label, code, reason] of [
+  ['a Mac signature rejection', 'UPDATE_SIGNATURE_REJECTED', '新版本已下载，但未通过本机系统校验，无法自动安装，重试也无法解决。请点击「打开下载页」下载新版本安装包，安装后打开即可。'],
+  ['a Windows update handoff PowerShell refused to run', 'UPDATE_HANDOFF_BLOCKED', '新版本已下载，但本机的安全设置不允许自动安装，重试也无法解决。请点击「打开下载页」下载新版本安装包，安装后打开即可。'],
+]) test(`${label} offers the download page instead of reinstalling`, async () => {
   const page = await open('updateCheckFail=1')
   try {
     const updates = await openVersionCard(page)
-    const reason = '新版本已下载，但未通过本机系统校验，无法自动安装，重试也无法解决。请点击「打开下载页」下载新版本安装包，安装后打开即可。'
-    await page.evaluate((message) => window.v2Test.emit('onUpdateState', {
+    await page.evaluate(([errorCode, message]) => window.v2Test.emit('onUpdateState', {
       phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
       checkedAt: new Date().toISOString(), progress: null, failedStep: 'install',
-      error: { code: 'UPDATE_SIGNATURE_REJECTED', message }, development: true,
-    }), reason)
+      error: { code: errorCode, message }, development: true,
+    }), [code, reason])
     const notice = updates.getByTestId('updates-failure-install')
     await notice.getByText('安装更新失败', { exact: true }).waitFor()
     await notice.getByText(reason, { exact: true }).waitFor()
@@ -6996,6 +7379,8 @@ test('a Mac signature rejection offers the download page instead of reinstalling
     assert.equal(await notice.getByRole('button', { name: '重新安装', exact: true }).count(), 0)
     // 卡底那颗「重启并安装」是同一条死路，也不能留。
     assert.equal(await updates.getByRole('button', { name: '重启并安装', exact: true }).count(), 0)
+    await updates.getByText('更新已下载', { exact: true }).waitFor()
+    assert.equal(await updates.getByText('已下载，重启后生效', { exact: true }).count(), 0)
     const bubble = page.getByRole('alert').filter({ hasText: '安装更新失败' })
     await bubble.getByRole('button', { name: '查看更新', exact: true }).waitFor()
     assert.equal(await bubble.getByRole('button', { name: '重新安装', exact: true }).count(), 0)
@@ -9823,7 +10208,7 @@ test('switching accounts while the model question is open drops it without openi
 
 // 第四十批 B：记录页的「继续对话」以前直接叫主进程打开，首页打开前那几道关（核对默认模型、
 // 没连好账号先去连、Codex 老配置先修）一道都没过。
-const recordsResumedNotice = '已打开Claude Code，继续 C:\\work\\my-app 中最近的一条对话'
+const recordsResumedNotice = '已打开Claude Code，在 C:\\work\\my-app 中继续这次对话'
 async function resumeFromRecords(page) {
   await page.getByTestId('nav-sessions').click()
   await page.getByTestId('sessions-resume-claude:1').click()
@@ -9840,7 +10225,7 @@ test('resuming from the records page checks the tool first and opens right away 
   try {
     await resumeFromRecords(page)
     await waitForToast(page, recordsResumedNotice)
-    assert.deepEqual(await launchCliCalls(page), [['claude', 'C:\\work\\my-app', 'resumeLast']])
+    assert.deepEqual(await launchCliCalls(page), [['claude', 'C:\\work\\my-app', 'resumeLast', 'claude:1']])
     const methods = await page.evaluate(() => window.v2Test.calls.map((call) => call.method))
     assert.ok(methods.includes('checkToolModels') && methods.indexOf('checkToolModels') < methods.indexOf('launchCli'), '打开之前和首页一样核过默认模型')
     await clean(page)
@@ -9862,7 +10247,7 @@ test('resuming from the records page asks about a gone default model first and o
       .filter((call) => call.method === 'saveConfig' || call.method === 'launchCli')
       .map((call) => call.method === 'saveConfig' ? [call.method, call.args[0]] : [call.method, ...call.args])), [
       ['saveConfig', { provider: 'claude', apiKey: '', model: 'claude-opus-5-5', mode: 'merge' }],
-      ['launchCli', 'claude', 'C:\\work\\my-app', 'resumeLast'],
+      ['launchCli', 'claude', 'C:\\work\\my-app', 'resumeLast', 'claude:1'],
     ])
     await question.waitFor({ state: 'detached' })
     await clean(page)
@@ -9884,7 +10269,7 @@ test('closing the records page question opens nothing, and keeping the old model
     await page.getByTestId('sessions-resume-claude:1').click()
     await page.getByTestId('model-swap-keep').click()
     await waitForToast(page, recordsResumedNotice)
-    assert.deepEqual(await launchCliCalls(page), [['claude', 'C:\\work\\my-app', 'resumeLast']])
+    assert.deepEqual(await launchCliCalls(page), [['claude', 'C:\\work\\my-app', 'resumeLast', 'claude:1']])
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'saveConfig')), false)
     await clean(page)
   } finally { await page.close() }
@@ -9993,6 +10378,50 @@ test('the restart dialog stays open and says nothing when the user chooses to le
     // 等做完了再点一次，照样能发出去。
     await restart.getByTestId('runtime-restart-now').click()
     await page.waitForFunction(() => window.v2Test.calls.filter((call) => call.method === 'restartWindows').length === 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 2026-11-23（「联网框改」）：Windows 打开商店版 Codex 前联网核对许可超时（0x80072EE2），进程没建出来。
+// 重置、重启都换不来网络，框里只有重试、检查网络、联系客服；「检查网络」去首页旁边那张网络检测页。
+test('a Codex Desktop that Windows could not verify online sends the customer to the network, not to a reset or restart', async () => {
+  const page = await open('codexLaunchFailure=offline')
+  try {
+    await page.getByTestId('tool-codexDesktop-primary').click()
+    const dialog = page.getByTestId('operation-error')
+    await dialog.getByText('网络不稳定，Codex 未能启动', { exact: true }).waitFor()
+    const labels = (await dialog.locator('footer button').allTextContents()).map((text) => text.trim())
+    assert.deepEqual(labels, ['返回', '重试', '检查网络', '复制给客服', '联系客服'])
+    await expect(dialog.getByTestId('operation-error-retry')).toHaveClass(/xm-btn-primary/)
+    await expect(dialog.getByTestId('operation-error-detail')).toContainText('Windows 打开 Codex 前需要联网向微软验证，本次验证超时，等待 58 秒仍未检测到 Codex 运行。')
+    const footer = await dialog.locator('footer').evaluate((element) => ({ scroll: element.scrollWidth, client: element.clientWidth }))
+    assert.ok(footer.scroll <= footer.client, `错误框底部按钮溢出：${JSON.stringify(footer)}`)
+    await page.screenshot({ path: path.join(artifacts, 'codex-desktop-activation-offline.png') })
+    await dialog.getByTestId('operation-error-network').click()
+    await page.getByTestId('page-health').waitFor()
+    await expect(dialog).toHaveCount(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 2026-11-24（「更新框改」）：客户把 Windows 更新关了，Codex 第一次启动借不到它向微软验证，进程没建出来。
+// 重置、重启都救不了，临时开一下更新就好；框里只有重试、联系客服，不给重置、重启，也不给去系统设置的按钮。
+test('a Codex Desktop blocked by a disabled Windows Update offers only retry and support', async () => {
+  const page = await open('codexLaunchFailure=windows-update')
+  try {
+    await page.getByTestId('tool-codexDesktop-primary').click()
+    const dialog = page.getByTestId('operation-error')
+    await dialog.getByText('Windows 更新已关闭，Codex 未能启动', { exact: true }).waitFor()
+    const labels = (await dialog.locator('footer button').allTextContents()).map((text) => text.trim())
+    assert.deepEqual(labels, ['返回', '重试', '复制给客服', '联系客服'])
+    await expect(dialog.getByTestId('operation-error-retry')).toHaveClass(/xm-btn-primary/)
+    await expect(dialog).toContainText('请临时开启 Windows 更新，成功打开一次 Codex 后即可重新关闭。')
+    await expect(dialog.getByTestId('operation-error-detail')).toContainText('本机的 Windows 更新服务无法启动，Codex 首次启动所需的验证未能完成，等待 62 秒仍未检测到 Codex 运行。')
+    const footer = await dialog.locator('footer').evaluate((element) => ({ scroll: element.scrollWidth, client: element.clientWidth }))
+    assert.ok(footer.scroll <= footer.client, `错误框底部按钮溢出：${JSON.stringify(footer)}`)
+    await page.screenshot({ path: path.join(artifacts, 'codex-desktop-windows-update-blocked.png') })
+    await dialog.getByTestId('operation-error-retry').click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((call) => call.method === 'launchCodexDesktop').length === 2)
     await clean(page)
   } finally { await page.close() }
 })
@@ -11267,7 +11696,7 @@ test('every settings row the search can name is on the settings page, in the reg
   } finally { await page.close() }
 })
 
-// 手机遥控开着时坐在电脑前的人要看得到：状态栏亮「手机遥控中」，点了落到左侧栏那一页（0.2.25）。
+// 手机遥控开着时坐在电脑前的人要看得到：状态栏亮「遥控中」，点了落到左侧栏那一页（0.2.25）。
 test('the status bar says the phone remote is on and leads to its page', async () => {
   const page = await open()
   try {
@@ -12461,6 +12890,40 @@ test('moving to a new computer asks whether to bring the works, and brings them 
   } finally { await page.close() }
 })
 
+// 第三轮复查第 6 条：画布项目（节点和连线、项目里的素材）跟作品一起搬。导出前那一问连同项目一起问，找不到文件夹的另说一句。
+test('moving to a new computer brings the canvas projects along with the works', async () => {
+  const page = await open('chatImport&transferWorks&transferCanvasProjects')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    const settings = await openSettingsGroup(page, '备份迁移')
+    const ask = page.getByRole('dialog', { name: '是否同时导出作品和画布项目？', exact: true })
+    await settings.getByTestId('settings-transfer-export').click()
+    await ask.waitFor()
+    await expect(ask.getByTestId('settings-transfer-works-summary')).toHaveText('当前账号的作品库中共有 128 件作品（图片 96 张、视频片段与成片 30 个、配乐 2 首），另有画布项目 4 个，共约 3.2 GB。其中 1 个画布项目的文件夹当前无法访问，将不会导出；如需一并导出，请先连接其所在的磁盘。')
+    await expect(ask).toContainText('选择「导出全部」时，将在所选位置新建一个文件夹，存放聊天记录、设置、作品和画布项目。作品较多时需要几分钟，导出期间请勿关闭星芒。')
+    assert.deepEqual(await ask.locator('button[data-testid^="settings-transfer-works-"]').allInnerTexts(), ['取消', '仅导出聊天记录和设置', '导出全部'])
+    await ask.getByTestId('settings-transfer-works-include').click()
+    await settings.getByText('已保存至「星芒数据导出-2026-11-22」文件夹，包含 128 件作品、3 个画布项目及设置。请将整个文件夹复制到新电脑，在此点击「导入」并选择其中的「星芒聊天记录与设置」文件。', { exact: true }).waitFor()
+
+    await settings.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '已导入 1 个对话。已导入 120 件作品，另有 8 件已存在于本机。已导入 3 个画布项目，另有 1 个已存在于本机。')
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'importAppWorks').map((entry) => entry.args)), [['fixture-works-token']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a moved file without its works and canvas projects folders says both stayed behind in one sentence', async () => {
+  const page = await open('chatImport&transferWorks&transferWorksMissing&transferCanvasProjects')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    const settings = await openSettingsGroup(page, '备份迁移')
+    await settings.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '已导入 1 个对话。未在文件所在位置找到「作品」和「画布项目」文件夹，作品和画布项目未导入。请将导出的整个文件夹复制到本机后再次导入。')
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'importAppWorks').length), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 作品跟着搬过来了，对话里的图也照常显示：以前导出时一律换成「[图片未随记录迁移]」，作品库里有图、对话里却没有。
 // 再从这台电脑导出时，选「导出全部」图原样带着，只导聊天记录和设置时照旧换成那句说明。
 test('pictures in a moved conversation show again when the works came along, and travel on with them', async () => {
@@ -12507,6 +12970,47 @@ test('a moved conversation says its picture stayed behind when the works folder 
     await expect(reply).toContainText('画好了')
     await expect(reply).toContainText('[图片未随记录迁移]')
     await expect(reply.locator('.chat-asset')).toHaveCount(0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 第三轮复查第 7 条：「给 AI 的长期嘱咐」跟着搬。这台没写过的直接写进三家工具；有工具没写上时导入那句说一声，
+// 「工具管理」那一格下面列出是哪家、为什么，字没改也能再点保存。
+test('moving to a new computer brings the standing instructions along and says where to save again when a tool missed them', async () => {
+  const page = await open('chatImport&transferInstructions&standingMissed=grok')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    let settings = await openSettingsGroup(page, '备份迁移')
+    await settings.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '已导入 1 个对话及设置。给 AI 的长期嘱咐已导入，但部分工具未能写入，请在「设置 › 工具管理」中再次保存。')
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'saveStandingInstructions').map((entry) => entry.args), [['回答请尽量简洁。']])
+    settings = await openSettingsGroup(page, '工具管理')
+    const row = settings.getByTestId('settings-standing-instructions')
+    await expect(row.getByTestId('settings-standing-instructions-text')).toHaveValue('回答请尽量简洁。')
+    await row.getByTestId('settings-standing-instructions-missed')
+      .getByText('Grok CLI 未能写入：文件中由星芒维护的段落标记已被修改，为避免改动您自行编写的内容，本次未写入。', { exact: true }).waitFor()
+    assert.equal(await row.getByTestId('settings-standing-instructions-save').isDisabled(), false, '有工具没写上，字没改也能再存')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('moving to a new computer asks before replacing standing instructions written here', async () => {
+  const page = await open('chatImport&transferInstructions=conflict')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    const settings = await openSettingsGroup(page, '备份迁移')
+    const ask = page.getByRole('dialog', { name: '是否使用文件中的设置？', exact: true })
+    const saved = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveStandingInstructions').map((entry) => entry.args))
+    await settings.getByTestId('settings-transfer-import').click()
+    await expect(ask).toContainText('以下设置在本机已修改，与文件中的不同：给 AI 的长期嘱咐。')
+    await ask.getByTestId('settings-transfer-keep').click()
+    await waitForToast(page, '已导入 1 个对话。')
+    assert.deepEqual(await saved(), [])
+    await settings.getByTestId('settings-transfer-import').click()
+    await ask.getByTestId('settings-transfer-overwrite').click()
+    await waitForToast(page, '文件中的对话均已存在于本机，设置已导入。')
+    assert.deepEqual(await saved(), [['回答请尽量简洁。']])
     await clean(page)
   } finally { await page.close() }
 })

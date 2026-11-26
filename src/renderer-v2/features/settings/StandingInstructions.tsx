@@ -35,6 +35,7 @@ export function StandingInstructionsField({
   api,
   saved,
   busy,
+  missedAfterImport,
   save,
 }: {
   api: V2Bridge
@@ -42,11 +43,16 @@ export function StandingInstructionsField({
   saved: string
   /** 设置页别的动作正在跑：保存按钮先灰着，跟这一页别的开关一样。 */
   busy: boolean
+  /** 「迁移到新电脑」导入的嘱咐有工具没写上：跟这里保存时一样列出来。 */
+  missedAfterImport?: { lines: string[] } | null
   /** 交给设置页的 operation.execute 跑，失败照这一页的红条报；成功回来的结果在这里画。 */
   save: (run: () => Promise<SaveResult>, done: (result: SaveResult) => string | null) => void
 }) {
   const [draft, setDraft] = useState(saved)
-  const [missed, setMissed] = useState<string[]>([])
+  const [missed, setMissed] = useState<string[]>(missedAfterImport?.lines ?? [])
+  useEffect(() => {
+    if (missedAfterImport) setMissed(missedAfterImport.lines)
+  }, [missedAfterImport])
   // 设置读回来或者别处改了以后跟上；客户正在改的不覆盖。
   const [base, setBase] = useState(saved)
   useEffect(() => {
@@ -76,7 +82,8 @@ export function StandingInstructionsField({
           size="sm"
           variant="primary"
           testId="settings-standing-instructions-save"
-          disabled={busy || unchanged || tooLong}
+          // 有工具没写上时字没改也能再存一次：客户把那份文件改好以后不用先动这段话。
+          disabled={busy || tooLong || (unchanged && !missed.length)}
           onClick={() =>
             save(
               () => api.saveStandingInstructions(draft),

@@ -1,7 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import QRCode from 'qrcode'
-import { ipcEventChannels, type AiLibraryEntry, type AppSettingsV2, type AppConfigSummary, type AccountSessionState, type ExternalClientStatus, type ExternalToolId, type MultiProviderSessionPage, type ProviderId, type RelayRouteLine, type RelayRouteLines, type RelayRoutePreferences, type SystemSnapshot, type XingmangApi, type AiChatHistorySnapshot, type CanvasProjectListEntry } from '../../../electron/ipc-contract'
+import { ipcEventChannels, type AntigravityStatus, type AiLibraryEntry, type AppSettingsV2, type AppConfigSummary, type AccountSessionState, type ExternalClientStatus, type ExternalToolId, type MultiProviderSessionPage, type ProviderId, type RelayRouteLine, type RelayRouteLines, type RelayRoutePreferences, type SystemSnapshot, type XingmangApi, type AiChatHistorySnapshot, type CanvasProjectListEntry } from '../../../electron/ipc-contract'
 import RendererV2App from '../App'
 import { createPreviewAccelerationApi } from './acceleration-fixture'
 import { accelerationTrialSeconds } from '../../../electron/acceleration-contract'
@@ -9,7 +9,7 @@ import { getSourceMarkerStorage, writeManualSourceMarker } from '../features/too
 import { resolveManagedCliKeyProfiles } from '../../../electron/catalog'
 import { ExternalUrlBlockedError } from '../../../electron/external-url-blocked'
 import { buildClaudeDesktopInstallFailureMessage } from '../../../electron/claude-desktop-install-failure'
-import { codexDesktopActivationBrokenSentence } from '../../../electron/codex-desktop-known-issues'
+import { codexDesktopActivationBrokenSentence, codexDesktopActivationOfflineSentence, codexDesktopWindowsUpdateBlockedSentence } from '../../../electron/codex-desktop-known-issues'
 import { accountScope } from '../account-context'
 import { createConversation, createWorkspace, type ChatMessage } from '../features/chat/state'
 import { exportableConversations } from '../features/chat/storage'
@@ -62,7 +62,12 @@ function timelineFixture() {
 // The Chinese runtime patch defaults to an answered 'enabled' here: an
 // ordinary launch must not be interrupted by the one-time question, which
 // `chineseAsk` exercises on its own.
-let settings: AppSettingsV2 = { version: 2, workspace: 'C:\\Fixture', theme: query.get('theme') === 'dark' ? 'dark' : 'light', runDiagnosticsOnStartup: query.has('diagnostics'), checkUpdatesOnStartup: query.has('startupUpdate'),
+// ?antigravityWorkspaceGone：主进程记着的项目文件夹（上次选的）已经被删了，打开 Antigravity 命令行时报
+// 「项目文件夹不存在」（antigravity-service.ts 的 openCli）。这时 getConfig 同主进程，回的是记着的那个
+// （rememberedWorkspaceFor），选过新的以后回新选的那个（launch.ts 的 rememberWorkspace）。
+const fixtureGoneWorkspace = 'C:\\work\\deleted-project'
+const rememberStoredWorkspace = query.has('antigravityWorkspaceGone')
+let settings: AppSettingsV2 = { version: 2, workspace: rememberStoredWorkspace ? fixtureGoneWorkspace : 'C:\\Fixture', theme: query.get('theme') === 'dark' ? 'dark' : 'light', runDiagnosticsOnStartup: query.has('diagnostics'), checkUpdatesOnStartup: query.has('startupUpdate'),
   ...(query.has('crashNotice') ? {} : { crashReportingNoticeShown: true as const }),
   ...(query.has('chineseAsk') ? {} : { codexDesktopChineseRuntimePatch: 'enabled' as const }) }
 // ?longUsername：历史账号没有用户名时界面上写的是邮箱，用一个真实长度的（42 字）。
@@ -116,6 +121,12 @@ const externalStatuses: ExternalClientStatus[] = (['workbuddy', 'claudeDesktop',
   ...(query.get('externalPristine') === tool ? { pristine: true } : {}),
 }))
 const externalOwnerSite = session.siteId ?? 'solov'
+// ?antigravity=missing|installed|unconfigured|closeFirst：首页 Antigravity 两张卡（同主进程 antigravity-service.ts）。
+// 没带就同 Linux：这台电脑不摆这两张卡，别的用例的首页照旧。closeFirst = 都装着、桌面端开着拿不到新设置。
+const antigravityMode = query.get('antigravity')
+const antigravityStatus: AntigravityStatus = { supported: antigravityMode !== null,
+  cliInstalled: antigravityMode !== null && antigravityMode !== 'missing', desktopInstalled: antigravityMode !== null && antigravityMode !== 'missing',
+  configured: antigravityMode === 'installed' || antigravityMode === 'closeFirst' }
 const configValue = { exists: true, hasApiKey: true, matchesRelay: true, configurationOwnership: 'account' as const, baseUrl: 'https://xm.solov.cc/v1', actualBaseUrl: 'https://xm.solov.cc/v1', model: 'fixture-model', apiKeyPreview: 'sk-***', dataDirectory: 'C:\\Fixture', dataDirectoryExists: true, files: [], updatedAt: null }
 const config: AppConfigSummary = { workspace: settings.workspace, providers: { claude: { ...configValue }, codex: { ...configValue }, gemini: { ...configValue }, grok: { ...configValue } } }
 if (query.has('restoreDirectRoute')) {
@@ -287,7 +298,7 @@ if (query.has('uninstallUnavailable')) {
     },
   }
 }
-declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; failMessage: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; holdNextExternalScan(): void; releaseExternalScan(): void; holdNextConfigRead(): void; releaseConfigRead(): void; holdAccountKeys(): void; releaseAccountKeys(): void; holdNextScan(): void; releaseScan(): void; setExternalStatus(tool: ExternalToolId, patch: Partial<ExternalClientStatus>): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; addSpend(quota: number): void; releaseKeyMetadata(provider: ProviderId): void; holdConfiguredModels(provider: ProviderId): void; releaseConfiguredModels(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: Awaited<ReturnType<XingmangApi['getAccountNotice']>>): void; timelineFixture(): ReturnType<typeof timelineFixture>; holdNextConfigSave(): void; releaseConfigSave(error?: string): void; holdNextResponses(): void; releaseResponses(): void; holdNextAccountSession(): void; releaseAccountSession(): void; signOutAccountPageSessionReads(): void; accountPageSessionSignedOutServed(): number; dropSessionSilently(): void; holdNextUninstall(): void; releaseUninstall(): void; holdNextInstall(): void; releaseInstall(error?: string): void; holdNextNodeInstall(): void; releaseNodeInstall(): void; addRecentSession(id: string, provider: ProviderId, cwd: string, updatedAt: number): void; setRelayRoute(line: RelayRouteLine): void; setToolsRunning(running: boolean): void; holdNextImport(): void; releaseImport(): void; holdNextChatHistoryRead(): void; releaseChatHistoryRead(): void; chatHistory(): { ids: string[]; index: string }; releaseChatImage(): void; releaseChatVideo(): void; setCanvasProjects(projects: CanvasProjectListEntry[]): void; videoFilms(scope?: string): { index: string | null; ids: string[] } } } }
+declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; failMessage: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; holdNextExternalScan(): void; releaseExternalScan(): void; holdNextConfigRead(): void; releaseConfigRead(): void; holdAccountKeys(): void; releaseAccountKeys(): void; holdNextScan(): void; releaseScan(): void; setExternalStatus(tool: ExternalToolId, patch: Partial<ExternalClientStatus>): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; addSpend(quota: number): void; releaseKeyMetadata(provider: ProviderId): void; holdConfiguredModels(provider: ProviderId): void; releaseConfiguredModels(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: Awaited<ReturnType<XingmangApi['getAccountNotice']>>): void; timelineFixture(): ReturnType<typeof timelineFixture>; holdNextConfigSave(): void; releaseConfigSave(error?: string): void; holdNextResponses(): void; releaseResponses(): void; holdNextAccountSession(): void; releaseAccountSession(): void; signOutAccountPageSessionReads(): void; accountPageSessionSignedOutServed(): number; dropSessionSilently(): void; holdNextUninstall(): void; releaseUninstall(): void; holdNextInstall(): void; releaseInstall(error?: string): void; holdNextNodeInstall(): void; releaseNodeInstall(): void; addRecentSession(id: string, provider: ProviderId, cwd: string, updatedAt: number): void; setRelayRoute(line: RelayRouteLine): void; setToolsRunning(running: boolean): void; setAntigravityConfigured(configured: boolean): void; holdNextImport(): void; releaseImport(): void; holdNextChatHistoryRead(): void; releaseChatHistoryRead(): void; chatHistory(): { ids: string[]; index: string }; releaseChatImage(): void; releaseChatVideo(): void; setCanvasProjects(projects: CanvasProjectListEntry[]): void; videoFilms(scope?: string): { index: string | null; ids: string[] } } } }
 const listeners = new Map<string, Set<(payload: unknown) => void>>()
 let releaseBootstrap: () => void = () => undefined
 let releaseLaunch: () => void = () => undefined
@@ -399,6 +410,11 @@ if (query.get('videoFilms') === 'library') {
     exported: { assetId: fixtureLibraryFilmId, thumbnailUrl: assetThumbnailUrl(fixtureLibraryFilmId, 'video'), width: 1280, height: 720, durationSeconds: 10 },
   } }
 }
+// ?videoFilms=pending：上次关软件时「橘猫回家」第一镜还在出，记着请求号；重开后去接回（resumeAiVideo），releaseChatVideo 才交出来。
+if (query.get('videoFilms') === 'pending') {
+  const cat = fixtureFilms[0].project
+  fixtureFilms[0] = { ...fixtureFilms[0], project: { ...cat, shots: cat.shots.map((shot, index) => index === 0 ? { ...shot, requestId: 'fixture-pending-clip' } : shot) } }
+}
 if (query.has('videoFilms')) videoProjectFiles.set(fixtureVideoScope, { index: null, projects: new Map(fixtureFilms.map((film) => { const file = serializeVideoStudioItem(film); return [file.key, file.content] })) })
 if (query.has('legacyVideoDrafts')) {
   // 照 0.2.24 的两格写：手头那一条没有时间，草稿箱里的带 savedAt。刷新页面时已经有了就不重写，同真机上「老版本留下的」。
@@ -423,7 +439,7 @@ let canvasProjects: CanvasProjectListEntry[] = query.has('canvasProjects')
   ? [{ id: 'fixture-canvas-poster', name: '双 11 主图', updatedAt: Date.now() - 2 * 3_600_000, ...(query.has('canvasWorks') ? { cover: { assetId: fixtureCanvasCoverId, mediaType: 'image' as const } } : {}) }, { id: 'fixture-canvas-old', name: '门店海报', updatedAt: Date.now() - 9 * 86_400_000 }]
   : []
 const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount', 'switchAccountSource', 'saveSettings'])
-window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdAccountKeys() { heldAccountKeys = heldAccountKeys ?? [] }, releaseAccountKeys() { const held = heldAccountKeys ?? []; heldAccountKeys = null; for (const resolve of held) resolve() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, addSpend(quota) { extraSpend += quota }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, holdConfiguredModels(provider) { heldConfiguredModels.set(provider, heldConfiguredModels.get(provider) ?? []) }, releaseConfiguredModels(provider) { const held = heldConfiguredModels.get(provider) ?? []; heldConfiguredModels.delete(provider); for (const resolve of held) resolve() }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, timelineFixture() { return timelineFixture() }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) }, holdNextResponses() { nextResponsesHeld = true }, releaseResponses() { releaseResponses() }, holdNextAccountSession() { nextAccountSessionHeld = true }, releaseAccountSession() { releaseAccountSession() }, signOutAccountPageSessionReads() { accountPageSessionSignedOut = true }, accountPageSessionSignedOutServed() { return accountPageSessionSignedOutServed }, dropSessionSilently() { session = { authenticated: false, account: null } }, holdNextUninstall() { nextUninstallHeld = true }, releaseUninstall() { releaseUninstall() }, holdNextInstall() { nextInstallHeld = true }, releaseInstall(error) { releaseInstall(error) }, holdNextNodeInstall() { nextNodeInstallHeld = true }, releaseNodeInstall() { releaseNodeInstall() }, addRecentSession(id, provider, cwd, updatedAt) { recentWorkspaceSessions.unshift(recentWorkspaceSession(id, provider, cwd, updatedAt)) }, setRelayRoute(line) { autoRelayLine = line; reportRoutedConfig() }, setToolsRunning(running) { fixtureToolsRunning = running }, holdNextImport() { nextImportHeld = true }, releaseImport() { releaseImport() }, holdNextChatHistoryRead() { nextChatHistoryReadHeld = true }, releaseChatHistoryRead() { releaseChatHistoryRead() }, chatHistory() { const index = [...chatHistoryFiles.values()][0]?.index ?? ''; return { ids: index ? (JSON.parse(index) as { conversations: Array<{ id: string }> }).conversations.map((entry) => entry.id) : [], index } }, releaseChatImage() { releaseChatImage() }, releaseChatVideo() { releaseChatVideo() }, setCanvasProjects(projects) { canvasProjects = projects }, videoFilms(scope = fixtureVideoScope) { const stored = videoProjectFiles.get(scope); return { index: stored?.index ?? null, ids: [...(stored?.projects.keys() ?? [])] } } }
+window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdAccountKeys() { heldAccountKeys = heldAccountKeys ?? [] }, releaseAccountKeys() { const held = heldAccountKeys ?? []; heldAccountKeys = null; for (const resolve of held) resolve() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, addSpend(quota) { extraSpend += quota }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, holdConfiguredModels(provider) { heldConfiguredModels.set(provider, heldConfiguredModels.get(provider) ?? []) }, releaseConfiguredModels(provider) { const held = heldConfiguredModels.get(provider) ?? []; heldConfiguredModels.delete(provider); for (const resolve of held) resolve() }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, timelineFixture() { return timelineFixture() }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) }, holdNextResponses() { nextResponsesHeld = true }, releaseResponses() { releaseResponses() }, holdNextAccountSession() { nextAccountSessionHeld = true }, releaseAccountSession() { releaseAccountSession() }, signOutAccountPageSessionReads() { accountPageSessionSignedOut = true }, accountPageSessionSignedOutServed() { return accountPageSessionSignedOutServed }, dropSessionSilently() { session = { authenticated: false, account: null } }, holdNextUninstall() { nextUninstallHeld = true }, releaseUninstall() { releaseUninstall() }, holdNextInstall() { nextInstallHeld = true }, releaseInstall(error) { releaseInstall(error) }, holdNextNodeInstall() { nextNodeInstallHeld = true }, releaseNodeInstall() { releaseNodeInstall() }, addRecentSession(id, provider, cwd, updatedAt) { recentWorkspaceSessions.unshift(recentWorkspaceSession(id, provider, cwd, updatedAt)) }, setRelayRoute(line) { autoRelayLine = line; reportRoutedConfig() }, setToolsRunning(running) { fixtureToolsRunning = running }, setAntigravityConfigured(configured) { antigravityStatus.configured = configured }, holdNextImport() { nextImportHeld = true }, releaseImport() { releaseImport() }, holdNextChatHistoryRead() { nextChatHistoryReadHeld = true }, releaseChatHistoryRead() { releaseChatHistoryRead() }, chatHistory() { const index = [...chatHistoryFiles.values()][0]?.index ?? ''; return { ids: index ? (JSON.parse(index) as { conversations: Array<{ id: string }> }).conversations.map((entry) => entry.id) : [], index } }, releaseChatImage() { releaseChatImage() }, releaseChatVideo() { releaseChatVideo() }, setCanvasProjects(projects) { canvasProjects = projects }, videoFilms(scope = fixtureVideoScope) { const stored = videoProjectFiles.get(scope); return { index: stored?.index ?? null, ids: [...(stored?.projects.keys() ?? [])] } } }
 if (query.has('startupConfigFail')) window.v2Test.fail = 'getConfig'
 // subscriptionReadFail：订阅一直读不到（网络抖、服务端慢），不知道这个账号有没有订阅（F1）。
 if (query.has('subscriptionReadFail')) window.v2Test.fail = 'getAccountSubscriptionSelf'
@@ -669,6 +685,7 @@ const methods = {
   },
   getConfig: async () => {
     const result = structuredClone(config)
+    if (rememberStoredWorkspace) result.rememberedWorkspace = settings.workspace
     if (launchedWorkspace) result.rememberedWorkspace = launchedWorkspace
     // 同主进程（isUntouchedStarterWorkspace）：夹具里替用户建的那个文件夹一直空着。
     if (launchedWorkspace === fixtureStarterWorkspace) result.rememberedWorkspaceFresh = true
@@ -707,6 +724,25 @@ const methods = {
     }
     if (holdExternalScan) { holdExternalScan = false; await new Promise<void>((resolve) => { releaseExternalScan = resolve }) }
     return result
+  },
+  inspectAntigravity: async () => structuredClone(antigravityStatus),
+  installAntigravity: async (target) => {
+    window.v2Test.emit('onAntigravityInstallProgress', { target, phase: 'downloading', percent: 42 })
+    if (target === 'cli') antigravityStatus.cliInstalled = true
+    else antigravityStatus.desktopInstalled = true
+    window.v2Test.emit('onAntigravityInstallProgress', { target, phase: 'configuring', percent: null })
+    // 同主进程：没登录照样装好，设置没写成的那句随结果回来。
+    if (!session.authenticated) return { status: structuredClone(antigravityStatus), configureError: '请先登录账号，再设置 Antigravity' }
+    antigravityStatus.configured = true
+    return { status: structuredClone(antigravityStatus) }
+  },
+  openAntigravityDesktop: async () => {
+    antigravityStatus.configured = true
+    return antigravityMode === 'closeFirst' ? { opened: false, closeFirst: true as const } : { opened: true }
+  },
+  openAntigravityCli: async (workspace) => {
+    if (workspace === fixtureGoneWorkspace) throw new Error('项目文件夹不存在，请重新选择')
+    antigravityStatus.configured = true
   },
   installExternalClient: async (tool) => {
     window.v2Test.emit('onExternalClientInstallProgress', { tool, phase: 'downloading', message: '正在下载安装包', percent: 36 })
@@ -836,10 +872,13 @@ const methods = {
     return query.has('launchPending') ? new Promise<{}>((resolve) => { releaseLaunch = () => resolve({}) }) : query.has('launchOverride') ? { configOverrideNotice: '该项目文件夹中有独立的设置，将导致 Claude Code 不使用当前账号，余额与用量将无法对应。如非有意设置，请更换文件夹打开。' } : {}
   },
   launchCodexDesktop: async () => {
-    // ?codexLaunchFailure=activation：Windows 不肯起已装好的 Codex（0x80270254）；=generic：等了 38 秒没起来。
-    // 两句都是主进程 describeCodexDesktopLaunchFailure 写出来的原样。
+    // ?codexLaunchFailure=activation：Windows 不肯起已装好的 Codex（0x80270254）；=offline：Windows 联网核对许可超时
+    // （0x80072EE2）；=windows-update：Windows 更新服务被关了，第一次启动验证不了；=generic：等了 38 秒没起来。
+    // 几句都是主进程 describeCodexDesktopLaunchFailure 写出来的原样。
     const failure = query.get('codexLaunchFailure')
     if (failure === 'activation') throw new Error(`Codex 桌面端未能打开：${codexDesktopActivationBrokenSentence(38)}`)
+    if (failure === 'offline') throw new Error(`Codex 桌面端未能打开：${codexDesktopActivationOfflineSentence(58)}`)
+    if (failure === 'windows-update') throw new Error(`Codex 桌面端未能打开：${codexDesktopWindowsUpdateBlockedSentence(62)}`)
     if (failure === 'generic') throw new Error('Codex 桌面端未能打开：等待 38 秒，Codex 未能启动。请关闭所有 Codex 窗口后点击「重试」。如需确认是否为 Codex 自身问题，可在开始菜单中搜索「ChatGPT」并直接打开：如同样无法打开，则为 Codex 当前版本的问题，可等待微软商店更新，或先使用 Codex CLI；如开始菜单中可以打开而星芒中无法打开，请联系客服。')
     return { restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已打开，但本次未能切换为中文界面。请先保存当前工作，再在首页点击「打开」，选择「重开 Codex」重试。' } } : {}) }
   },
@@ -1152,6 +1191,14 @@ const methods = {
     addFixtureLibraryEntry({ assetId, mediaType: 'video', createdAt: new Date().toISOString(), fileName: `${assetId}.mp4` })
     return { assetId, thumbnailUrl: assetThumbnailUrl(assetId, 'video'), width: 1280, height: 720, durationSeconds: 5 }
   },
+  resumeAiVideo: async (requestId) => {
+    if (query.get('videoFilms') !== 'pending') { window.v2Test.unexpected.push('resumeAiVideo'); throw new Error('Missing mock: resumeAiVideo') }
+    // StrictMode 把挂上时那一下跑两遍，同一个请求号会问两遍（主进程两遍接的是同一份）：一次放行两边都交。
+    await new Promise<void>((resolve) => { const earlier = releaseChatVideo; releaseChatVideo = () => { earlier(); resolve() } })
+    const assetId = requestId.replace(/[^A-Za-z0-9_-]/g, '').padEnd(43, 'c').slice(0, 43)
+    addFixtureLibraryEntry({ assetId, mediaType: 'video', createdAt: new Date().toISOString(), fileName: `${assetId}.mp4` })
+    return { assetId, thumbnailUrl: assetThumbnailUrl(assetId, 'video'), width: 1280, height: 720, durationSeconds: 5 }
+  },
   generateAiImage: async (input) => {
     // 没开 ?chatImage 的用例不该出图：照旧记成没 mock 的调用，clean() 会报出来。
     if (!query.has('chatImage')) { window.v2Test.unexpected.push('generateAiImage'); throw new Error('Missing mock: generateAiImage') }
@@ -1188,21 +1235,35 @@ const methods = {
     const conversation = { ...createConversation(undefined, 'from-old-computer'), title: '旧电脑上的对话', messages: [...messages, ...picture] }
     // ?transferWorksMissing：文件里说带了作品，旁边却没有「作品」文件夹（只拷了那一份文件）。
     const works = query.has('transferWorksMissing') ? { ...fixtureWorks, state: 'missing' as const } : { ...fixtureWorks, state: 'ready' as const, token: 'fixture-works-token' }
+    // ?transferCanvasProjects：文件里还带了 4 个画布项目，跟作品同一处（「作品」不在时它也不在）。
+    const canvasProjects = { count: 4, state: query.has('transferWorksMissing') ? 'missing' as const : 'ready' as const }
+    // ?transferInstructions：文件里带了「给 AI 的长期嘱咐」，这台电脑上没写过；=conflict 时这台写过另一段，要先问。
+    const instructions = query.get('transferInstructions')
+    const conflictLabels = instructions === 'conflict' ? ['给 AI 的长期嘱咐'] : []
     return {
-      conversations: exportableConversations({ ...createWorkspace('old-computer'), conversations: [conversation] }, { withWorks: query.has('transferWorks') }), phrases: ['旧电脑上存的一句'], settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels: [],
+      conversations: exportableConversations({ ...createWorkspace('old-computer'), conversations: [conversation] }, { withWorks: query.has('transferWorks') }), phrases: ['旧电脑上存的一句'], settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels,
       ...(query.has('transferWorks') ? { works } : {}),
+      ...(query.has('transferWorks') && query.has('transferCanvasProjects') ? { canvasProjects } : {}),
+      ...(instructions === null ? {} : instructions === 'conflict' ? { conflictingStandingInstructions: '回答请尽量简洁。' } : { standingInstructions: '回答请尽量简洁。' }),
     }
   },
   // 「搬作品改」：?transferWorks 时当前账号作品库里有 128 件作品，导出前先问带不带。
-  inspectAppWorks: async () => query.has('transferWorks') ? { ...fixtureWorks } : { images: 0, videos: 0, audios: 0, bytes: 0 },
+  // ?transferCanvasProjects：另有 4 个画布项目（连同它们的文件约 35 MB），其中 1 个的文件夹在拔掉的移动硬盘上。
+  inspectAppWorks: async () => query.has('transferWorks')
+    ? { ...fixtureWorks, ...(query.has('transferCanvasProjects') ? { bytes: fixtureWorks.bytes + 35 * 1024 ** 2, canvasProjects: 3, canvasProjectsUnreachable: 1 } : {}) }
+    : { images: 0, videos: 0, audios: 0, bytes: 0 },
   exportAppData: async (input) => input.includeWorks
-    ? { outputPath: 'C:\\Users\\fixture\\Downloads\\星芒数据导出-2026-11-22\\星芒聊天记录与设置.json', conversations: input.conversations.length, videoProjects: input.videoProjects?.length ?? 0, works: { folderName: '星芒数据导出-2026-11-22', count: 128 } }
+    ? { outputPath: 'C:\\Users\\fixture\\Downloads\\星芒数据导出-2026-11-22\\星芒聊天记录与设置.json', conversations: input.conversations.length, videoProjects: input.videoProjects?.length ?? 0, works: { folderName: '星芒数据导出-2026-11-22', count: 128, ...(query.has('transferCanvasProjects') ? { canvasProjects: 3 } : {}) } }
     : { outputPath: 'C:\\Users\\fixture\\Downloads\\星芒聊天记录与设置-2026-11-22.json', conversations: input.conversations.length, videoProjects: input.videoProjects?.length ?? 0 },
   importAppWorks: async (token) => {
     if (token !== 'fixture-works-token') throw new Error('请再次点击「导入」。')
-    return { status: 'done' as const, added: 120, existing: 8, failed: 0 }
+    return { status: 'done' as const, added: 120, existing: 8, failed: 0, ...(query.has('transferCanvasProjects') ? { canvasProjects: { added: 3, existing: 1, full: 0, failed: 0 } } : {}) }
   },
-  getLegalDocument: async (kind) => ({ kind, markdown: '# 本地协议\n\n测试内容。', fetchedAt: '2026-09-07T00:00:00Z' }),
+  // 不带账号来源时主进程按当前账号读；历史账号那边没有协议，跟真的一样报「当前账号暂不支持此功能」。
+  getLegalDocument: async (kind, siteId) => {
+    if ((siteId ?? (session.authenticated && query.has('sub2api') ? 'solov-api' : 'solov')) !== 'solov') throw new Error('当前账号暂不支持此功能')
+    return { kind, markdown: '# 本地协议\n\n测试内容。', fetchedAt: '2026-09-07T00:00:00Z' }
+  },
   getAccountProfile: async () => ({ ...account, displayName: account.username, email: 'fixture@example.com', requestCount: 0, affCode: 'test', affCount: 0, affQuota: 0, affHistoryQuota: 0 }),
   getAccountLoginSessions: async () => [],
   listSavedAccounts: async () => query.has('crossSite') ? [{ id: 'saved-aa0017', origin: 'https://api.solov.cc', userId: 17, username: 'fixture-user', updatedAt: '2026-09-07T00:00:00Z' }] : query.has('savedAccount') ? [{ id: 'saved-18', origin: 'https://xm.solov.cc', userId: 18, username: 'saved-user', updatedAt: '2026-09-07T00:00:00Z' }] : [],

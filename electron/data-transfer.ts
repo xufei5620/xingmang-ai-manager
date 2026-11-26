@@ -5,14 +5,16 @@ import { MAX_CHAT_HISTORY_CONVERSATIONS } from './ai-chat-history-store'
 import { AI_CHAT_PHRASE_LIMITS } from './ai-chat-protocol'
 import { MAX_VIDEO_STUDIO_PROJECT_FILE_BYTES, MAX_VIDEO_STUDIO_PROJECTS, videoStudioProjectKeyPattern } from './video-studio-project-store'
 import { MAX_TRANSFERRED_WORKS, WORKS_FOLDER_NAME } from './data-transfer-works'
+import { MAX_TRANSFERRED_CANVAS_PROJECTS } from './data-transfer-canvas'
 import { withoutByteOrderMark } from './config-files-context'
 import { isRecord } from './input-guards'
+import { validateStandingInstructions } from './standing-instructions'
 
 // 「迁移到新电脑」的文件：当前账号的聊天对话、「创作」里的视频（分镜）+ 几项跟着人走的软件设置。刻意不放任何
 // 能花钱或能登录的东西（Key、密码、登录状态、保存的账号），也不放命令行工具的配置、
 // 这台电脑自己的东西（工作文件夹、窗口位置、显卡加速、Codex 调试端口的同意）。新电脑
 // 上登录后，工具照常重新配好。作品库里的作品太大，不放进这份文件：选了带作品时放在旁边的「作品」文件夹里，
-// 这里只记一共多少（data-transfer-works.ts）。
+// 画布项目放在旁边的「画布项目」文件夹里，这里只记一共多少（data-transfer-works.ts、data-transfer-canvas.ts）。
 export const DATA_TRANSFER_FORMAT = 'xingmang-data-transfer'
 export const DATA_TRANSFER_VERSION = 1
 // 图片、视频不随文件走，剩下的都是文字；200 个对话、200 条视频碰到这个上限已经远超正常使用。
@@ -150,7 +152,7 @@ function parseVideoProjects(value: unknown, message: string): VideoStudioProject
   })
 }
 
-// 文件里记的作品一共多少：只拿来在导入前报数，真正导哪些看「作品」文件夹里的清单。文件夹名字写死，
+// 文件里记的作品一共多少（带画布项目时连同项目几个）：只拿来在导入前报数，真正导哪些看「作品」「画布项目」文件夹里的清单。文件夹名字写死，
 // 不照文件里写的去找（文件不能把导入指到这台电脑的别处）。
 function parseWorksSummary(value: unknown): DataTransferWorksSummary | undefined {
   if (value === undefined) return undefined
@@ -159,11 +161,13 @@ function parseWorksSummary(value: unknown): DataTransferWorksSummary | undefined
     return field
   }
   if (!isRecord(value) || value.folder !== WORKS_FOLDER_NAME) throw new Error(dataTransferInvalidMessage)
+  const canvasProjects = value.canvasProjects === undefined ? 0 : count(value.canvasProjects, MAX_TRANSFERRED_CANVAS_PROJECTS)
   return {
     images: count(value.images, MAX_TRANSFERRED_WORKS),
     videos: count(value.videos, MAX_TRANSFERRED_WORKS),
     audios: count(value.audios, MAX_TRANSFERRED_WORKS),
     bytes: count(value.bytes, Number.MAX_SAFE_INTEGER),
+    ...(canvasProjects ? { canvasProjects } : {}),
   }
 }
 
@@ -185,6 +189,20 @@ export function parseDataTransferExportInput(value: unknown): DataTransferExport
 const anonymousUsageLabel = '匿名使用统计'
 const anonymousUsageUntouched = true
 
+// 「给 AI 的长期嘱咐」（第三轮复查第 7 条）也不进 PortableSettings：它是客户自己写的一段话，导入时要写进三家工具的
+// 说明文件，由设置页走保存嘱咐那一条（config:save-standing-instructions）。这台电脑上还没写过就照文件换，写过另一段
+// 才问。文件里的那段跟设置页保存时一样查一遍（I5），查不过整份拒收；导出时这台存着的那段查不过（手改坏了）就不带，
+// 免得导出一份新电脑拒收的文件。
+const standingInstructionsLabel = '给 AI 的长期嘱咐'
+
+function portableStandingInstructions(settings: AppSettings): string | undefined {
+  try {
+    return validateStandingInstructions(settings.standingInstructions ?? '') || undefined
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * anonymousUsage 是导出那台电脑上「匿名使用统计」存着的样子（没碰过 = 开）；系统界面设置读不出来时给 null，
  * 文件里就不写这一项：不知道客户选的是什么，不替客户定，新电脑那边照旧不动。works 是旁边「作品」文件夹里
@@ -197,11 +215,16 @@ export function buildDataTransferFile(
   anonymousUsage?: boolean | null,
   works?: DataTransferWorksSummary,
 ): string {
+  const standingInstructions = portableStandingInstructions(settings)
   const content = JSON.stringify({
     format: DATA_TRANSFER_FORMAT,
     version: DATA_TRANSFER_VERSION,
     exportedAt: exportedAt.toISOString(),
-    settings: { ...buildPortableSettings(settings), ...(typeof anonymousUsage === 'boolean' ? { anonymousUsage } : {}) },
+    settings: {
+      ...buildPortableSettings(settings),
+      ...(typeof anonymousUsage === 'boolean' ? { anonymousUsage } : {}),
+      ...(standingInstructions ? { standingInstructions } : {}),
+    },
     conversations: input.conversations,
     ...(input.phrases?.length ? { phrases: input.phrases } : {}),
     ...(input.videoProjects?.length ? { videoProjects: input.videoProjects } : {}),
@@ -229,6 +252,8 @@ export function parseDataTransferFile(raw: string): {
   settings: Partial<PortableSettings>
   /** 旧版本导出的文件没有这一项。 */
   anonymousUsage?: boolean
+  /** 旧版本导出的、导出那台没写过的都没有这一项。 */
+  standingInstructions?: string
   conversations: Record<string, unknown>[]
   phrases: string[]
   videoProjects: VideoStudioProjectFile[]
@@ -253,14 +278,26 @@ export function parseDataTransferFile(raw: string): {
   }
   const anonymousUsage = parsed.settings.anonymousUsage
   if (anonymousUsage !== undefined && typeof anonymousUsage !== 'boolean') throw new Error(dataTransferInvalidMessage)
+  const standingInstructions = parseFileStandingInstructions(parsed.settings.standingInstructions)
   const works = parseWorksSummary(parsed.works)
   return {
     settings,
     ...(anonymousUsage === undefined ? {} : { anonymousUsage }),
+    ...(standingInstructions ? { standingInstructions } : {}),
     conversations: parseConversations(parsed.conversations, dataTransferInvalidMessage),
     phrases: parsePhrases(parsed.phrases, dataTransferInvalidMessage),
     videoProjects: parseVideoProjects(parsed.videoProjects, dataTransferInvalidMessage),
     ...(works ? { works } : {}),
+  }
+}
+
+// 空字符串也当没带：导出那边没写过就不写这一项，有人手写一个空的进来，也不能借导入把这台的嘱咐清掉。
+function parseFileStandingInstructions(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  try {
+    return validateStandingInstructions(value) || undefined
+  } catch {
+    throw new Error(dataTransferInvalidMessage)
   }
 }
 
@@ -279,7 +316,9 @@ export function planPortableSettingsImport(
   current: AppSettings,
   incoming: Partial<PortableSettings>,
   anonymousUsage?: { here: boolean | null; incoming?: boolean },
-): Pick<DataTransferImportPreview, 'settings' | 'conflictingSettings' | 'conflictLabels' | 'anonymousUsage' | 'conflictingAnonymousUsage'> {
+  standingInstructions?: { here: string; incoming?: string },
+): Pick<DataTransferImportPreview,
+  'settings' | 'conflictingSettings' | 'conflictLabels' | 'anonymousUsage' | 'conflictingAnonymousUsage' | 'standingInstructions' | 'conflictingStandingInstructions'> {
   const here = buildPortableSettings(current)
   const settings: AppSettingsUpdate = { version: 2 }
   const conflictingSettings: AppSettingsUpdate = { version: 2 }
@@ -295,13 +334,26 @@ export function planPortableSettingsImport(
       conflictLabels.push(label)
     }
   }
+  const plan: ReturnType<typeof planPortableSettingsImport> = { settings, conflictingSettings, conflictLabels }
   const usage = anonymousUsage?.incoming
   const usageHere = anonymousUsage?.here
-  if (usage === undefined || usageHere === null || usageHere === undefined || usage === usageHere) {
-    return { settings, conflictingSettings, conflictLabels }
+  if (usage !== undefined && usageHere !== null && usageHere !== undefined && usage !== usageHere) {
+    if (usageHere === anonymousUsageUntouched) plan.anonymousUsage = usage
+    else {
+      conflictLabels.push(anonymousUsageLabel)
+      plan.conflictingAnonymousUsage = usage
+    }
   }
-  if (usageHere === anonymousUsageUntouched) return { settings, conflictingSettings, conflictLabels, anonymousUsage: usage }
-  return { settings, conflictingSettings, conflictLabels: [...conflictLabels, anonymousUsageLabel], conflictingAnonymousUsage: usage }
+  const instructions = standingInstructions?.incoming
+  const instructionsHere = standingInstructions?.here ?? ''
+  if (instructions && instructions !== instructionsHere) {
+    if (!instructionsHere) plan.standingInstructions = instructions
+    else {
+      conflictLabels.push(standingInstructionsLabel)
+      plan.conflictingStandingInstructions = instructions
+    }
+  }
+  return plan
 }
 
 function dateStamp(now: Date): string {

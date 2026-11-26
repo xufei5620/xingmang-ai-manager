@@ -264,6 +264,7 @@ test('one menu lists the models of every group by vendor, each naming the group 
     // 计费提示只留输入框下面那一句，右上角那个「自动 · 费用不可预测」去掉了。
     assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费，回复越长花得越多。')
     assert.equal(await page.getByText('回答由模型生成，可能有误，重要内容请核对。', { exact: false }).count(), 1)
+    assert.equal(await page.getByTestId('chat-compose-note').textContent(), '回答由模型生成，可能有误，重要内容请核对。按实际用量计费，回复越长花得越多。')
     assert.equal(await page.getByText('自动 · 费用不可预测', { exact: true }).count(), 0)
   } finally { await page.close() }
 })
@@ -421,11 +422,21 @@ test('image controls use real model capabilities and asset actions use opaque id
     await pickChoice(page, 'chat-image-resolution', '分辨率', '2K')
     assert.equal(await page.getByTestId('chat-image-resolution').textContent(), '分辨率：2K')
     assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费。')
+    // 0.2.25 C3：出图没有「回答」可核对，「生成图片」这一档换成说图片的那一句；文本对话那句照旧（见上面模型菜单那条）。
+    assert.equal(await page.getByTestId('chat-compose-note').textContent(), '图片由模型生成，按实际用量计费。')
+    assert.equal(await page.getByText('回答由模型生成', { exact: false }).count(), 0)
     const request = await send(page, 'A test scene')
     assert.equal(request.quality, 'high')
     assert.equal(request.imageResolution, '2K')
     await page.evaluate((id) => window.chatHarness.completeImage(id), request.requestId)
     await page.getByRole('button', { name: '查看生成图片' }).waitFor()
+    // 0.2.25 C2：「重新生成」「删除」接在图片那排按钮后面（细竖线隔开），尺寸仍在最右；没有文字说明的出图回复不再另起一排。
+    const reply = page.locator('.chat-message[data-role="assistant"]').last()
+    const row = reply.locator('.chat-asset-actions')
+    assert.equal(await row.getByRole('button', { name: '重新生成' }).count(), 1)
+    assert.equal(await row.getByRole('button', { name: '删除消息' }).count(), 1)
+    assert.deepEqual(await row.evaluate((element) => Array.from(element.children).slice(-4).map((child) => child.getAttribute('aria-label') || child.className || child.tagName.toLowerCase())), ['chat-asset-divider', '重新生成', '删除消息', 'small'])
+    assert.equal(await reply.locator('.chat-message-tools').count(), 0)
     await page.getByTestId('chat-asset-copy').click()
     await page.getByTestId('chat-asset-save').click()
     await page.getByTestId('chat-asset-menu').click()
@@ -1079,6 +1090,7 @@ test('generating an image takes reference pictures and a generated one to keep e
     await attach.click()
     await page.locator('.chat-draft-image').first().waitFor()
     assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费，带参考图的会更贵一些。')
+    assert.equal(await page.getByTestId('chat-compose-note').textContent(), '图片由模型生成，按实际用量计费，带参考图的会更贵一些。')
     // 光有参考图不够，要写上怎么改。
     assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
     await page.getByTestId('chat-composer-input').fill('把背景换成海边')

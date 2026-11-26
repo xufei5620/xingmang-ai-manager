@@ -8,6 +8,9 @@ const xaiLlcSubject = 'OID.1.3.6.1.4.1.311.60.2.1.3=US, OID.1.3.6.1.4.1.311.60.2
 const xaiLlcIssuer = 'CN=SSL.com EV Code Signing Intermediate CA RSA R3, O=SSL Corp, L=Houston, S=Texas, C=US'
 const xCorpSubject = 'CN=X Corp., O=X Corp., L=Bastrop, S=Texas, C=US'
 const xCorpIssuer = 'CN=GlobalSign GCC R45 CodeSigning CA 2020, O=GlobalSign nv-sa, C=BE'
+// What Windows PowerShell printed for Google's agy.exe 1.5.15 (read on a GitHub Windows runner).
+const googleSubject = 'CN=Google LLC, O=Google LLC, L=Mountain View, S=California, C=US, SERIALNUMBER=4638227, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US'
+const googleIssuer = 'CN=DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1, O="DigiCert, Inc.", C=US'
 
 describe('trusted native CLI publishers', () => {
   it('normalizes Windows PowerShell 5.1/7 Authenticode enum JSON shapes', () => {
@@ -107,6 +110,43 @@ describe('trusted native CLI publishers', () => {
       status: 'Valid',
       subject: 'CN=OpenAI, O=OpenAI',
     })).toThrow('官方发布者不一致')
+  })
+
+  it('accepts Google\'s certificate for Antigravity\'s agy', () => {
+    expect(() => validateNativeCliSignature('antigravity', { status: 'Valid', subject: googleSubject, issuer: googleIssuer })).not.toThrow()
+    expect(() => validateNativeCliSignature('antigravity', {
+      status: 'Valid',
+      subject: googleSubject.replace('S=California', 'ST=California'),
+      issuer: googleIssuer,
+    })).not.toThrow()
+  })
+
+  it('rejects an agy signed by anyone but Google through DigiCert', () => {
+    for (const signature of [
+      { subject: googleSubject, issuer: 'CN=Other Code Signing CA, O=Other CA, C=US' },
+      { subject: googleSubject, issuer: 'CN=DigiCert Trusted G4 Code Signing RSA4096 SHA384 2021 CA1, O=Not DigiCert, C=US' },
+      { subject: googleSubject, issuer: null },
+      { subject: googleSubject },
+      { subject: 'CN=Google LLC Holdings, O=Google LLC Holdings, L=Mountain View, S=California, C=US', issuer: googleIssuer },
+      { subject: 'CN=Google LLC, O=Google LLC, L=Sunnyvale, S=California, C=US', issuer: googleIssuer },
+      { subject: 'CN=Google LLC, OU=Google LLC, O=Evil LLC, L=Mountain View, S=California, C=US', issuer: googleIssuer },
+      { subject: 'CN=Google, O=Google, L=Mountain View, S=California, C=US', issuer: googleIssuer },
+      { subject: xCorpSubject, issuer: xCorpIssuer },
+    ]) {
+      expect(() => validateNativeCliSignature('antigravity', { status: 'Valid', ...signature }))
+        .toThrow(NativeCliPublisherMismatchError)
+    }
+    expect(() => validateNativeCliSignature('antigravity', { status: 'NotSigned', subject: null })).toThrow('没有有效')
+  })
+
+  it('only grants Antigravity the Google signer', () => {
+    for (const provider of ['codex', 'claude', 'grok'] as const) {
+      expect(() => validateNativeCliSignature(provider, { status: 'Valid', subject: googleSubject, issuer: googleIssuer }))
+        .toThrow('官方发布者不一致')
+    }
+    // Gemini stays unsupported: agy's entry does not make Google's npm CLI a native one.
+    expect(() => validateNativeCliSignature('gemini', { status: 'Valid', subject: googleSubject, issuer: googleIssuer }))
+      .toThrow('不支持安全托管')
   })
 
   it('only grants Grok the X Corp. signer', () => {

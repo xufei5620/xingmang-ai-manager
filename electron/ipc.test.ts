@@ -74,6 +74,8 @@ import { parseAppUninstallRequest, parseDiagnosticsRunOptions, parseExternalClie
 import { parseRunningToolsProviders } from './ipc/parsers/tools'
 import { videoStudioMusicName } from './ipc/handlers/ai-video'
 import { createRemoteFeatureGate } from './remote-feature-gate'
+import type { AntigravityKeyResolver, AntigravityService } from './antigravity-service'
+import { parseAntigravityTarget } from './ipc/handlers/antigravity'
 
 // cli:launch、settings:save 只收这台电脑认得的完整路径。用例沿用 Windows 的写法；在 Windows 上原样不动，照样按
 // Windows 的规矩验，在别的平台上换成 / 开头的同一个路径，不然那里会被当成相对路径拒掉。
@@ -336,6 +338,7 @@ function register(
     detail: vi.fn(),
     exportMarkdown: vi.fn(),
     resolveWorkspace: vi.fn(),
+    resolveResumeTarget: vi.fn(),
     invalidateListCache: vi.fn(),
   }
   const runtimeLog = {
@@ -2025,6 +2028,35 @@ describe('registerIpcHandlers', () => {
     } finally { fs.rmSync(directory, { recursive: true, force: true }) }
   })
 
+  it('carries the standing instructions across computers and asks before replacing ones written here', async () => {
+    // 第三轮复查第 7 条：「给 AI 的长期嘱咐」以前「迁移到新电脑」不带它。
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-transfer-ipc-'))
+    try {
+      const service = serviceStub()
+      const { dispose } = register(service, 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { downloadsDirectory: () => directory })
+      const exportData = electronMocks.handlers.get('data-transfer:export')!
+      const importData = electronMocks.handlers.get('data-transfer:import')!
+      const exported = path.join(directory, 'instructions.json')
+      vi.mocked(service.readStoredConfig).mockReturnValue({ ...stubStoredConfig, standingInstructions: '回答请尽量简洁。' })
+      electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: exported })
+      await exportData(trustedEvent(), { conversations: [] })
+      expect(JSON.parse(fs.readFileSync(exported, 'utf8')).settings.standingInstructions).toBe('回答请尽量简洁。')
+
+      // 新电脑上没写过：直接换，不问。
+      vi.mocked(service.readStoredConfig).mockReturnValue({ ...stubStoredConfig })
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [exported] })
+      await expect(importData(trustedEvent())).resolves.toMatchObject({ standingInstructions: '回答请尽量简洁。', conflictLabels: [] })
+
+      // 写过另一段：只进询问框。
+      vi.mocked(service.readStoredConfig).mockReturnValue({ ...stubStoredConfig, standingInstructions: '用中文回答。' })
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [exported] })
+      const asked = await importData(trustedEvent())
+      expect(asked).toMatchObject({ conflictingStandingInstructions: '回答请尽量简洁。', conflictLabels: ['给 AI 的长期嘱咐'] })
+      expect(asked).not.toHaveProperty('standingInstructions')
+      dispose()
+    } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+  })
+
   describe('works in the data transfer', () => {
     const summary = { images: 96, videos: 30, audios: 2, bytes: 3_400_000_000 }
     function signedInAccount(userId = 7) {
@@ -2122,10 +2154,56 @@ describe('registerIpcHandlers', () => {
         await expect(importWorks(trustedEvent(), 'not-the-token')).rejects.toThrow('请再次点击「导入」。')
         await expect(importWorks(trustedEvent(), { path: directory })).rejects.toThrow('请再次点击「导入」。')
         await expect(importWorks(trustedEvent(), preview.works.token)).resolves.toEqual({ status: 'done', added: 1, existing: 0, failed: 0 })
-        expect(worksTransfer.importFrom).toHaveBeenCalledExactlyOnceWith(7, path.join(directory, '作品'), expect.objectContaining({ files: [expect.objectContaining({ assetId: id })] }))
+        expect(worksTransfer.importFrom).toHaveBeenCalledExactlyOnceWith(7, path.join(directory, '作品'), expect.objectContaining({ files: [expect.objectContaining({ assetId: id })] }), undefined)
         expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'data-transfer', 'works.import.metadata-failed', expect.any(String))
         await expect(importWorks(trustedEvent(), preview.works.token)).rejects.toThrow('请再次点击「导入」。')
         expect(worksTransfer.importFrom).toHaveBeenCalledTimes(1)
+        dispose()
+      } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+    })
+
+    it('brings the canvas projects beside the chosen file under the same token, and says how many came', async () => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-transfer-canvas-ipc-'))
+      try {
+        const projectId = '33333333-3333-4333-8333-333333333333'
+        const times = { createdAt: '2026-11-01T00:00:00.000Z', updatedAt: '2026-11-02T00:00:00.000Z', lastOpenedAt: '2026-11-03T00:00:00.000Z' }
+        const file = path.join(directory, '星芒聊天记录与设置.json')
+        fs.writeFileSync(file, JSON.stringify({ format: 'xingmang-data-transfer', version: 1, settings: {}, conversations: [], works: { folder: '作品', ...summary, canvasProjects: 2 } }))
+        fs.mkdirSync(path.join(directory, '作品'))
+        fs.writeFileSync(path.join(directory, '作品', 'xingmang-works.json'), JSON.stringify({ format: 'xingmang-works', version: 1, files: [], metadata: [] }))
+        const worksTransfer = worksTransferStub()
+        const { runtimeLog, dispose } = register(serviceStub(), undefined, undefined, signedInAccount(), undefined, undefined, {}, { worksTransfer })
+        const importData = electronMocks.handlers.get('data-transfer:import')!
+        const importWorks = electronMocks.handlers.get('data-transfer:import-works')!
+
+        // 「画布项目」文件夹没跟着复制过来：作品照常导，项目报没找到。
+        electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [file] })
+        const withoutProjects = await importData(trustedEvent()) as { works: { token: string }; canvasProjects: unknown }
+        expect(withoutProjects.canvasProjects).toEqual({ count: 2, state: 'missing' })
+        await importWorks(trustedEvent(), withoutProjects.works.token)
+        expect(worksTransfer.importFrom).toHaveBeenLastCalledWith(7, path.join(directory, '作品'), expect.anything(), undefined)
+
+        fs.mkdirSync(path.join(directory, '画布项目'))
+        fs.writeFileSync(path.join(directory, '画布项目', 'xingmang-canvas-projects.json'), JSON.stringify({
+          format: 'xingmang-canvas-projects', version: 1, projects: [{ id: projectId, ...times, files: [], fromWorks: [], metadata: [] }],
+        }))
+        electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [file] })
+        const preview = await importData(trustedEvent()) as { works: { token: string }; canvasProjects: unknown }
+        expect(preview.canvasProjects).toEqual({ count: 1, state: 'ready' })
+        expect(JSON.stringify(preview)).not.toContain(directory)
+        const counts = { added: 0, existing: 0, full: 1, failed: 0 }
+        worksTransfer.importFrom.mockResolvedValueOnce({ status: 'done', added: 0, existing: 0, failed: 0, canvasProjects: counts } as never)
+        await expect(importWorks(trustedEvent(), preview.works.token)).resolves.toEqual({ status: 'done', added: 0, existing: 0, failed: 0, canvasProjects: counts })
+        expect(worksTransfer.importFrom).toHaveBeenLastCalledWith(7, path.join(directory, '作品'), expect.anything(), {
+          folder: path.join(directory, '画布项目'),
+          manifest: { projects: [expect.objectContaining({ id: projectId })] },
+        })
+        expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'data-transfer', 'works.import.canvas-projects', expect.any(String), counts)
+
+        // The works folder is the one the projects take their works back from: without it neither can come.
+        fs.rmSync(path.join(directory, '作品'), { recursive: true, force: true })
+        electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [file] })
+        await expect(importData(trustedEvent())).resolves.toMatchObject({ works: { state: 'missing' }, canvasProjects: { count: 2, state: 'missing' } })
         dispose()
       } finally { fs.rmSync(directory, { recursive: true, force: true }) }
     })
@@ -4497,15 +4575,15 @@ describe('registerIpcHandlers', () => {
     // 不靠前后两个账号的编号对不对得上。
     it('does not resume a conversation once an account change has started during the record lookup', async () => {
       const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => undefined })
-      const lookup = pending<string>()
+      const lookup = pending<{ workspace: string; sessionId: string | null }>()
       const service = serviceStub()
       const launched = launchThroughQueue(service)
       const { providerSessionsService } = register(service, undefined, undefined, undefined, undefined, undefined, { accountWork })
-      providerSessionsService.resolveWorkspace.mockReturnValueOnce(lookup.promise)
+      providerSessionsService.resolveResumeTarget.mockReturnValueOnce(lookup.promise)
 
       const result = electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', nativeFolder('C:\\projects\\demo'), 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
       accountWork.abortQueued()
-      lookup.resolve(nativeFolder('C:\\projects\\demo'))
+      lookup.resolve({ workspace: nativeFolder('C:\\projects\\demo'), sessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })
 
       await expect(result).rejects.toThrow('账号刚刚切换，请重试')
       expect(service.launchProvider).not.toHaveBeenCalled()
@@ -5051,6 +5129,21 @@ describe('registerIpcHandlers', () => {
     await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(trustedEvent())).resolves.toEqual({ entries: 0 })
     expect(runtimeLog.feedbackReport).toHaveBeenCalledOnce()
     expect(electronMocks.writeText).toHaveBeenCalledWith('sanitized report\n')
+  })
+
+  // 设置客服反馈复查第 2 条：反馈页「复制这一条」原样复制列表里的那一条，个人文件夹要在列表这条路上就换掉。
+  it('hides the home folder in the runtime log entries it lists', async () => {
+    const { runtimeLog } = register()
+    const project = path.join(os.homedir(), 'project')
+    const entry = { id: '1-1', timestamp: '2026-11-26T00:00:00.000Z', level: 'error', source: 'system', event: 'workspace.failed', message: `打不开 ${project}`, detail: { cwd: project, nested: [project], code: 5 } }
+    runtimeLog.snapshot.mockResolvedValueOnce({ ...(await runtimeLog.snapshot()), total: 1, entries: [entry] } as never)
+
+    const listed = await electronMocks.handlers.get('runtime-logs:list')!(trustedEvent(), 500) as { total: number; entries: { message: string; detail: { cwd: string; nested: string[]; code: number } }[] }
+    expect(listed.total).toBe(1)
+    expect(JSON.stringify(listed.entries)).not.toContain(JSON.stringify(os.homedir()).slice(1, -1))
+    expect(listed.entries[0].message).toMatch(/^打不开 (?:%USERPROFILE%|~)[\\/]project$/)
+    expect(listed.entries[0].detail.code).toBe(5)
+    expect(runtimeLog.snapshot).toHaveBeenLastCalledWith(500)
   })
 
   // 0.2.24 性能深查 R4：开机界面每次都把深浅色发一遍。先换窗口颜色再记；记不进去（C 盘满、杀毒锁住
@@ -6780,22 +6873,22 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
   describe('Codex resume by record id (cli:launch fourth argument)', () => {
     it('resumes by the bare id once the record is found in the same folder', async () => {
       const { service, providerSessionsService } = register()
-      providerSessionsService.resolveWorkspace.mockResolvedValueOnce(nativeFolder('C:\\projects\\demo'))
+      providerSessionsService.resolveResumeTarget.mockResolvedValueOnce({ workspace: nativeFolder('C:\\projects\\demo'), sessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })
 
       await electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'codex', nativeFolder('C:\\projects\\demo'), 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
 
-      expect(providerSessionsService.resolveWorkspace).toHaveBeenCalledWith('codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+      expect(providerSessionsService.resolveResumeTarget).toHaveBeenCalledWith('codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
       expect(service.launchProvider).toHaveBeenCalledWith('codex', nativeFolder('C:\\projects\\demo'), 'resumeLast', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
     })
 
     it('falls back to the latest one in the folder when the record is gone or elsewhere', async () => {
       const { service, providerSessionsService } = register()
       const handler = electronMocks.handlers.get('cli:launch')!
-      providerSessionsService.resolveWorkspace.mockRejectedValueOnce(new Error('未找到这条记录'))
+      providerSessionsService.resolveResumeTarget.mockRejectedValueOnce(new Error('未找到这条记录'))
       await handler(trustedEvent(), 'codex', nativeFolder('C:\\projects\\demo'), 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
       expect(service.launchProvider).toHaveBeenLastCalledWith('codex', nativeFolder('C:\\projects\\demo'), 'resumeLast')
 
-      providerSessionsService.resolveWorkspace.mockResolvedValueOnce(nativeFolder('C:\\projects\\other'))
+      providerSessionsService.resolveResumeTarget.mockResolvedValueOnce({ workspace: nativeFolder('C:\\projects\\other'), sessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })
       await handler(trustedEvent(), 'codex', nativeFolder('C:\\projects\\demo'), 'resumeLast', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
       expect(service.launchProvider).toHaveBeenLastCalledWith('codex', nativeFolder('C:\\projects\\demo'), 'resumeLast')
     })
@@ -6809,7 +6902,60 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       for (const bad of ['0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b', 'codex:--last', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b --yolo', 'claude:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b', ['codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b']]) {
         expect(() => handler(trustedEvent(), 'codex', nativeFolder('C:\\w'), 'resumeLast', bad)).toThrow('会话 ID 格式错误')
       }
-      expect(providerSessionsService.resolveWorkspace).not.toHaveBeenCalled()
+      expect(providerSessionsService.resolveResumeTarget).not.toHaveBeenCalled()
+      expect(service.launchProvider).not.toHaveBeenCalled()
+    })
+  })
+
+  // 0.2.25 S1：记录页上 Claude Code、Grok CLI 的每一条也都能接，编号从主进程自己读出的记录里取。
+  describe('Claude Code and Grok CLI resume by record id (cli:launch fourth argument)', () => {
+    const claudeRecord = `claude:${'0123456789abcdef'.repeat(4)}`
+    const grokRecord = `grok:${'fedcba9876543210'.repeat(4)}`
+
+    it('resumes by the id read from the record once it is found in the same folder', async () => {
+      const { service, providerSessionsService } = register()
+      const handler = electronMocks.handlers.get('cli:launch')!
+      providerSessionsService.resolveResumeTarget.mockResolvedValueOnce({ workspace: nativeFolder('C:\\projects\\demo'), sessionId: '6b1f3c2a-0d4e-4f5a-9b8c-7d6e5f4a3b2c' })
+      await handler(trustedEvent(), 'claude', nativeFolder('C:\\projects\\demo'), 'resumeLast', claudeRecord)
+      expect(providerSessionsService.resolveResumeTarget).toHaveBeenLastCalledWith(claudeRecord)
+      expect(service.launchProvider).toHaveBeenLastCalledWith('claude', nativeFolder('C:\\projects\\demo'), 'resumeLast', '6b1f3c2a-0d4e-4f5a-9b8c-7d6e5f4a3b2c')
+
+      providerSessionsService.resolveResumeTarget.mockResolvedValueOnce({ workspace: nativeFolder('C:\\projects\\demo'), sessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })
+      await handler(trustedEvent(), 'grok', nativeFolder('C:\\projects\\demo'), 'resumeLast', grokRecord)
+      expect(providerSessionsService.resolveResumeTarget).toHaveBeenLastCalledWith(grokRecord)
+      expect(service.launchProvider).toHaveBeenLastCalledWith('grok', nativeFolder('C:\\projects\\demo'), 'resumeLast', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b')
+    })
+
+    it('falls back to the latest one in the folder when the record is gone, elsewhere or has no usable id', async () => {
+      const { service, providerSessionsService } = register()
+      const handler = electronMocks.handlers.get('cli:launch')!
+      providerSessionsService.resolveResumeTarget.mockRejectedValueOnce(new Error('未找到 claude 会话'))
+      await handler(trustedEvent(), 'claude', nativeFolder('C:\\projects\\demo'), 'resumeLast', claudeRecord)
+      expect(service.launchProvider).toHaveBeenLastCalledWith('claude', nativeFolder('C:\\projects\\demo'), 'resumeLast')
+
+      providerSessionsService.resolveResumeTarget.mockResolvedValueOnce({ workspace: nativeFolder('C:\\projects\\other'), sessionId: '6b1f3c2a-0d4e-4f5a-9b8c-7d6e5f4a3b2c' })
+      await handler(trustedEvent(), 'claude', nativeFolder('C:\\projects\\demo'), 'resumeLast', claudeRecord)
+      expect(service.launchProvider).toHaveBeenLastCalledWith('claude', nativeFolder('C:\\projects\\demo'), 'resumeLast')
+
+      providerSessionsService.resolveResumeTarget.mockResolvedValueOnce({ workspace: nativeFolder('C:\\projects\\demo'), sessionId: null })
+      await handler(trustedEvent(), 'grok', nativeFolder('C:\\projects\\demo'), 'resumeLast', grokRecord)
+      expect(service.launchProvider).toHaveBeenLastCalledWith('grok', nativeFolder('C:\\projects\\demo'), 'resumeLast')
+
+      providerSessionsService.resolveResumeTarget.mockResolvedValueOnce({ workspace: '', sessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })
+      await handler(trustedEvent(), 'grok', nativeFolder('C:\\projects\\demo'), 'resumeLast', grokRecord)
+      expect(service.launchProvider).toHaveBeenLastCalledWith('grok', nativeFolder('C:\\projects\\demo'), 'resumeLast')
+    })
+
+    it('rejects a record of another tool or a record id that is not the record hash', () => {
+      const { service, providerSessionsService } = register()
+      const handler = electronMocks.handlers.get('cli:launch')!
+
+      expect(() => handler(trustedEvent(), 'grok', nativeFolder('C:\\w'), 'resumeLast', claudeRecord)).toThrow('CLI 启动方式错误')
+      expect(() => handler(trustedEvent(), 'claude', nativeFolder('C:\\w'), 'new', claudeRecord)).toThrow('CLI 启动方式错误')
+      for (const bad of ['claude:6b1f3c2a-0d4e-4f5a-9b8c-7d6e5f4a3b2c', `${claudeRecord} --dangerously-skip-permissions`, 'claude:../../etc/passwd', claudeRecord.toUpperCase()]) {
+        expect(() => handler(trustedEvent(), 'claude', nativeFolder('C:\\w'), 'resumeLast', bad)).toThrow('会话 ID 格式错误')
+      }
+      expect(providerSessionsService.resolveResumeTarget).not.toHaveBeenCalled()
       expect(service.launchProvider).not.toHaveBeenCalled()
     })
   })
@@ -10561,6 +10707,10 @@ describe('IPC channel log and account policies', () => {
       .map(([channel]) => channel)
       .sort()
     expect(scoped).toEqual([
+      // Antigravity：设置是不是当前账号这条线路的；打开前按点的时候那个账号签密钥、写设置。
+      'antigravity:inspect',
+      'antigravity:open-cli',
+      'antigravity:open-desktop',
       // 「添加到画布」：图片和项目都按当前账号认，抄进的是当前账号的项目。
       'canvas:add-project-image',
       // 「创作」左边那一列里的画布项目：列的是当前账号的，打开时编号也在当前账号的项目里认。
@@ -10630,6 +10780,7 @@ describe('IPC channel log and account policies', () => {
         'account:reveal-key',
         'account:set-remembered-login',
         'account:sync-managed-cli-keys',
+        'antigravity:inspect',
         'canvas:list-projects',
         'chat-history:flushed',
         'chat-history:read',
@@ -10689,6 +10840,8 @@ describe('IPC channel log and account policies', () => {
         'chat:start',
       ],
       'account: scoped-queued': [
+        'antigravity:open-cli',
+        'antigravity:open-desktop',
         'cli:launch',
         'desktop:launch-codex',
       ],
@@ -10880,5 +11033,147 @@ describe('parseRunningToolsProviders', () => {
     ['an oversized list', [...providerIds, 'claude']],
   ])('rejects %s', (_label, value) => {
     expect(() => parseRunningToolsProviders(value)).toThrow()
+  })
+})
+
+describe('Antigravity channels', () => {
+  function antigravityStub() {
+    const stub: AntigravityService = {
+      inspect: vi.fn(async () => ({ supported: true, cliInstalled: false, desktopInstalled: true, configured: false })),
+      install: vi.fn(async () => ({ status: { supported: true, cliInstalled: true, desktopInstalled: false, configured: true } })),
+      configure: vi.fn(async () => ({ supported: true, cliInstalled: true, desktopInstalled: false, configured: true })),
+      openDesktop: vi.fn(async () => ({ opened: true })),
+      openCli: vi.fn(async () => undefined),
+      bindFollowKey: vi.fn(),
+      follow: vi.fn(async () => undefined),
+    }
+    return stub
+  }
+
+  function withAntigravity(antigravity = antigravityStub()) {
+    const service = serviceStub()
+    service.antigravity = antigravity
+    return { service, antigravity }
+  }
+
+  it('accepts only the two install targets', () => {
+    expect(parseAntigravityTarget('cli')).toBe('cli')
+    expect(parseAntigravityTarget('desktop')).toBe('desktop')
+    for (const input of [undefined, null, {}, ['cli'], 'CLI', 'gemini', 'C:\\agy.exe', 'cli --shell']) {
+      expect(() => parseAntigravityTarget(input)).toThrow('未知的 Antigravity 安装项')
+    }
+  })
+
+  it('refuses an unknown target before the service hears of it', () => {
+    const { service, antigravity } = withAntigravity()
+    register(service)
+    expect(() => electronMocks.handlers.get('antigravity:install')!(trustedEvent(), 'gemini')).toThrow('未知的 Antigravity 安装项')
+    expect(antigravity.install).not.toHaveBeenCalled()
+  })
+
+  it.each(['antigravity:inspect', 'antigravity:install', 'antigravity:open-desktop', 'antigravity:open-cli'])('rejects an untrusted sender for %s', (channel) => {
+    const { service, antigravity } = withAntigravity()
+    register(service)
+    expect(() => electronMocks.handlers.get(channel)!(trustedEvent('https://untrusted.example/'), 'cli')).toThrow('已拒绝')
+    expect(antigravity.inspect).not.toHaveBeenCalled()
+    expect(antigravity.install).not.toHaveBeenCalled()
+    expect(antigravity.openDesktop).not.toHaveBeenCalled()
+    expect(antigravity.openCli).not.toHaveBeenCalled()
+  })
+
+  it('says so when the service has no Antigravity cluster', async () => {
+    register(serviceStub())
+    await expect(async () => electronMocks.handlers.get('antigravity:inspect')!(trustedEvent())).rejects.toThrow('当前版本不支持 Antigravity')
+  })
+
+  it('sends install progress only to the window that asked, and stops once it is gone', async () => {
+    const { service, antigravity } = withAntigravity()
+    let report: ((progress: { target: 'cli', phase: 'downloading', percent: number }) => void) | undefined
+    vi.mocked(antigravity.install).mockImplementation(async (_target, _resolveKey, onProgress) => {
+      report = onProgress
+      return { status: { supported: true, cliInstalled: true, desktopInstalled: false, configured: true } }
+    })
+    register(service)
+    const event = trustedEvent()
+    await electronMocks.handlers.get('antigravity:install')!(event, 'cli')
+    expect(antigravity.install).toHaveBeenCalledWith('cli', expect.any(Function), expect.any(Function))
+    report?.({ target: 'cli', phase: 'downloading', percent: 40 })
+    expect(event.sender.send).toHaveBeenCalledWith('antigravity:install-progress', { target: 'cli', phase: 'downloading', percent: 40 })
+    event.sender.isDestroyed = () => true
+    report?.({ target: 'cli', phase: 'downloading', percent: 80 })
+    expect(event.sender.send).toHaveBeenCalledTimes(1)
+  })
+
+  it('asks for sign-in before signing a key', async () => {
+    const { service, antigravity } = withAntigravity()
+    let resolver: AntigravityKeyResolver | undefined
+    vi.mocked(antigravity.openDesktop).mockImplementation(async (resolveKey) => {
+      resolver = resolveKey
+      return { opened: true }
+    })
+    const accountService = accountServiceStub()
+    register(service, undefined, undefined, accountService)
+    await electronMocks.handlers.get('antigravity:open-desktop')!(trustedEvent())
+    await expect(resolver?.()).rejects.toThrow('请先登录账号，再设置 Antigravity')
+    expect(accountService.provisionCliKey).not.toHaveBeenCalled()
+  })
+
+  it('hands the follow-up after an account or line change a key resolver that asks for sign-in, and takes it back on dispose', async () => {
+    const { service, antigravity } = withAntigravity()
+    const accountService = accountServiceStub()
+    const { dispose } = register(service, undefined, undefined, accountService)
+    expect(antigravity.bindFollowKey).toHaveBeenCalledTimes(1)
+    const resolver = vi.mocked(antigravity.bindFollowKey).mock.calls[0][0]
+    await expect(resolver?.()).rejects.toThrow('请先登录账号，再设置 Antigravity')
+    expect(accountService.provisionCliKey).not.toHaveBeenCalled()
+    dispose()
+    expect(antigravity.bindFollowKey).toHaveBeenLastCalledWith(null)
+  })
+
+  it('opens agy in the chosen folder, or the remembered one, and refuses a folder that is not a string', async () => {
+    const { service, antigravity } = withAntigravity()
+    register(service)
+    const folder = path.join(os.homedir(), 'project')
+    await electronMocks.handlers.get('antigravity:open-cli')!(trustedEvent(), folder)
+    expect(antigravity.openCli).toHaveBeenLastCalledWith(folder, expect.any(Function), undefined)
+    await electronMocks.handlers.get('antigravity:open-cli')!(trustedEvent())
+    expect(antigravity.openCli).toHaveBeenLastCalledWith(service.readStoredConfig().workspace, expect.any(Function), undefined)
+    expect(() => electronMocks.handlers.get('antigravity:open-cli')!(trustedEvent(), { path: folder })).toThrow('项目文件夹路径格式错误')
+    expect(antigravity.openCli).toHaveBeenCalledTimes(2)
+  })
+
+  it('hands both opens queued account work instead of holding an account change while they wait', async () => {
+    const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => undefined })
+    const { service, antigravity } = withAntigravity()
+    const handedOver: Array<QueuedAccountWork | undefined> = []
+    vi.mocked(antigravity.openDesktop).mockImplementation((_resolveKey, work) => {
+      handedOver.push(work)
+      return new Promise(() => undefined)
+    })
+    vi.mocked(antigravity.openCli).mockImplementation((_workspace, _resolveKey, work) => {
+      handedOver.push(work)
+      return new Promise(() => undefined)
+    })
+    register(service, undefined, undefined, undefined, undefined, undefined, { realmAccounts: {} as never, accountWork, accountSessionReady: Promise.resolve() })
+    void electronMocks.handlers.get('antigravity:open-desktop')!(trustedEvent())
+    void electronMocks.handlers.get('antigravity:open-cli')!(trustedEvent(), path.join(os.homedir(), 'project'))
+    for (let tick = 0; tick < 5; tick++) await Promise.resolve()
+    expect(handedOver).toHaveLength(2)
+    expect(handedOver.every((work) => work !== undefined && typeof work.run === 'function')).toBe(true)
+  })
+
+  it('refuses the installs and opens the status file switched off before the service hears of them', async () => {
+    const { service, antigravity } = withAntigravity()
+    const remoteFeatures = createRemoteFeatureGate()
+    remoteFeatures.update(['install:antigravityCli', 'install:antigravityDesktop', 'launch:antigravityCli', 'launch:antigravityDesktop'])
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, { remoteFeatures })
+    const event = trustedEvent()
+    await expect(async () => electronMocks.handlers.get('antigravity:install')!(event, 'cli')).rejects.toThrow(/^Antigravity 命令行的安装和更新已暂时停用，修复后将自动恢复。$/)
+    await expect(async () => electronMocks.handlers.get('antigravity:install')!(event, 'desktop')).rejects.toThrow(/^Antigravity 的安装和更新已暂时停用/)
+    await expect(async () => electronMocks.handlers.get('antigravity:open-desktop')!(event)).rejects.toThrow(/^暂时无法从星芒打开 Antigravity，/)
+    await expect(async () => electronMocks.handlers.get('antigravity:open-cli')!(event, os.homedir())).rejects.toThrow(/^暂时无法从星芒打开 Antigravity 命令行，/)
+    expect(antigravity.install).not.toHaveBeenCalled()
+    expect(antigravity.openDesktop).not.toHaveBeenCalled()
+    expect(antigravity.openCli).not.toHaveBeenCalled()
   })
 })

@@ -68,14 +68,19 @@ export interface ChatPageCreate {
   cards?: ReactNode
   /** 起始页最上面那条只出现一次的提示；拿到现在存着几段对话。 */
   intro?: (conversationCount: number) => ReactNode
-  /** 列表最下面的小字：哪一类这一次没读出来。 */
-  notes?: readonly string[]
+  /** 列表最下面的小字：哪一类这一次没读出来；给了 retry 的后面跟一个「重新读取」。 */
+  notes?: readonly ChatPageNote[]
   /** 输入框的第三档「生成视频」（融合第 2 步）。不给就没有这一档。 */
   video?: ChatPageVideo
   /** 生成的图下面的「添加到画布」（融合第 5 步）。不给就没有这个按钮。 */
   canvas?: ChatPageCanvas
   /** 左下角的「作品库」和右边换上去的那一块（融合第 3 步）。不给就没有。 */
   library?: ChatPageLibrary
+}
+export interface ChatPageNote {
+  text: string
+  /** 给了就在小字后面放一个「重新读取」：不然这一类要等换账号或重开软件才会再读（同对话红条上那个）。 */
+  retry?: () => void
 }
 /** 主窗口的作品库：这一页只管左下角那一行和把右边让出来，里面的东西由「创作」页给。 */
 export interface ChatPageLibrary {
@@ -268,7 +273,7 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   const library = create?.library
   const paneCovered = Boolean(extraSelected) || Boolean(library?.open)
   // 列表最下面的小字：哪一类这一次没读出来。对话读不出来、列表里又有视频或画布项目时也说在这里（一行都没有时照旧说在空状态里）。
-  const listNotes = [...(chat.historyUnreadable && listGroups.length > 0 && filter !== 'video' && filter !== 'canvas' ? [unreadableHistoryNote] : []), ...(create?.notes ?? [])]
+  const listNotes: ChatPageNote[] = [...(chat.historyUnreadable && listGroups.length > 0 && filter !== 'video' && filter !== 'canvas' ? [{ text: unreadableHistoryNote }] : []), ...(create?.notes ?? [])]
   const task = async (work: () => Promise<unknown>, done: string) => {
     const ticket = owner.capture()
     try { await work(); if (ticket()) chat.setNotice(done) }
@@ -489,7 +494,7 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
         ? <ConversationListItem key={`chat:${row.conversation.id}`} item={row.conversation} current={!paneCovered && row.conversation.id === chat.state.activeId} pageActive={active} actions={conversationActions} />
         : <ExtraListItem key={`${row.kind}:${row.item.id}`} item={row.item} current={extraSelected?.kind === row.kind && extraSelected.id === row.item.id} locked={row.kind === 'video' && create?.lockedVideoId === row.item.id} pageActive={active} actions={extraActions} />)}</Fragment>)}{listGroups.length === 0 && (searchText
         ? <p className="chat-conversation-empty" data-testid="chat-conversation-search-empty">未找到「{searchText}」相关的内容</p>
-        : <p className="chat-conversation-empty" data-testid="chat-conversation-empty">{chat.historyUnreadable && (filter === 'all' || filter === 'chat') ? unreadableHistoryNote : filter !== 'all' ? '该分类下暂无内容。' : '暂无内容。请在右侧输入框中输入您的需求。'}</p>)}{listNotes.map((note) => <p key={note} className="chat-conversation-empty" data-testid="create-list-note">{note}</p>)}</nav>
+        : <p className="chat-conversation-empty" data-testid="chat-conversation-empty">{chat.historyUnreadable && (filter === 'all' || filter === 'chat') ? unreadableHistoryNote : filter !== 'all' ? '该分类下暂无内容。' : '暂无内容。请在右侧输入框中输入您的需求。'}</p>)}{listNotes.map((note) => <div key={note.text} className="chat-list-note"><p className="chat-conversation-empty" data-testid="create-list-note">{note.text}</p>{note.retry && <Button variant="ghost" size="xs" icon={RefreshCw} onClick={note.retry} testId="create-list-note-retry">重新读取</Button>}</div>)}</nav>
       {library && <div className="chat-library-foot"><button type="button" className="chat-library-entry" data-active={library.open} aria-current={library.open ? 'page' : undefined} onClick={library.onOpen} data-testid="create-library-open"><span className="chat-conversation-kind" data-kind="library"><Images size={15} aria-hidden="true" /></span><strong>作品库</strong>{library.count ? <b data-testid="create-library-count">{library.count}</b> : null}</button></div>}
       {chat.state.conversations.length > 1 && <div className="chat-conversations-foot"><Button variant="ghost" size="xs" icon={Trash2} disabled={anyGenerating} onClick={() => setConfirmation({ kind: 'clear-all' })} testId="chat-conversations-clear">清空全部对话</Button></div>}
     </aside>
@@ -535,7 +540,7 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
         </div>
         {draftTooLong && <p className="chat-message-error" id="chatInTooLong" role="status" data-testid="chat-draft-too-long">{draftTooLong}</p>}
         {showSizeRule && <p className="chat-message-error" id="chatImageSizeRule" role="status" data-testid="chat-image-size-rule">{chat.sizeRule}</p>}
-        <div className="chat-compose-foot">{videoMode ? <span data-testid="chat-cost-note">生成一段视频需要几分钟，按段计费，发送前将显示预计费用。</span> : <span>回答由模型生成，可能有误，重要内容请核对。<span data-testid="chat-cost-note">{draftImages.length ? textMode ? '按实际用量计费，带图片的提问会更贵一些。' : '按实际用量计费，带参考图的会更贵一些。' : textMode ? '按实际用量计费，回复越长花得越多。' : '按实际用量计费。'}</span></span>}{pending && <Pill tone="accent">正在生成</Pill>}</div>
+        <div className="chat-compose-foot">{videoMode ? <span data-testid="chat-cost-note">生成一段视频需要几分钟，按段计费，发送前将显示预计费用。</span> : <span data-testid="chat-compose-note">{textMode ? '回答由模型生成，可能有误，重要内容请核对。' : '图片由模型生成，'}<span data-testid="chat-cost-note">{draftImages.length ? textMode ? '按实际用量计费，带图片的提问会更贵一些。' : '按实际用量计费，带参考图的会更贵一些。' : textMode ? '按实际用量计费，回复越长花得越多。' : '按实际用量计费。'}</span></span>}{pending && <Pill tone="accent">正在生成</Pill>}</div>
       </div>
     </div>
     {confirmation && <Confirm title={confirmTitle} body={confirmation.kind === 'video' ? <><p>{videoAskLine}</p><p>{videoWaitNote}</p></>
@@ -598,20 +603,25 @@ const ChatMessageItem = memo(function ChatMessageItem({ message, model, pending,
   const waiting = message.status === 'pending' || message.status === 'streaming'
   const clip = message.video?.clip
   const cutOffNotice = chatCutOffNotice(message)
+  // 0.2.25 C2：出图的回复把「重新生成」「删除」接在最后一张图那排按钮后面（细竖线隔开），不再单独另起一排，
+  // 免得被当成下一条消息的；带文字说明的，「复制回答」照旧在下面。
+  const imageReply = message.role === 'assistant' && Boolean(message.assets?.length)
+  const retryButton = <Button size="xs" icon={RefreshCw} variant="ghost" aria-label="重新生成" title="重新生成" disabled={pending || !canRetry} onClick={() => actions.confirm({ kind: 'retry', id: message.id, mayStillComplete: message.mayStillComplete })} testId={`chat-message-retry-${message.id}`} />
+  const deleteButton = <Button size="xs" icon={Trash2} variant="ghost" aria-label="删除消息" title="删除消息" disabled={pending} onClick={() => actions.confirm({ kind: 'delete-message', id: message.id })} testId={`chat-message-delete-${message.id}`} />
   return <div className="chat-message" data-role={message.role} data-status={message.status} data-testid={`chat-message-${message.id}`}>
     {message.role === 'assistant' && <span className="chat-avatar"><BrandIcon model={model} size={18} /></span>}
     <div className="chat-message-main">
       {message.reasoning && <details className="chat-reasoning"><summary>思考过程 <ChevronDown size={13} aria-hidden="true" /></summary><div>{message.reasoning}</div><Button icon={Copy} size="xs" variant="ghost" aria-label="复制思考过程" title="复制思考过程" onClick={() => actions.copyText(message.reasoning)} /></details>}
       {(message.content || message.assets?.length || message.files?.length || clip || waiting) && <div className="chat-bubble">{message.files?.length ? <div className="chat-files" data-testid="chat-message-files">{message.files.map((file, index) => <ChatFileCard key={`${index}:${file.name}`} file={file} />)}</div> : null}{message.content ? message.role === 'assistant' ? <ReactMarkdown remarkPlugins={remarkPlugins} components={replyComponents}>{prepareChatMath(message.content)}</ReactMarkdown> : <ReactMarkdown remarkPlugins={remarkPlugins} components={markdownComponents}>{message.content}</ReactMarkdown> : waiting && (message.video ? <ChatVideoPending progress={videoProgress} stopping={videoStopping} onStop={actions.stopVideo} /> : <span className="chat-generating" role="status"><RefreshCw size={15} aria-hidden="true" />{message.settings?.mode === 'image' ? '正在生成图片' : message.reasoning ? '正在思考' : '正在生成'}</span>)}
-        {message.assets?.map((asset) => <div className="chat-asset" key={asset.assetId}><button type="button" className="chat-asset-preview" aria-label={message.role === 'user' ? '查看图片' : '查看生成图片'} onClick={() => actions.preview(asset, message.role === 'user')} onContextMenu={(event) => { event.preventDefault(); actions.assetMenu(asset.assetId) }}><ChatImage asset={asset} alt={message.role === 'user' ? '您发送的图片' : asset.revisedPrompt || '生成的图片'} missingAlt={missingAiAssetMessages.image} /></button><div className="chat-asset-actions">{message.role === 'assistant' && <Button size="xs" icon={Brush} variant="ghost" aria-label="基于此图继续编辑" title="基于此图继续编辑" disabled={pending} onClick={() => actions.reuseImage(asset)} testId="chat-asset-reuse" />}{message.role === 'assistant' && canAnimate && <Button size="xs" icon={Clapperboard} variant="ghost" title="以此图为开头生成视频，将切换至「生成视频」" disabled={pending} onClick={() => actions.animateImage(message.id, asset)} testId="chat-asset-animate">用此图生成视频</Button>}{message.role === 'assistant' && canvasProjects && <AddToCanvasMenu compact projects={canvasProjects} onPick={(projectId) => actions.addToCanvas(message.id, asset.assetId, projectId)} testId="chat-asset-canvas" />}<Button size="xs" icon={Copy} variant="ghost" aria-label="复制图片" title="复制图片" onClick={() => actions.copyAsset(asset.assetId)} testId="chat-asset-copy" /><Button size="xs" icon={Download} variant="ghost" aria-label="另存图片" title="另存图片" onClick={() => actions.saveAsset(asset.assetId)} testId="chat-asset-save" /><Button size="xs" icon={MoreHorizontal} variant="ghost" aria-label="图片更多操作" title="图片更多操作" onClick={() => actions.assetMenu(asset.assetId)} testId="chat-asset-menu" />{asset.width && asset.height && <small>{asset.width} × {asset.height}</small>}</div></div>)}
+        {message.assets?.map((asset, assetIndex, assets) => <div className="chat-asset" key={asset.assetId}><button type="button" className="chat-asset-preview" aria-label={message.role === 'user' ? '查看图片' : '查看生成图片'} onClick={() => actions.preview(asset, message.role === 'user')} onContextMenu={(event) => { event.preventDefault(); actions.assetMenu(asset.assetId) }}><ChatImage asset={asset} alt={message.role === 'user' ? '您发送的图片' : asset.revisedPrompt || '生成的图片'} missingAlt={missingAiAssetMessages.image} /></button><div className="chat-asset-actions">{message.role === 'assistant' && <Button size="xs" icon={Brush} variant="ghost" aria-label="基于此图继续编辑" title="基于此图继续编辑" disabled={pending} onClick={() => actions.reuseImage(asset)} testId="chat-asset-reuse" />}{message.role === 'assistant' && canAnimate && <Button size="xs" icon={Clapperboard} variant="ghost" title="以此图为开头生成视频，将切换至「生成视频」" disabled={pending} onClick={() => actions.animateImage(message.id, asset)} testId="chat-asset-animate">用此图生成视频</Button>}{message.role === 'assistant' && canvasProjects && <AddToCanvasMenu compact projects={canvasProjects} onPick={(projectId) => actions.addToCanvas(message.id, asset.assetId, projectId)} testId="chat-asset-canvas" />}<Button size="xs" icon={Copy} variant="ghost" aria-label="复制图片" title="复制图片" onClick={() => actions.copyAsset(asset.assetId)} testId="chat-asset-copy" /><Button size="xs" icon={Download} variant="ghost" aria-label="另存图片" title="另存图片" onClick={() => actions.saveAsset(asset.assetId)} testId="chat-asset-save" /><Button size="xs" icon={MoreHorizontal} variant="ghost" aria-label="图片更多操作" title="图片更多操作" onClick={() => actions.assetMenu(asset.assetId)} testId="chat-asset-menu" />{imageReply && assetIndex === assets.length - 1 && <><span className="chat-asset-divider" aria-hidden="true" />{retryButton}{deleteButton}</>}{asset.width && asset.height && <small>{asset.width} × {asset.height}</small>}</div></div>)}
         {clip && <ChatVideoClip clip={clip} films={videoFilms} onCompose={(filmId) => actions.composeVideo(message.id, filmId)} onSave={() => actions.saveVideo(message.id)} onOpen={() => actions.openVideo(clip.assetId)} />}
       </div>}
       {offlineNotice && <p className="chat-message-note" role="status" data-testid="chat-message-offline">{offlineReplyNotice}</p>}
       {message.status === 'error' && <ErrorLine message={message.error} onOpenAccount={canOpenAccount ? actions.openAccount : undefined} />}{message.status === 'canceled' && <p className="chat-message-note">{message.mayStillComplete ? '已停止等待，服务端仍可能处理并计费' : '已停止生成，保留已返回的内容'}</p>}{cutOffNotice && <p className="chat-message-note" data-testid={`chat-message-cut-off-${message.id}`}>{cutOffNotice}</p>}
-      <div className="chat-message-tools">{message.role === 'assistant'
-        ? <>{message.content && <Button size="xs" icon={Copy} variant="ghost" aria-label="复制回答" title="复制回答" onClick={() => actions.copyText(message.content, '回答已复制')} testId={`chat-message-copy-${message.id}`} />}<Button size="xs" icon={RefreshCw} variant="ghost" aria-label="重新生成" title="重新生成" disabled={pending || !canRetry} onClick={() => actions.confirm({ kind: 'retry', id: message.id, mayStillComplete: message.mayStillComplete })} testId={`chat-message-retry-${message.id}`} /></>
+      {(!imageReply || message.content) && <div className="chat-message-tools">{message.role === 'assistant'
+        ? <>{message.content && <Button size="xs" icon={Copy} variant="ghost" aria-label="复制回答" title="复制回答" onClick={() => actions.copyText(message.content, '回答已复制')} testId={`chat-message-copy-${message.id}`} />}{!imageReply && retryButton}</>
         : <>{message.content && <Button size="xs" icon={Copy} variant="ghost" aria-label="复制" title="复制" onClick={() => actions.copyText(message.content)} testId={`chat-message-copy-${message.id}`} />}<Button size="xs" icon={Pencil} variant="ghost" aria-label="编辑后重新发送" title="编辑后重新发送" disabled={pending} onClick={() => actions.edit({ id: message.id, text: message.content })} testId={`chat-message-edit-${message.id}`} /></>}
-        <Button size="xs" icon={Trash2} variant="ghost" aria-label="删除消息" title="删除消息" disabled={pending} onClick={() => actions.confirm({ kind: 'delete-message', id: message.id })} testId={`chat-message-delete-${message.id}`} /></div>
+        {!imageReply && deleteButton}</div>}
     </div>
   </div>
 })

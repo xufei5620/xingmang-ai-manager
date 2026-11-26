@@ -99,6 +99,7 @@ import {
   type InstallLeftoverSweepResult,
 } from './install-leftovers'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
+import { inspectWindowsUpdateServiceBlocked } from './windows-update-service-state'
 import {
   inspectWindowsExecutableMachine,
   type WindowsProcessorArchitecture,
@@ -148,7 +149,8 @@ import type { StandingInstructionsSaveResult } from './standing-instructions'
 import { createOfficialCredentialService } from './official-credential-service'
 import { createToolRouteFollowService } from './tool-route-follow-service'
 import { createExternalClientRouteService } from './external-client-route-service'
-import { codexRemoteLaunchQueueKey, createProviderLaunchService, providerCommandEnvironment } from './provider-launch-service'
+import { createAntigravityService, type AntigravityService } from './antigravity-service'
+import { codexRemoteLaunchQueueKey, createProviderLaunchService, interactiveTerminalEnvironment, providerCommandEnvironment, sameUserTerminalEnvironment } from './provider-launch-service'
 import { createSystemScanService } from './system-scan-service'
 import { createRuntimeInstallService } from './runtime-install-service'
 import { createCliUninstallService } from './cli-uninstall-service'
@@ -553,7 +555,7 @@ export interface SystemService {
   uninstallCodexDesktop(): Promise<ToolUninstallResult>
   resetCodexDesktop(): Promise<void>
   inspectCodexDesktopUpdate(forceRefresh?: boolean): Promise<DesktopAppStatus>
-  /** resumeSessionId 只在 Codex 续接时由 ipc.ts 核对过后传入，见 cliLaunchArgv。 */
+  /** resumeSessionId 只在按记录续接（Codex、Claude Code、Grok CLI）时由 ipc.ts 核对过后传入，见 cliLaunchArgv。 */
   /** accountWork：排在安装后面的这段不算账号工作，轮到它执行时才算（#1085）。 */
   launchProvider(provider: ProviderId, workspace: string, mode?: CliLaunchMode, resumeSessionId?: string | null, accountWork?: QueuedAccountWork): Promise<CliLaunchResult>
   inspectCodexDesktop(): Promise<DesktopAppStatus>
@@ -647,6 +649,11 @@ export interface SystemService {
    * 没装、放过了、盘不够、远程关了都不下；从不抛错。可选 = 旧实现不提供。
    */
   seedClaudeDesktopWorkspace?(): Promise<void>
+  /**
+   * Antigravity（命令行 agy 和桌面端）那一簇：检测、一键装、写网关设置、带着设置打开（antigravity-service.ts）。
+   * 密钥由调用方按需签了交进来，这里不碰账号。可选 = 旧实现不提供。
+   */
+  antigravity?: AntigravityService
   /** 安装队列当前的状态，退出前判断有没有安装正在跑时用。 */
   inspectInstallationQueue(): InstallationQueueSnapshot
   /** 安装队列每有一项开始或结束就回调一次；装东西时挡住自动睡眠用。 */
@@ -755,6 +762,8 @@ export interface SystemServiceOptions {
   cliModelHints?: () => Promise<CliModelHints | null>
   /** 换线路自动改了工具配置、出了重开提示、外部客户端换成了：叫一声，界面重读（main.ts 发 network:relay-route-changed）。 */
   onToolRouteFollowed?: () => void
+  /** 换账号、换线路以后替 Antigravity 改完了设置：叫一声，界面只重读那两张卡（main.ts 发 antigravity:settings-followed）。 */
+  onAntigravityFollowed?: () => void
   /** Codex 有个对话太大、换到线路 2 的重开提示出了：叫一声，main.ts 再发一条系统通知（客户这会儿多半在 Codex 里）。 */
   onCodexPayloadRestart?: () => void
   /** 设置快照里那条「新开 Codex 对话」的提示（codex-payload-limit.ts）；没有给 undefined。缺省 = 没有。 */
@@ -1115,6 +1124,18 @@ export function withCodexDesktopProgressLog(
   }
 }
 
+/** 当前账号缓存里 Antigravity 用的那几把：Gemini 那一格（和下线的 Gemini CLI 同一把）。明文只在主进程里比（I3）。 */
+export function antigravityAccountKeys(cachedKeys: readonly StoredManagedCliKey[]): string[] {
+  return cachedKeys.filter((entry) => entry.provider === 'gemini').map((entry) => entry.key)
+}
+
+/** Antigravity 那一簇的日志归到哪一类：设置算配置，装算安装，其余（打开、看开没开着）算系统。 */
+export function antigravityLogSource(event: string): 'config' | 'install' | 'system' {
+  if (event.startsWith('antigravity.settings.')) return 'config'
+  if (event.endsWith('.installed') || event.endsWith('.bucket-fallback')) return 'install'
+  return 'system'
+}
+
 export function createSystemService(
   store: AppSettingsStore,
   serviceOptions: SystemServiceOptions = {},
@@ -1153,6 +1174,32 @@ export function createSystemService(
   } = createExternalClientRouteService(context, {
     fetchAvailableModels,
   })
+  // Antigravity 那一簇：装和打开排同一个安装队列（I11），写设置和别的工具配置排同一队。
+  const readCurrentManagedCliKeys = serviceOptions.readCurrentManagedCliKeys
+  const antigravity = createAntigravityService({
+    platform,
+    architecture: process.arch,
+    env: process.env,
+    userHome: providerRoots.userHome,
+    executionMode: context.windowsExecutionMode,
+    enqueue: (key, task, options) => installationQueue.enqueue(key, task, options),
+    serializeSettingsWrite: serializeConfigWrite,
+    gatewayBaseUrl: () => context.activeRelaySite().providerBaseUrls.gemini,
+    // 换账号、换线路以后跟上（复查 A 第 1 轮第 3 条）：线路定没定、是哪个账号、当前账号缓存的 Gemini 那把，
+    // 都是外部客户端跟 Key、跟线路用的同一份。跟上了叫界面只重读那两张卡（复查 A 第 2 轮第 2 条）。
+    gatewayRouteSettled: () => relayRouting.selection(context.activeRelaySite().id) !== undefined,
+    accountOwner: () => serviceOptions.getExternalClientAccountId?.() ?? null,
+    ...(readCurrentManagedCliKeys ? { cachedAccountKeys: async () => antigravityAccountKeys(await readCurrentManagedCliKeys()) } : {}),
+    onFollowed: () => serviceOptions.onAntigravityFollowed?.(),
+    terminalEnvironment: (env) => interactiveTerminalEnvironment(env, sameUserTerminalEnvironment),
+    fetch: downloadFetch,
+    runCommand: executeCommand,
+    // 谷歌那一路在海外，同 OpenCode 临时接上下载线路；存储桶那一路国内直连，安装器自己不包。
+    withVendorDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
+    launchWindowsTerminal: context.launchCliPowerShellForService,
+    launchMacosTerminal: context.launchMacosTerminalForService,
+    log: (level, event, message, detail) => runtimeLog?.log(level, antigravityLogSource(event), event, message, detail),
+  })
   // Owns the Codex Desktop version-probe caches and the install/uninstall/
   // launch busy lock in its own closure; only the pieces that cross the
   // CLI-launch trust boundary or touch the shared installation queue are
@@ -1184,6 +1231,8 @@ export function createSystemService(
     // 一样临时接上下载线路。Windows 的国内镜像那一路用不着它。
     withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
     bucketDownloads: desktopBucketDownloads,
+    // Codex 第一次启动要借 Windows 更新服务向微软完成验证，客户把更新关了就起不来（2026-11-23 那台）。
+    inspectWindowsUpdateBlocked: () => inspectWindowsUpdateServiceBlocked(),
     userHome: providerRoots.userHome,
     ...(latestMacosDesktopVersions ? { latestMacosDesktopVersions } : {}),
     // 中文增强没开起来时，启动那边改走普通启动，只往控制台打一句，打包版不留控制台；原错误（连同 PowerShell 那层）记在这一条里。
@@ -1476,6 +1525,7 @@ export function createSystemService(
     switchExternalClientSource,
     topUpClaudeDesktopModels,
     seedClaudeDesktopWorkspace,
+    antigravity,
     inspectInstallationQueue: () => installationQueue.snapshot(),
     onInstallationQueueChange: (listener) => installationQueue.onChange(listener),
     enqueueCodexRemoteLaunch: (launch) => installationQueue.enqueue(codexRemoteLaunchQueueKey, launch),

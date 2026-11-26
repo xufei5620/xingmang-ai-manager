@@ -1,6 +1,11 @@
 import { isClaudeDesktopInstallFailureMessage } from '../../electron/claude-desktop-install-failure'
 import { isCodexDesktopFirewallOffInstallFailure, isCodexDesktopInstallFailureMessage, isCodexDesktopNoStoreInstallFailure, isCodexDesktopUnsupportedInstallFailure } from '../../electron/codex-desktop-install-failure'
-import { codexDesktopActivationBrokenMarker, codexDesktopKnownIssueMarker } from '../../electron/codex-desktop-known-issues'
+import {
+  codexDesktopActivationBrokenMarker,
+  codexDesktopActivationOfflineMarker,
+  codexDesktopKnownIssueMarker,
+  codexDesktopWindowsUpdateBlockedMarker,
+} from '../../electron/codex-desktop-known-issues'
 import { configLinkRefusalIn } from '../../electron/config-link-refusal'
 import { configWriteBlockerIn } from '../../electron/config-write-blocker'
 import { extensionCommandFailureInMessage } from '../../electron/extension-command-failure'
@@ -60,8 +65,14 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   // 同一句里带着「这一版已知打不开」（codex-desktop-known-issues.ts 的 marker）时，
   // 重试和找客服都救不了它，要多给一条「改用 Codex CLI」的路，所以排在它前面。
   // 同一句里带着「Codex 已安装，但 Windows 未能启动它」时（Windows 激活接口说没装、包却装着），
-  // 重试、重置都救不了，出口是「立即重启」，所以排在这一类最前面。
+  // 重试、重置都救不了，出口是「立即重启」，所以排在这一类前面。
+  // 同一句里带着「Windows 打开 Codex 前需要联网向微软验证」时（联网核对许可超时，进程没建出来），
+  // 重置、重启都救不了，等网络好了重试就行，出口是「重试」「检查网络」，排在这一类最前面，跟主进程的先后一致。
+  // 同一句里带着「本机的 Windows 更新服务无法启动」时（客户关了更新，Codex 第一次启动验证不了），重置、重启
+  // 都救不了，出口是临时开一下更新，只给「重试」「联系客服」；主进程排在上面两种后面，这里跟着。
+  { key: 'codexDesktopActivationOffline', match: (message) => /Codex 桌面端(?:没有|未能)打开/.test(message) && message.includes(codexDesktopActivationOfflineMarker) },
   { key: 'codexDesktopActivationBroken', match: (message) => /Codex 桌面端(?:没有|未能)打开/.test(message) && message.includes(codexDesktopActivationBrokenMarker) },
+  { key: 'codexDesktopWindowsUpdateBlocked', match: (message) => /Codex 桌面端(?:没有|未能)打开/.test(message) && message.includes(codexDesktopWindowsUpdateBlockedMarker) },
   { key: 'codexDesktopKnownIssue', match: (message) => /Codex 桌面端(?:没有|未能)打开/.test(message) && message.includes(codexDesktopKnownIssueMarker) },
   { key: 'codexDesktopNotStarted', match: (message) => /Codex 桌面端(?:没有|未能)打开/.test(message) },
   // Codex 桌面端装不上 / 更新不了（主进程 codex-desktop-install-failure.ts 写好的整句，

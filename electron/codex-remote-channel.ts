@@ -425,7 +425,7 @@ export type CodexRemoteConversationList =
 export const remoteConversationErrors = {
   busy: 'Codex 正在处理消息，请待其完成后再切换对话。',
   unreadable: '无法读取对话列表，请稍后重试。',
-  folderNotAllowed: '该对话所在的文件夹不允许用于手机遥控，请选择其他对话。',
+  folderNotAllowed: '该对话所在的文件夹不允许用于遥控，请选择其他对话。',
   unsupported: '当前 Codex 版本暂不支持继续已有对话，请选择新对话。',
 } as const
 

@@ -67,6 +67,12 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'external-clients:cancel-install': { label: '外部客户端安装取消', log: 'normal', account: 'none' },
   'external-clients:launch': { label: '外部客户端启动', log: 'normal', account: 'scoped' },
   'external-clients:switch-source': { label: '外部客户端账号切换', log: 'normal', account: 'scoped' },
+  // 设置是不是当前账号这条线路的，换账号时这一读作废；首页每回检测都读，成功不记。
+  'antigravity:inspect': { label: 'Antigravity 检测', log: 'quiet-success', account: 'scoped' },
+  // 同外部客户端安装：下载要好几分钟，不占着账号工作；装好以后签密钥那一步按那时的账号核对（resolveAntigravityManagedKey）。
+  'antigravity:install': { label: 'Antigravity 安装', log: 'normal', account: 'none' },
+  'antigravity:open-desktop': { label: 'Antigravity 桌面端打开', log: 'normal', account: 'scoped-queued' },
+  'antigravity:open-cli': { label: 'Antigravity 命令行打开', log: 'normal', account: 'scoped-queued' },
   'config:switch-to-official-account': { log: 'normal', account: 'scoped' },
   'config:switch-account-source': { log: 'normal', account: 'scoped' },
   'config:repair-cli-hooks': { log: 'normal', account: 'scoped' },

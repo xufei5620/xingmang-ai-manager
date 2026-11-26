@@ -72,7 +72,7 @@ describe('codex remote view', () => {
 
   it('names the missing step before the switch can be turned on', () => {
     expect(remoteSwitchHint(snapshot(), channel({ hasCredential: false }), '请先在上方填写飞书应用信息。')).toBe('请先在上方填写飞书应用信息。')
-    expect(remoteSwitchHint(snapshot({ workspaceDirectory: null }), channel(), '请先在上方填写飞书应用信息。')).toBe('请先在上方选择工作文件夹。')
+    expect(remoteSwitchHint(snapshot({ workspaceDirectory: null }), channel(), '请先在上方填写飞书应用信息。')).toBe('请先选择工作文件夹。')
     // 缺省「不自动关」（YF-10）：不说闲着几小时断开。
     expect(remoteSwitchHint(snapshot(), channel(), '请先在上方填写飞书应用信息。')).toBe('开启期间电脑不会自动休眠，但合上笔记本盖子后仍会休眠。窗口缩到托盘后仍保持开启，退出星芒后才会断开，下次打开星芒需重新开启。')
     expect(remoteSwitchHint(snapshot({ idleCloseHours: 4 }), channel(), '请先在上方填写飞书应用信息。')).toBe('开启期间电脑不会自动休眠，但合上笔记本盖子后仍会休眠。窗口缩到托盘后仍保持开启，退出星芒后才会断开，下次打开星芒需重新开启；无消息 4 小时后也会自动断开。')
@@ -93,8 +93,8 @@ describe('codex remote view', () => {
 
   it('names the bound person by nickname and id tail, or by the tail alone', () => {
     const boundAt = new Date(2026, 9, 25, 14, 5).getTime()
-    expect(boundPeerText({ displayName: '小明', userIdTail: 'a1b2', boundAt })).toBe('小明（尾号 a1b2），10 月 25 日 14:05 配对')
-    expect(boundPeerText({ userIdTail: 'a1b2', boundAt })).toBe('尾号 a1b2 的账号，10 月 25 日 14:05 配对')
+    expect(boundPeerText({ displayName: '小明', userIdTail: 'a1b2', boundAt })).toBe('小明（尾号 a1b2），10 月 25 日 14:05 配对。在手机上发送「帮助」可查看可用指令。')
+    expect(boundPeerText({ userIdTail: 'a1b2', boundAt })).toBe('尾号 a1b2 的账号，10 月 25 日 14:05 配对。在手机上发送「帮助」可查看可用指令。')
   })
 
   it('says how many wrong pairing codes came in, and that the code was voided once they ran out', () => {

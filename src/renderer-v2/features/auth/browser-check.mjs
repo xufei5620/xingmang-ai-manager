@@ -428,7 +428,7 @@ test('recovery on an account with two-step verification asks for the code before
 test('chat guide keeps all four steps and never installs a runtime or tool', async () => {
   const page = await open('scenario=guide&loggedOut=1')
   try {
-    // 四个工具（Gemini CLI 已下线，不再列）加「先在星芒里聊天」「做图、做视频」。
+    // 四个工具（Gemini CLI 已下线，不再列）加「在星芒中直接提问」「生成图片和视频」。
     assert.equal(await page.locator('input[type=radio]').count(), 6)
     assert.equal(await page.getByTestId('guide-route-gemini').count(), 0)
     assert.equal(await page.getByText('Gemini').count(), 0)
@@ -454,11 +454,11 @@ test('chat guide keeps all four steps and never installs a runtime or tool', asy
 test('the images-and-videos choice installs nothing and finishes on the video page once signed in', async () => {
   const page = await open('scenario=guide&loggedOut=1')
   try {
-    // 排在「先在星芒里聊天」后面，是最后一项。
+    // 排在「在星芒中直接提问」后面，是最后一项。
     assert.equal(await page.locator('input[type=radio]').last().getAttribute('value'), 'create')
     const choice = page.locator('.auth-guide-choice').filter({ has: page.getByTestId('guide-route-create') })
-    assert.equal(await choice.locator('strong').innerText(), '做图、做视频')
-    assert.match(await choice.innerText(), /无需安装，使用画布和视频剪辑/)
+    assert.equal(await choice.locator('strong').innerText(), '生成图片和视频')
+    assert.match(await choice.innerText(), /无需安装，在「创作」中使用画布和视频/)
     await page.getByTestId('guide-route-create').check()
     await page.getByTestId('guide-next').click()
     // 没登录先去登录；登好了不再停在哪一步，直接走完、进视频剪辑页。
