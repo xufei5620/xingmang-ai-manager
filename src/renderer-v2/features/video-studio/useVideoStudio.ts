@@ -8,8 +8,10 @@ import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
 import { speaksChinese, userFacingErrorMessage } from '../../business-common'
 import { useBackgroundWork } from '../../background-work'
 import { useLatestRequest } from '../../latest-request'
+import { platformApi } from '../../platform-api'
 import { diagnosticFolderUnavailableMessage } from '../app/diagnostic-folder'
 import { inspectModel } from '../chat/api'
+import { isWindowInFront } from '../tools/install-notice'
 import { pendingChatGroups, type ChatGroupPreparation, type ChatSite } from '../chat/state'
 import type { VideoStudioCatalogCache } from './catalog-cache'
 import { composeInVideoStudioWorker } from './compose-client'
@@ -58,6 +60,13 @@ import {
   type VideoStudioTrimSide,
 } from './project'
 import type { VideoStudioSource } from './useVideoStudioLibrary'
+
+// 借对话那一类的说法（「视频已生成」，点开回「创作」页，见 electron/platform/notifications.ts 的 video: 前缀）。
+// 同一个编号主进程只报一次，所以拿这一轮第一段的请求号、成片的编号当编号。
+function announceVideo(key: string) {
+  if (isWindowInFront(typeof document === 'undefined' ? undefined : document)) return
+  void platformApi()?.notifyActivity('task', `video:${key}`).catch(() => undefined)
+}
 
 export type VideoStudioBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareAiChatGroup' | 'planVideoStudio' | 'generateAiVideo' | 'resumeAiVideo' | 'cancelAiVideo' | 'onAiVideoProgress' | 'readAiVideoClip' | 'storeVideoStudioExport' | 'openAiVideo' | 'saveAiVideo' | 'openDiagnosticFolder' | 'pickAiChatImages' | 'pickVideoStudioMusic' | 'readVideoStudioMusic' | 'generateAiImage' | 'cancelAiChat'>
 
@@ -173,6 +182,8 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
   const composeAbort = useRef<AbortController | null>(null)
   // 点过「停止生成图片」的那几次画图：主进程随后回的「已取消」不当成没画出来。
   const stoppedDrawings = useRef(new Set<string>())
+  // 这一轮出成了的片段（请求号）：一轮都回来了再一起报一声，不是回来一段报一声。
+  const finishedClips = useRef<string[]>([])
 
   const commit = (change: (current: VideoStudioProject) => VideoStudioProject, { touch = true, urgent = false }: CommitOptions = {}) => {
     const next = change(projectRef.current)
@@ -320,6 +331,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
             : settleShot(item, item.unrecorded ? aiVideoUnconfirmedSubmissionMessage : undefined))
         return clip ? { ...updated, exported: undefined } : updated
       }, { urgent: true })
+      if (clip) finishedClips.current.push(requestId)
     } catch (reason) {
       if (!alive()) return
       const message = videoStudioErrorMessage(reason, '此片段生成失败，请稍后重新生成')
@@ -340,7 +352,18 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
       if (running.current.get(shotId) === requestId) running.current.delete(shotId)
       if (next) next()
       else if (alive()) pump()
+      if (alive()) announceClips()
     }
+  }
+  /**
+   * 排着的、在出的都没了：这一轮至少出成了一段、窗口又不在前台时发一条系统通知，同对话里出视频（创作页复查第 5 条）。
+   * 片段常要好几分钟，客户多半切走了；以前工作台这边出完不说，只有对话里出的才说。
+   */
+  function announceClips() {
+    if (running.current.size || queue.current.length || !finishedClips.current.length) return
+    const [first] = finishedClips.current
+    finishedClips.current = []
+    announceVideo(first)
   }
   /** 接回已经交给服务端的那一单：只查不提交，那一单的钱已经付过了。停下不碰它。 */
   function resumeClip(shotId: string, requestId: string, onMissing?: () => void) {
@@ -495,6 +518,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, source: VideoStudioSou
       setComposeState({ phase: 'storing' })
       const stored = await bridge.storeVideoStudioExport(new Uint8Array(result.data))
       if (!alive()) return
+      announceVideo(stored.assetId)
       if (videoStudioComposeKey(projectRef.current) !== inputs) { setNotice('成片已保存至作品库。合成期间分镜已修改，此处未更新，如需使用新分镜请重新合成。'); return }
       commit((latest) => ({ ...latest, exported: stored }), { urgent: true })
       setNotice(result.audioCodec === null && current.shots.length ? '合成完成。所选片段均无声音，成片同样无声音。' : '合成完成，成片已保存至作品库。')
