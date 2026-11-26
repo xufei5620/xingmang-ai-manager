@@ -18,10 +18,11 @@ const MAX_INPUT_IMAGE_BYTES = 20 * 1024 * 1024
 const REQUEST_TIMEOUT_MS = 300_000
 const DEFAULT_MODEL = 'gpt-image-2'
 const DEFAULT_QUALITY = 'high'
-// 画好的原图存成文件：有工作目录就放它下面的这个目录，没有就放系统图片文件夹里以产品名命名的目录。
+// 画好的原图存成文件：有工作目录就放它下面的这个目录，没有就放系统图片文件夹里的「AI画图」目录。
+// 目录名会出现在交给客户的路径里，不带品牌名（测试钉住）。
 // 原图不再放进工具结果：它会跟着对话历史每一轮重传（单张中位 3.5MB），新版 Codex 桌面端还会把 1MB 以上的图显示成一大段 JSON。
 const OUTPUT_DIRECTORY_NAME = 'outputs'
-const PICTURES_FOLDER_NAME = '星芒AI'
+const PICTURES_FOLDER_NAME = 'AI画图'
 const MAX_SAME_NAME_FILES = 99
 // 认型号三处同一套（主程序 xingmang-ai-skill.ts、技能脚本 generate.mjs、这里），测试钉住。
 // 以前这里只认写死的 5 个，站上换代后主程序写进来的新型号会被悄悄换回 gpt-image-2（#1059）。

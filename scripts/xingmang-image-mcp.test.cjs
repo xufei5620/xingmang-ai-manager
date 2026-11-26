@@ -1235,14 +1235,11 @@ test('bundled image skill names neither the brand nor a site address where the A
     'mcp-server.mjs': ['https://xm.solov.cc', 'https://api.solov.cc', 'https://xm-direct.solov.cc'],
     'image-preview.mjs': null,
   }
-  // The one place the brand is allowed: the name of the folder inside the user's pictures folder where
-  // finished images go (yoyo, 2026-11-26). It is a folder name in a path, not a sentence anyone says.
-  const picturesFolder = "const PICTURES_FOLDER_NAME = '星芒AI'"
+  // No exception for the folder the finished images go to: its name ends up in the path the customer
+  // is given, so it does not carry the brand either (yoyo, 2026-11-26).
   for (const [file, addresses] of Object.entries(expectedAddresses)) {
     const text = await readFile(path.join(skillRoot, 'scripts', file), 'utf8')
-    const checked = file === 'mcp-server.mjs' ? text.replace(picturesFolder, '') : text
-    if (file === 'mcp-server.mjs') assert.equal(text.split(picturesFolder).length, 2, 'the pictures folder name is defined exactly once')
-    assert.doesNotMatch(checked, /星芒/, file)
+    assert.doesNotMatch(text, /星芒/, file)
     assert.deepEqual(text.match(siteAddresses), addresses, file)
   }
 })
@@ -1406,7 +1403,7 @@ test('MCP server does not write through an outputs folder that is a link', async
     const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
     assert.notEqual(generated.result.isError, true)
     const filePath = savedPath(generated.result.content[1].text)
-    assert.equal(path.dirname(filePath), path.join(home, 'Pictures', '星芒AI'))
+    assert.equal(path.dirname(filePath), path.join(home, 'Pictures', 'AI画图'))
     assert.equal(await readFile(filePath, 'utf8'), 'fixture-image')
     assert.deepEqual(await readdir(elsewhere), [])
   })
@@ -1417,7 +1414,7 @@ test('MCP server saves into the pictures folder when it was not started inside a
   await withServer({ apiKey: 'sk-test-not-real' }, ok, async ({ call, home }) => {
     const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
     const filePath = savedPath(generated.result.content[1].text)
-    assert.equal(path.dirname(filePath), path.join(home, 'Pictures', '星芒AI'))
+    assert.equal(path.dirname(filePath), path.join(home, 'Pictures', 'AI画图'))
     assert.equal(await readFile(filePath, 'utf8'), 'fixture-image')
     assert.deepEqual(await readdir(home), ['Pictures'])
   }, { cwd: 'home' })
@@ -1429,14 +1426,14 @@ test('MCP server saves into the pictures folder when it was not started inside a
   await withServer({ apiKey: 'sk-test-not-real' }, ok, async ({ call, root }) => {
     await mkdir(path.join(root, 'OneDrive', '图片'), { recursive: true })
     const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
-    assert.equal(path.dirname(savedPath(generated.result.content[1].text)), path.join(root, 'OneDrive', '图片', '星芒AI'))
+    assert.equal(path.dirname(savedPath(generated.result.content[1].text)), path.join(root, 'OneDrive', '图片', 'AI画图'))
   }, { cwd: 'home', env: oneDrive })
 
   // Inside a project, but something that is not a folder already has the name: nothing is replaced.
   await withServer({ apiKey: 'sk-test-not-real' }, ok, async ({ call, home, work }) => {
     await writeFile(path.join(work, 'outputs'), 'not a folder')
     const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
-    assert.equal(path.dirname(savedPath(generated.result.content[1].text)), path.join(home, 'Pictures', '星芒AI'))
+    assert.equal(path.dirname(savedPath(generated.result.content[1].text)), path.join(home, 'Pictures', 'AI画图'))
     assert.equal(await readFile(path.join(work, 'outputs'), 'utf8'), 'not a folder')
   })
 })
