@@ -71,7 +71,7 @@ node "<本技能目录>/scripts/generate.mjs" --image "./ref.png" --image "./sty
 
 ## 模型怎么选
 
-一般不要传 `--model`：脚本和画图工具会用登录时按当前账号挑好的 OpenAI 图片模型（按 `gpt-image-2.6-flare` → `gpt-image-2.5-flare` → `gpt-image-2` 的顺序，账号有哪个用哪个）。只有这个型号目前无法使用时，才会按账号里有的往下换，换了会在结果里说明。
+一般不要传 `--model`：脚本和画图工具会用登录时按当前账号挑好的 OpenAI 图片模型（按 `gpt-image-2.6-flare` → `gpt-image-2.5-flare` → `gpt-image-2` 的顺序，账号有哪个用哪个）。只有这个型号目前无法使用时，才会按账号里有的往下换，换了会在结果里说明。点名的 gpt-image 型号目前无法使用时也一样；点名 Nano Banana、Grok 的不会换成别的。
 
 用户点名时才用别的：
 

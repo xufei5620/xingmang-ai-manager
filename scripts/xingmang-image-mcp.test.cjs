@@ -351,6 +351,49 @@ test('MCP server keeps a model the AI named on purpose and does not swap it', as
   })
 })
 
+test('MCP server moves a named GPT image model to the account defaults only when that model cannot be used', async () => {
+  const config = { apiKey: 'sk-test-not-real', model: 'gpt-image-2.6-flare', fallbackModels: ['gpt-image-2.5-flare', 'gpt-image-2'] }
+  // What the relay really answers when the AI names gpt-image-2.5 and this account does not have it.
+  function onlyDefaults(request) {
+    return request.url.includes('generateContent') || !config.fallbackModels.concat(config.model).includes(jsonBody(request).model)
+      ? { status: 503, body: { error: { message: 'No available compatible accounts' } } }
+      : ok()
+  }
+  await withServer(config, onlyDefaults, async ({ call, requests }) => {
+    const moved = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat', model: 'gpt-image-2.5' } })
+    assert.equal(moved.result.isError, undefined)
+    assert.match(moved.result.content[1].text, /^已用 gpt-image-2\.6-flare 画好。/)
+    assert.match(moved.result.content[1].text, /gpt-image-2\.5 目前无法使用，已改用 gpt-image-2\.6-flare。$/)
+    assert.deepEqual(requests.map((request) => jsonBody(request).model), ['gpt-image-2.5', 'gpt-image-2.6-flare'])
+    // Another vendor's model costs and looks different: a named one is never traded for a GPT image model.
+    requests.length = 0
+    const kept = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat', model: 'nano-banana-2' } })
+    assert.equal(kept.result.isError, true)
+    assert.equal(requests.length, 1)
+    assert.match(requests[0].url, /nano-banana-2:generateContent/)
+  })
+  // A named model that is refused for what was asked, not for the model: nothing else is tried.
+  function moderated() {
+    return { status: 400, body: { error: { code: 'content_policy_violation', message: '图片内容审核未通过' } } }
+  }
+  await withServer(config, moderated, async ({ call, requests }) => {
+    const refused = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat', model: 'gpt-image-2.5-sunburst' } })
+    assert.equal(refused.result.isError, true)
+    assert.match(refused.result.content[0].text, /图片内容审核未通过/)
+    assert.deepEqual(requests.map((request) => jsonBody(request).model), ['gpt-image-2.5-sunburst'])
+  })
+  // A default the requested size does not fit is left out, instead of refusing the size for the model that was asked for.
+  function nothingAvailable() {
+    return { status: 503, body: { error: { message: 'No available compatible accounts' } } }
+  }
+  await withServer({ ...config, model: 'gpt-image-3', fallbackModels: ['gpt-image-2'] }, nothingAvailable, async ({ call, requests }) => {
+    const odd = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat', model: 'gpt-image-4', size: '1000x1000' } })
+    assert.equal(odd.result.isError, true)
+    assert.match(odd.result.content[0].text, /No available compatible accounts/)
+    assert.deepEqual(requests.map((request) => jsonBody(request).model), ['gpt-image-4', 'gpt-image-3'])
+  })
+})
+
 test('MCP server changes model only when the relay says this model cannot be used right now', async () => {
   const config = {
     codexApiKey: 'sk-codex-not-real',
@@ -967,9 +1010,29 @@ test('generate script falls through the account default chain in order', async (
   assert.match(fallen.stderr, /gpt-image-2\.6-flare 目前无法使用，已改用 gpt-image-2。/)
   assert.match(fallen.stderr, /已用 gpt-image-2 出图/)
 
+  // A named GPT image model that cannot be used right now moves to the account defaults as well, and says so.
   const named = await runGenerate(config, refuseNewModels, ['--model', 'gpt-image-2.5-flare'])
-  assert.equal(named.code, 1)
-  assert.deepEqual(requestedModels(named.requests), ['gpt-image-2.5-flare'])
+  assert.equal(named.code, 0, named.stderr)
+  assert.deepEqual(requestedModels(named.requests), ['gpt-image-2.5-flare', 'gpt-image-2.6-flare', 'gpt-image-2'])
+  assert.match(named.stderr, /gpt-image-2\.5-flare 目前无法使用，已改用 gpt-image-2。/)
+
+  // Refused for what was asked, not for the model: the named model is the only one tried.
+  function moderated() {
+    return { status: 400, body: { error: { code: 'content_policy_violation', message: '图片内容审核未通过' } } }
+  }
+  const refused = await runGenerate(config, moderated, ['--model', 'gpt-image-2.5-sunburst'])
+  assert.equal(refused.code, 1)
+  assert.match(refused.stderr, /图片内容审核未通过/)
+  assert.deepEqual(requestedModels(refused.requests), ['gpt-image-2.5-sunburst'])
+
+  // Another vendor's model costs and looks different: a named one is never traded for a GPT image model.
+  function noChannel() {
+    return { status: 503, body: { error: { message: '分组 图片模型 下模型 nano-banana-2 无可用渠道' } } }
+  }
+  const kept = await runGenerate(config, noChannel, ['--model', 'nano-banana-2'])
+  assert.equal(kept.code, 1)
+  assert.equal(kept.requests.length, 1)
+  assert.match(kept.requests[0].url, /nano-banana-2:generateContent/)
 })
 
 test('generate script changes model only when the relay says this model cannot be used right now', async () => {
@@ -1033,6 +1096,10 @@ test('generate script and the MCP server agree on when a model counts as unavail
     'const MODEL_UNAVAILABLE_PATTERN = /model_not_found|无可用渠道|no available channel|no available compatible accounts|倍率或价格未配置|ratio or price not set/i',
     "return status === 404 || MODEL_UNAVAILABLE_CODES.has(code) || MODEL_UNAVAILABLE_PATTERN.test(typeof message === 'string' ? message : '')",
     '目前无法使用，已改用',
+    'function modelsToTry(requested, family, chain, fits) {',
+    '  if (requested === chain[0]) return chain',
+    "  if (family !== 'openai') return [requested]",
+    '  return [requested, ...chain.filter((model) => model !== requested && fits(model))]',
   ]) {
     assert.ok(generate.includes(shared), shared)
     assert.ok(server.includes(shared), shared)

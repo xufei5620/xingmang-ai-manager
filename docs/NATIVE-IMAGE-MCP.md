@@ -44,7 +44,7 @@ Codex 自带的 `image_gen.imagegen` 只对 ChatGPT 登录开放：`codex-rs/cor
 
 默认只用 OpenAI 的 gpt-image 系列。登录同步时（`syncXingmangAiSkill`）主进程拿技能的两把 Key 各查一次 `GET /v1/models`，合起来按 `XINGMANG_AI_IMAGE_MODEL_PREFERENCE`（`gpt-image-2.6-flare` → `gpt-image-2.5-flare` → `gpt-image-2`）再 `XINGMANG_AI_IMAGE_MODEL_FALLBACKS`（`gpt-image-2.6-sunburst` → `gpt-image-2.5-sunburst`）的顺序，把账号列表里有的排成一串：第一个写进 `config.json` 的 `model`，后面的写进 `fallbackModels`（可以是空数组）。两把都没查到、或查到了但一个都没有，就两样都不写，画图照旧用 `gpt-image-2`，日志记一句。sunburst 慢、偏精修，flare 和 `gpt-image-2` 在时不当默认。`gpt-image-1` 官方已经下了，`gpt-image-1.5` 站上调不通，都不挑，点名也在本地拒掉。AI 对话的图片默认（`chat/state.ts` 的 `DEFAULT_IMAGE_MODELS`）和图片分组次序（`ai-chat-protocol.ts` 的 `IMAGE_GROUP_MODEL_ORDER`）跟这串同一个顺序，测试钉住。
 
-画图工具把 `model` 当默认值（`tools/list` 的 schema 默认值跟着它走）。AI 没点名、或点的就是这个默认值时，**只有这个型号现在用不了**才按 `fallbackModels` 依次换下一个再试，只换账号列表里有的；老版本写的 `config.json` 没有 `fallbackModels`，照旧只换回 `gpt-image-2`。AI 点名要别的型号就只用那个。换了型号会在结果里说「〈原型号〉 目前无法使用，已改用 〈新型号〉。」（脚本打在 stderr）。
+画图工具把 `model` 当默认值（`tools/list` 的 schema 默认值跟着它走）。AI 没点名、或点的就是这个默认值时，**只有这个型号现在用不了**才按 `fallbackModels` 依次换下一个再试，只换账号列表里有的；老版本写的 `config.json` 没有 `fallbackModels`，照旧只换回 `gpt-image-2`。AI 点名要别的 gpt-image 型号、而它现在用不了时（0.2.25，D2；实际数据里是点了这个账号没有的不带后缀的 `gpt-image-2.5`），同样改用这一串里的型号，各型号同价；以前是只用那个、把上游的 `No available compatible accounts` 原样交回去。点名 Nano Banana、Grok 的仍然只用那个：换成别家，价格和画风都不一样。换了型号会在结果里说「〈原型号〉 目前无法使用，已改用 〈新型号〉。」（脚本打在 stderr）。
 
 什么算「型号现在用不了」（两个脚本的 `isModelUnavailable`，测试钉住一致；0.2.25，D2）：HTTP 404，错误码 `model_not_found`（new-api 的「当前分组 … 下对于模型 … 无可用渠道」就带这个码，状态 503）或 `model_price_error`（站上新开的型号还没定价），以及原话里有「无可用渠道」「no available channel」「No available compatible accounts」「倍率或价格未配置」。以前是中转只要回了错误就换，内容审核不通过、没给参考图、尺寸超限也把备选型号挨个试一遍（一次「未找到目标图片」试了 5 个型号，一张 25MB 的参考图完整上传两遍）。
 

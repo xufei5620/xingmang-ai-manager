@@ -26,7 +26,7 @@
 | `grok-imagine-image` | ¥0.2 | Images API |
 | `grok-imagine-image-2.0`、`grok-imagine-image-quality` | ¥0.5 | Images API |
 
-默认用 `config.json` 的 `model`（登录时按当前账号挑好的）；只有这个型号目前无法使用（404、`model_not_found`、无可用渠道）时才按 `fallbackModels` 依次换，其余报错直接返回；都没有就 `gpt-image-2`。`gpt-image-1` 官方已下线，`gpt-image-1.5` 站上调不通，都不要用。
+默认用 `config.json` 的 `model`（登录时按当前账号挑好的）；只有这个型号目前无法使用（404、`model_not_found`、无可用渠道）时才按 `fallbackModels` 依次换，其余报错直接返回；点名的 gpt-image 型号目前无法使用时同样改用这一串，点名 Nano Banana、Grok 的不换；都没有就 `gpt-image-2`。`gpt-image-1` 官方已下线，`gpt-image-1.5` 站上调不通，都不要用。
 
 ## OpenAI 文生图 `POST /v1/images/generations`
 

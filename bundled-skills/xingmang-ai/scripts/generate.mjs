@@ -377,6 +377,14 @@ function isGptImage2(model) {
   return /^gpt-image-2(?:[.-]|$)/i.test(model)
 }
 
+// 这个型号现在用不了时换哪些：默认型号按账号列表里有的顺序往下退；点名的 GPT 图片型号（这个账号没有它、站上下线了）
+// 也改用默认的那几个，各型号同价，换了在结果里说明。点名 Nano Banana、Grok 的只用它：换成别家，价格和画风都不一样。
+function modelsToTry(requested, family, chain, fits) {
+  if (requested === chain[0]) return chain
+  if (family !== 'openai') return [requested]
+  return [requested, ...chain.filter((model) => model !== requested && fits(model))]
+}
+
 function imageMimeType(bytes) {
   if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png'
   if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg'
@@ -654,13 +662,12 @@ async function main() {
   const config = await readSkillConfig(skillRootFromScript())
   const origin = assertHttpsOrigin(config.baseUrl)
 
-  // 没点名、或点的就是主程序挑好的那个：这个型号现在用不了时（站上新开的还没定价、渠道没好），按账号列表里有的
-  // 顺序往下退。点名要别的就只用它。
   const requested = options.model || config.model || DEFAULT_MODEL
   const family = modelFamily(requested)
-  const chain = defaultModelChain(config)
-  const models = requested === chain[0] ? chain : [requested]
   const size = resolveImageSize(family, options.size, options.aspect)
+  const models = modelsToTry(requested, family, defaultModelChain(config), (model) => {
+    return !isGptImage2(model) || (size.width % 16 === 0 && size.height % 16 === 0)
+  })
   if (family === 'openai' && models.some(isGptImage2) && (size.width % 16 !== 0 || size.height % 16 !== 0)) {
     fail('gpt-image-2 系列的宽高必须是 16 的倍数')
   }

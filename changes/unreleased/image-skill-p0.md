@@ -18,6 +18,7 @@
 - D1：两个脚本认出余额不足（`insufficient_user_quota` 和那几句原话，同 `relay-quota-failure.ts`）就只发一个请求，回带金额的一句话；
   密钥自己的上限用完照旧换另一把。
 - D2：换型号只在型号现在用不了时（404、`model_not_found`、`model_price_error`、无可用渠道、No available compatible accounts）；
+  点名的 gpt-image 型号用不了时也改用默认那一串（以前只用它、原样报错），点名 Nano Banana、Grok 的不换；
   换密钥只在 401、429、503 和余额不足以外的 403；网关错误、连不上都不换。换了型号在结果里说明。
 - D3：`generate.mjs` 请求没发出去就失败时打固定诊断、退出码 3；已发出没等到回复的按可能已扣费处理，退出码 1。`SKILL.md` 加
   「失败时」一节，删掉「没有 Node 时再手写请求」；`references.md` 开头写明只是接口说明。
@@ -26,4 +27,5 @@
   没有用 `ELECTRON_RUN_AS_NODE`：发布包的 RunAsNode 熔丝是关的，不为这件事打开。开机补登记原来就有（恢复登录时会走到
   `syncImageMcp`），没有另加；卸载时清登记没做。
 - 测试：`scripts/xingmang-image-mcp.test.cjs` 起画图工具时给它单独的工作目录和主目录；品牌门禁放行 `mcp-server.mjs` 里图片文件夹名
-  那一处；两条旧用例的期望跟着 D2、C1 的新规则改了（网关错误不再换型号；`size` 与 `aspect` 一致不再报错）。
+  那一处；三条旧用例的期望跟着 D2、C1 的新规则改了（网关错误不再换型号；点名的 gpt-image 型号用不了时改用默认那一串；
+  `size` 与 `aspect` 一致不再报错）。

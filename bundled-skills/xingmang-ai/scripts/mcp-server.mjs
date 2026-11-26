@@ -356,12 +356,22 @@ function resolveImageSize(family, size, aspect) {
   return { imageSize, aspectRatio: aspect || ratio || '1:1' }
 }
 
-function assertSizeFitsModel(size, model) {
+function sizeFitsModel(size, model) {
   const dimensions = /^(\d{2,5})x(\d{2,5})$/.exec(size ?? '')
-  if (dimensions && model.startsWith('gpt-image-2')
-    && (Number(dimensions[1]) % 16 !== 0 || Number(dimensions[2]) % 16 !== 0)) {
-    throw new ImageError('gpt-image-2 系列的宽高必须是 16 的倍数')
-  }
+  return !(dimensions && model.startsWith('gpt-image-2')
+    && (Number(dimensions[1]) % 16 !== 0 || Number(dimensions[2]) % 16 !== 0))
+}
+
+function assertSizeFitsModel(size, model) {
+  if (!sizeFitsModel(size, model)) throw new ImageError('gpt-image-2 系列的宽高必须是 16 的倍数')
+}
+
+// 这个型号现在用不了时换哪些：默认型号按账号列表里有的顺序往下退；点名的 GPT 图片型号（这个账号没有它、站上下线了）
+// 也改用默认的那几个，各型号同价，换了在结果里说明。点名 Nano Banana、Grok 的只用它：换成别家，价格和画风都不一样。
+function modelsToTry(requested, family, chain, fits) {
+  if (requested === chain[0]) return chain
+  if (family !== 'openai') return [requested]
+  return [requested, ...chain.filter((model) => model !== requested && fits(model))]
 }
 
 function imageMimeType(bytes) {
@@ -757,12 +767,10 @@ async function finishedContent(image, model, notes) {
 async function generateImage(argumentsValue) {
   const input = parseArguments(argumentsValue)
   const config = await readConfig()
-  // AI 没点名、或点的就是主程序挑好的那个：这个型号现在用不了时（站上新开的还没定价、渠道没好），按账号列表里有的
-  // 顺序往下退。点名要别的就只用它，失败原样交回去。
   const requested = input.model ?? config.chain[0]
   const family = modelFamily(requested)
-  const models = requested === config.chain[0] ? config.chain : [requested]
   const resolved = resolveImageSize(family, input.size, input.aspect)
+  const models = modelsToTry(requested, family, config.chain, (model) => sizeFitsModel(resolved.size, model))
   for (const model of models) assertSizeFitsModel(resolved.size, model)
   // Nano Banana 和 Grok 只在图片模型分组里有，Codex Key 一定被拒，不白试。
   const keys = family === 'openai' ? config.keys : config.keys.filter((entry) => entry.source === 'image')
