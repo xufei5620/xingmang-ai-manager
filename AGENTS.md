@@ -87,7 +87,7 @@ XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium npm test
 XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium npm run test:v2
 ```
 
-别的容器路径可能不同，到 `$PLAYWRIGHT_BROWSERS_PATH` 下找 `chromium` 那份。`npm test` 和 `test:v2` 里起浏览器的套件都认这个变量（`e2e/harness.mjs` 的 `launchFixtureBrowser`、各个 `browser-check.mjs` / `app-check.mjs`，以及 vitest 里的 `electron/codex-desktop-cdp.browser.test.ts`）；CI 不设它，用 Playwright 自己装的那份。
+别的容器路径可能不同，到 `$PLAYWRIGHT_BROWSERS_PATH` 下找 `chromium` 那份。`npm test` 和 `test:v2` 里起浏览器的套件都认这个变量（`e2e/harness.mjs` 的 `launchFixtureBrowser`、各个 `browser-check.mjs` / `app-check.mjs`，以及 vitest 里的 `electron/codex-desktop-cdp.browser.test.ts`、`electron/antigravity-desktop-chinese.browser.test.ts`）；CI 不设它，用 Playwright 自己装的那份。
 
 ---
 
