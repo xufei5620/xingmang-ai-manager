@@ -893,9 +893,13 @@ export function videoStudioDraftName(project: VideoStudioProject): string {
   return project.title.trim() || (idea.length > 24 ? `${idea.slice(0, 24)}…` : idea) || '未命名视频'
 }
 
-/** 列表里一条视频下面那行小字：几个镜头、生成了几段、拼没拼成片。 */
+/**
+ * 列表里一条视频下面那行小字：几个镜头、生成了几段；合成过的先说合成了。左边那一列只有 224 宽，
+ * 「已合成成片」放在最后总被截成「…」，最要紧的那句看不见（创作页复查第 8 条，yoyo 11-26 回「成片放前面」）。
+ */
 export function videoStudioDraftProgress(project: VideoStudioProject): string {
   if (!project.shots.length) return '尚未编写分镜'
+  if (project.exported) return `已合成 · ${project.shots.length} 个镜头`
   const made = project.shots.filter((shot) => shot.clip).length
-  return [`${project.shots.length} 个镜头`, `已生成 ${made} 段`, project.exported ? '已合成成片' : ''].filter(Boolean).join(' · ')
+  return `${project.shots.length} 个镜头 · 已生成 ${made} 段`
 }
