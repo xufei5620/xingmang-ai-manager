@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   AI_OUTPUT_UNWRITABLE_ERROR_CODE,
   AiAssetStore,
+  describeAiAssetDownloadFailure,
   inspectAiImage,
   isPublicAiAssetAddress,
   validateAiAssetRemoteUrl,
@@ -670,6 +671,131 @@ describe('AiAssetStore remote URL safety', () => {
       fetchImpl: vi.fn(async () => new Response(png(), { headers: { 'Content-Type': 'image/png' } })),
     })
     await expect(oversized.storeRemoteUrl(42, 'https://cdn.example/image')).rejects.toThrow('64 MB 安全上限')
+  })
+})
+
+describe('AiAssetStore remote image retries', () => {
+  const imageInit = { status: 200, headers: { 'Content-Type': 'image/png' } }
+  const link = 'https://download.example/files/abc.png?token=signed-secret'
+
+  function sequenceFetch(...steps: Array<() => Response | Promise<Response>>) {
+    let call = 0
+    return vi.fn(async (_input: string, _init: RequestInit, _addresses: readonly string[]) => {
+      const step = steps[Math.min(call, steps.length - 1)]
+      call += 1
+      return step()
+    })
+  }
+
+  function failureOf(promise: Promise<unknown>): Promise<unknown> {
+    return promise.then(() => null, (reason: unknown) => reason)
+  }
+
+  it('fetches a paid image link again when it was not live yet, and stores it once it answers', async () => {
+    const fetchImpl = sequenceFetch(
+      () => new Response(null, { status: 404 }),
+      () => new Response(null, { status: 403 }),
+      () => new Response(png(20, 30), imageInit),
+    )
+    const store = new AiAssetStore({ ...storeOptions(), fetchImpl, downloadRetryDelaysMs: [0, 0, 0, 0] })
+
+    await expect(store.storeRemoteUrl(42, link)).resolves.toMatchObject({ mimeType: 'image/png', width: 20, height: 30 })
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+    expect(fetchImpl.mock.calls.every(([url]) => url === link)).toBe(true)
+  })
+
+  it('fetches again after a dropped connection, a busy server, a failed DNS answer or a cut-off body', async () => {
+    const fetchImpl = sequenceFetch(
+      () => { throw Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) },
+      () => new Response(null, { status: 503 }),
+      () => new Response(null, { status: 429 }),
+      () => new Response(new ReadableStream<Uint8Array>({ start(controller) { controller.error(new Error('terminated')) } }), imageInit),
+      () => new Response(png(20, 30), imageInit),
+    )
+    let lookups = 0
+    const dnsLookup = vi.fn(async () => {
+      lookups += 1
+      if (lookups === 1) throw Object.assign(new Error('getaddrinfo EAI_AGAIN download.example'), { code: 'EAI_AGAIN' })
+      return ['93.184.216.34']
+    })
+    const store = new AiAssetStore({ ...storeOptions(), fetchImpl, dnsLookup, downloadRetryDelaysMs: [0, 0, 0, 0, 0] })
+
+    await expect(store.storeRemoteUrl(42, link)).resolves.toMatchObject({ width: 20 })
+    expect(dnsLookup).toHaveBeenCalledTimes(6)
+    expect(fetchImpl).toHaveBeenCalledTimes(5)
+  })
+
+  it('gives up after the last retry, saying how many tries it took, the host and the network code, but never the link', async () => {
+    const fetchImpl = sequenceFetch(() => { throw Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) })
+    const store = new AiAssetStore({ ...storeOptions(), fetchImpl, downloadRetryDelaysMs: [0, 0] })
+
+    const error = await failureOf(store.storeRemoteUrl(42, link))
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe('socket hang up')
+    expect(error).toMatchObject({ code: 'AI_IMAGE_DOWNLOAD_FAILED' })
+    expect(describeAiAssetDownloadFailure(error)).toEqual({ attempts: 3, host: 'download.example', networkCode: 'ECONNRESET' })
+    expect(JSON.stringify({ ...(error as object), message: (error as Error).message })).not.toContain('signed-secret')
+  })
+
+  it('does not fetch again what another try cannot change', async () => {
+    const privateLookup = vi.fn(async () => ['198.18.0.7'])
+    const neverFetched = vi.fn()
+    const privateStore = new AiAssetStore({ ...storeOptions(), fetchImpl: neverFetched, dnsLookup: privateLookup, downloadRetryDelaysMs: [0, 0] })
+    const privateError = await failureOf(privateStore.storeRemoteUrl(42, link))
+    expect((privateError as Error).message).toContain('私网、回环或保留地址')
+    expect(describeAiAssetDownloadFailure(privateError)).toMatchObject({ attempts: 1 })
+    expect(privateLookup).toHaveBeenCalledOnce()
+    expect(neverFetched).not.toHaveBeenCalled()
+
+    for (const status of [400, 401, 410]) {
+      const refused = sequenceFetch(() => new Response(null, { status }))
+      const store = new AiAssetStore({ ...storeOptions(), fetchImpl: refused, downloadRetryDelaysMs: [0, 0] })
+      await expect(store.storeRemoteUrl(42, link)).rejects.toThrow(`图片下载失败，服务返回 ${status}`)
+      expect(refused).toHaveBeenCalledOnce()
+    }
+
+    const html = sequenceFetch(() => new Response(png(), { headers: { 'Content-Type': 'text/html' } }))
+    await expect(new AiAssetStore({ ...storeOptions(), fetchImpl: html, downloadRetryDelaysMs: [0, 0] }).storeRemoteUrl(42, link))
+      .rejects.toThrow('响应类型不受支持')
+    expect(html).toHaveBeenCalledOnce()
+
+    const oversized = sequenceFetch(() => new Response(png(), imageInit))
+    await expect(new AiAssetStore({ ...storeOptions(), maximumImageBytes: 16, fetchImpl: oversized, downloadRetryDelaysMs: [0, 0] })
+      .storeRemoteUrl(42, link)).rejects.toThrow('64 MB 安全上限')
+    expect(oversized).toHaveBeenCalledOnce()
+
+    const looping = vi.fn(async () => new Response(null, { status: 302, headers: { Location: link } }))
+    await expect(new AiAssetStore({ ...storeOptions(), fetchImpl: looping, downloadRetryDelaysMs: [0, 0] }).storeRemoteUrl(42, link))
+      .rejects.toThrow(/^图片下载发生循环重定向$/)
+    expect(looping).toHaveBeenCalledOnce()
+  })
+
+  it('waits between tries and stops before a pause would run past the one download deadline', async () => {
+    const fetchImpl = sequenceFetch(() => new Response(null, { status: 404 }))
+    const store = new AiAssetStore({ ...storeOptions(), fetchImpl, downloadTimeoutMs: 1_000, downloadRetryDelaysMs: [300, 800] })
+
+    const startedAt = Date.now()
+    const error = await failureOf(store.storeRemoteUrl(42, link))
+
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(280)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(describeAiAssetDownloadFailure(error)).toMatchObject({ attempts: 2, host: 'download.example' })
+  })
+
+  it('refuses a retry schedule that is too long or not in whole milliseconds', () => {
+    expect(() => new AiAssetStore({ ...storeOptions(), downloadRetryDelaysMs: Array.from({ length: 9 }, () => 0) }))
+      .toThrow('AI 图片下载重试配置无效')
+    expect(() => new AiAssetStore({ ...storeOptions(), downloadRetryDelaysMs: [-1] })).toThrow('AI 图片下载重试配置无效')
+    expect(() => new AiAssetStore({ ...storeOptions(), downloadRetryDelaysMs: [1.5] })).toThrow('AI 图片下载重试配置无效')
+    expect(() => new AiAssetStore({ ...storeOptions(), downloadRetryDelaysMs: [10 * 60_000 + 1] })).toThrow('AI 图片下载重试配置无效')
+  })
+
+  it('reads nothing into an error that is not a failed download', () => {
+    expect(describeAiAssetDownloadFailure(new Error('磁盘已满'))).toBeNull()
+    expect(describeAiAssetDownloadFailure(null)).toBeNull()
+    expect(describeAiAssetDownloadFailure(Object.assign(new Error('x'), { code: 'AI_IMAGE_DOWNLOAD_FAILED' }))).toEqual({ attempts: 1 })
   })
 })
 
