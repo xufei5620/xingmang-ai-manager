@@ -114,7 +114,7 @@ export function useAppNavigation({ app, perform, toast, accelerationAvailable, r
     setTutorialTopic((current) => ({ sequence: (current?.sequence ?? 0) + 1, id: 'start', query }))
     navigate('tutorial')
   }, [navigate])
-  // 顶部搜索的「开始检查」和帮助弹窗的「跑一遍检查」：人已经在检查页上时换个 key 重挂一次，挂上就重查。
+  // 顶部搜索的「开始检查」和帮助弹窗的「运行检查」：人已经在检查页上时换个 key 重挂一次，挂上就重查。
   const startCheck = () => { if (page === 'health') setHealthRequest((current) => current + 1); navigate('health') }
   return {
     page, setPage, chatScope, setChatScope, chatParametersPending, setChatParametersPending, createVideoPending, setCreateVideoPending, createLibraryPending, setCreateLibraryPending, visitedPages,

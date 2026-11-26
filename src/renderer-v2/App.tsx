@@ -404,7 +404,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     { id: 'tutorial', label: '使用教程', icon: BookOpen, run: () => navigate('tutorial') },
     { id: 'feedback', label: '留言反馈', icon: MessageSquare, run: () => navigate('feedback', 'form') },
     ...(workspaceVisible ? [
-      { id: 'health', label: '跑一遍检查', icon: Zap, run: startCheck },
+      { id: 'health', label: '运行检查', icon: Zap, run: startCheck },
       { id: 'log', label: '运行日志', icon: ListChecks, run: () => navigate('feedback', 'log') },
     ] : []),
     { id: 'download', label: '打开下载页', icon: Download, run: () => void perform('打开下载页', () => app.openExternal(appReleaseDownloadUrl)) },

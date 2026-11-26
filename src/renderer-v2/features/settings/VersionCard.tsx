@@ -172,7 +172,7 @@ export function VersionCard({ api, navigate, autoUpdate }: {
           testId="updates-disk-shortfall"
           actions={
             <>
-              <Button size="sm" icon={BookOpen} onClick={() => setDiskCleanupOpen((open) => !open)}>{diskCleanupOpen ? '收起' : '怎么清理'}</Button>
+              <Button size="sm" icon={BookOpen} onClick={() => setDiskCleanupOpen((open) => !open)}>{diskCleanupOpen ? '收起' : '查看清理方法'}</Button>
               <Button size="sm" icon={Download} loading={operation.busy === 'download'} onClick={downloadAnyway}>仍要下载</Button>
             </>
           }

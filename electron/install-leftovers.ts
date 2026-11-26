@@ -278,7 +278,7 @@ export async function sweepInstallLeftovers(
   return result
 }
 
-/** sweepInstallLeftovers 同样的选法、同样的年龄，只量不删：「装工具时下载的文件」那一行右边的数。 */
+/** sweepInstallLeftovers 同样的选法、同样的年龄，只量不删：「安装工具时下载的文件」那一行右边的数。 */
 export async function measureInstallLeftovers(
   locations: readonly InstallLeftoverLocation[],
   options: InstallLeftoverSweepOptions = {},
