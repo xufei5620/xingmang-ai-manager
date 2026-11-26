@@ -331,6 +331,14 @@ click stall evidence, taken 7004ms after the click started (each probe waits at 
 - 修法：只改高、宽留在 1280，侧栏不动，量到的就是纯 CSS 排出来的那一版。1366 × 768 的笔记本侧栏本来就是展开的，这也正是那条改动要守的情形。
 - 写法：用例改窗口尺寸后要量版面的，别让尺寸跨过 1272 这条宽（或 660 这条高）；非跨不可的，先等侧栏到了该有的宽（`.v2-sidebar` 的宽是 60 或 224）再量，不要拿固定的毫秒数去等。
 
+## 画布换皮肤那条：「减少动画」反倒给每个元素开了过渡（2026-11-26）
+
+`e2e/canvas-close-interactions.test.mjs`「canvas applies four skins in both themes…」每换一套皮肤（都带 `reducedMotion: true`）就马上比 `.react-flow` 和 `.canvas-app` 两层的底色。画布内核「减少动画」的两条全局规则（`theme/brand-appearance.css` 的 `[data-reduced-motion='true'] *`、`theme.css` 的 `@media (prefers-reduced-motion: reduce)`）原来写 `transition-duration: 0.01ms !important`，`transition-property` 默认是 `all`，于是每个元素的每个属性都起一段 0.01ms 的过渡。容器里量过：换一次皮肤冒出 250~350 段过渡，两三帧后才收完，这期间 `getComputedStyle` 读到的是上一套甚至上上套的底色。平时两层一样旧，比出来相等就过了（其实没比到新皮肤）；偶尔一层先收完、另一层还没有，就红（指纹：`+ 'rgb(250, 247, 238)' - 'rgb(240, 246, 245)'`，晨曦浅色对雾青浅色；11-20 #2000、11-21 #1936 在 linux-test 上各一次，本机连跑几十次都没红）。
+
+- 修法：在 xingmang-canvas 把两条规则改成 `transition: none !important`（xingmang-canvas #62），同步进 `canvas-v2/`。换完皮肤同一刻读到的就是新底色，一段过渡也没有；顺带平移时 `.react-flow__viewport` 的 `transform` 也不再晚两帧左右才画上。内核新加 `theme/reduced-motion.test.ts`，不许整页通配的规则再设 `transition-duration` 这几项。
+- 看现场：换完皮肤后在页面里看 `document.getAnimations().filter((a) => a.transitionProperty === 'background-color')`，修之前有二三十个、`pending` 都是 `true`，修之后是空的。
+- 写法：「减少动画」这类全局规则要关过渡就写 `transition: none`，别只改时长；用例换外观后要读计算样式的，先确认页面上没有在跑的过渡，别拿固定的毫秒数去等。
+
 ## 随机输入测试红了：是真问题，不是偶发红（2026-11-17）
 
 `fast-check` 写的随机输入测试（各测试文件末尾 `… with random inputs` 那几节：打码、外链白名单、会话编号、换线路改配置、粘贴密钥整理、PowerShell 单引号和通配符转义）每次跑用不同的随机种子，同一条这次绿、下次红是可能的。红的那次是库碰巧造出了一个打破规矩的输入，**代码真有这个缺口**：不按「重跑就过」放过，也不许把生成器改窄躲过去。
