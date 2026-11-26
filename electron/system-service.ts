@@ -99,6 +99,7 @@ import {
   type InstallLeftoverSweepResult,
 } from './install-leftovers'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
+import { inspectWindowsUpdateServiceBlocked } from './windows-update-service-state'
 import {
   inspectWindowsExecutableMachine,
   type WindowsProcessorArchitecture,
@@ -144,10 +145,12 @@ import {
 } from './system-service-context'
 import { createCliInstallService } from './cli-install-service'
 import { createConfigSaveService } from './config-save-service'
+import type { StandingInstructionsSaveResult } from './standing-instructions'
 import { createOfficialCredentialService } from './official-credential-service'
 import { createToolRouteFollowService } from './tool-route-follow-service'
 import { createExternalClientRouteService } from './external-client-route-service'
-import { codexRemoteLaunchQueueKey, createProviderLaunchService, providerCommandEnvironment } from './provider-launch-service'
+import { createAntigravityService, type AntigravityService } from './antigravity-service'
+import { codexRemoteLaunchQueueKey, createProviderLaunchService, interactiveTerminalEnvironment, providerCommandEnvironment, sameUserTerminalEnvironment } from './provider-launch-service'
 import { createSystemScanService } from './system-scan-service'
 import { createRuntimeInstallService } from './runtime-install-service'
 import { createCliUninstallService } from './cli-uninstall-service'
@@ -191,7 +194,7 @@ export interface ToolStatus {
   /**
    * 只在 Mac 上的 Codex / Grok 出现：找到的那份不是 npm 装的，又核不出是官方安装器那一份，星芒不替它跑
    * （tool-installation.ts 的 UnrecognizedDarwinCliError，Mac 验收 R1）。首页这时不给「打开」，给
-   * 「用星芒装一份」；主进程也不再拿「不会另装一份」拦这次安装。缺省 = 认得出或不适用。
+   * 「使用星芒安装」；主进程也不再拿「不会另装一份」拦这次安装。缺省 = 认得出或不适用。
    */
   unrecognizedInstall?: boolean
   /**
@@ -288,7 +291,7 @@ export interface SystemScanOptions {
 /** 卸载命令行工具的附加要求；缺省 = 只卸载（旧行为）。 */
 export interface CliUninstallOptions {
   /**
-   * 这次卸载是「换成星芒装的」的前一半，卸完渲染层马上用 npm 装回来（第三十一批 B）。
+   * 这次卸载是「改用星芒安装」的前一半，卸完渲染层马上用 npm 装回来（第三十一批 B）。
    * 先按安装那一道门槛看盘：装不下就一个文件都不动，免得客户卸完落得一份都没有。
    */
   reinstall?: boolean
@@ -325,6 +328,8 @@ export interface CliLaunchResult {
   rememberedWorkspace?: string | null
   /** 同 AppConfigSummary.rememberedWorkspaceFresh，跟着上面那个文件夹走。缺省 = 不是。 */
   rememberedWorkspaceFresh?: boolean
+  /** 同 AppConfigSummary.rememberedWorkspaceChosenAt，跟着上面那个文件夹走。缺省 = 不是设置页换的。 */
+  rememberedWorkspaceChosenAt?: number
 }
 
 export type ToolUninstallResult =
@@ -352,13 +357,13 @@ export type ToolUninstallResult =
         /**
          * true = the main process pinned exactly the files manualCommand names
          * and `cli:clean-uninstall-leftovers` may delete them after checking
-         * them again (已知48「帮我清理」). Omitted = the command is all there is.
+         * them again (已知48「一键清理」). Omitted = the command is all there is.
          */
         cleanUpAvailable?: boolean
       }
     }
 
-/** 「帮我清理」之后还剩几个文件（已知48）；0 = 删干净了。 */
+/** 「一键清理」之后还剩几个文件（已知48）；0 = 删干净了。 */
 export interface CliLeftoverCleanupResult {
   remaining: number
 }
@@ -377,7 +382,7 @@ export interface ConfigSavePayload {
   provider: ProviderId
   apiKey: string
   model: string
-  // repair 只有「修好它」「改用当前账号」那两条路用（NativeConfigWriteMode）；配置窗口的 config:save 只收合并和重置。
+  // repair 只有「立即修复」「改用当前账号」那两条路用（NativeConfigWriteMode）；配置窗口的 config:save 只收合并和重置。
   mode: NativeConfigWriteMode
 }
 
@@ -422,6 +427,11 @@ export interface AppConfigSummary {
    * （isUntouchedStarterWorkspace）。界面据此把第一句话换成让 AI 动手做点东西（D45）。缺省 = 不是。
    */
   rememberedWorkspaceFresh?: boolean
+  /**
+   * rememberedWorkspace 是设置页「更换」选定的，这是那一刻（AppSettings.workspaceChosenAt，毫秒）。首页「打开」
+   * 据此在它比这个工具最近一条对话还新时先进它（0.2.25 总单 Q1）。缺省 = 不是设置页换的，照旧先看对话记录。
+   */
+  rememberedWorkspaceChosenAt?: number
   providers: Record<ProviderId, NativeConfigSummary>
   /**
    * 账号还在恢复时读到的配置：「是不是当前账号写的」这一问还答不上来，
@@ -467,17 +477,19 @@ export interface SystemService {
   /** 这台电脑上是否已有这个 CLI 的官方登录，null = 看不出来；可选 = 旧实现不提供。 */
   inspectOfficialLogin?(provider: ProviderId): boolean | null
   /**
-   * 首页「修好它」：把本软件写进这家配置、却指向旧位置的钩子与状态行改成这次的路径
+   * 首页「立即修复」：把本软件写进这家配置、却指向旧位置的钩子与状态行改成这次的路径
    * （这台电脑写不出来就收回），写完再查一遍；还是旧的就抛中文原因。可选 = 旧实现不提供。
    */
   repairCliHooks?(provider: ProviderId): Promise<ReturnType<typeof saveProviderConfig>>
   /**
-   * 设置里「只让 Claude Code 改项目文件夹里的文件」：接着当前账号时当场改 Claude Code 的配置（backup 在真要写之前调），
+   * 设置里「仅允许 Claude Code 修改项目文件夹内的文件」：接着当前账号时当场改 Claude Code 的配置（backup 在真要写之前调），
    * 再记下开关。可选 = 旧实现不提供。
    */
   setClaudeWriteBoundary?(enabled: boolean, backup?: () => void): Promise<ClaudeToggleResult>
   /** 设置里「Claude Code 提交代码时不署名」，同上。可选 = 旧实现不提供。 */
   setClaudeCommitAttribution?(hidden: boolean, backup?: () => void): Promise<ClaudeToggleResult>
+  /** 设置里「给 AI 的长期嘱咐」：写进三家工具的全局说明，再记下这段话。不抛错。可选 = 旧实现不提供。 */
+  saveStandingInstructions?(text: string): Promise<StandingInstructionsSaveResult>
   /**
    * 切回官方账号以后要不要问「要不要让官方 Claude Code 先问再执行？」：还是「不逐条确认就执行」、这台电脑上又没问过。
    * 不抛错。可选 = 旧实现不提供（当不用问）。
@@ -534,7 +546,7 @@ export interface SystemService {
   installCli(provider: ProviderId, target: RendererMessageTarget, version?: string): Promise<void>
   cancelCliInstall(provider: ProviderId): InstallCancellationOutcome
   uninstallCli(provider: ProviderId, options?: CliUninstallOptions): Promise<ToolUninstallResult>
-  /** 「帮我清理」：只删这个工具上次卸载时记下的那几个文件，删前再核对一遍（已知48）。 */
+  /** 「一键清理」：只删这个工具上次卸载时记下的那几个文件，删前再核对一遍（已知48）。 */
   cleanUninstallLeftovers(provider: ProviderId): Promise<CliLeftoverCleanupResult>
   inspectCliUpdate(provider: ProviderId, forceRefresh?: boolean): Promise<CliStatus>
   /** request 只有 Mac 上首页「可更新到 v…」那一下才传（见 DesktopAppUpdateRequest）。 */
@@ -543,7 +555,7 @@ export interface SystemService {
   uninstallCodexDesktop(): Promise<ToolUninstallResult>
   resetCodexDesktop(): Promise<void>
   inspectCodexDesktopUpdate(forceRefresh?: boolean): Promise<DesktopAppStatus>
-  /** resumeSessionId 只在 Codex 续接时由 ipc.ts 核对过后传入，见 cliLaunchArgv。 */
+  /** resumeSessionId 只在按记录续接（Codex、Claude Code、Grok CLI）时由 ipc.ts 核对过后传入，见 cliLaunchArgv。 */
   /** accountWork：排在安装后面的这段不算账号工作，轮到它执行时才算（#1085）。 */
   launchProvider(provider: ProviderId, workspace: string, mode?: CliLaunchMode, resumeSessionId?: string | null, accountWork?: QueuedAccountWork): Promise<CliLaunchResult>
   inspectCodexDesktop(): Promise<DesktopAppStatus>
@@ -632,6 +644,16 @@ export interface SystemService {
    * 默认那个不动，它开着就这次不补。从不抛错。可选 = 旧实现不提供。
    */
   topUpClaudeDesktopModels?(): Promise<void>
+  /**
+   * 开机后台替已经装着的 Claude Desktop 从星芒下载站放好 Cowork 工作区（claude-desktop-workspace-seed.ts）。
+   * 没装、放过了、盘不够、远程关了都不下；从不抛错。可选 = 旧实现不提供。
+   */
+  seedClaudeDesktopWorkspace?(): Promise<void>
+  /**
+   * Antigravity（命令行 agy 和桌面端）那一簇：检测、一键装、写网关设置、带着设置打开（antigravity-service.ts）。
+   * 密钥由调用方按需签了交进来，这里不碰账号。可选 = 旧实现不提供。
+   */
+  antigravity?: AntigravityService
   /** 安装队列当前的状态，退出前判断有没有安装正在跑时用。 */
   inspectInstallationQueue(): InstallationQueueSnapshot
   /** 安装队列每有一项开始或结束就回调一次；装东西时挡住自动睡眠用。 */
@@ -643,7 +665,7 @@ export interface SystemService {
    * 队列里，不会和正在进行的安装撞上；从不抛错。
    */
   cleanupInstallLeftovers(): Promise<InstallLeftoverSweepResult>
-  /** 「设置 › 备份迁移 › 星芒占用的空间」里「装工具时下载的文件」的大小：点「清理」能腾出来的那些。从不排队。 */
+  /** 「设置 › 备份迁移 › 星芒占用空间」里「装工具时下载的文件」的大小：点「清理」能腾出来的那些。从不排队。 */
   measureInstallLeftoversNow(): Promise<number>
   /** 那一行的「清理」：排进安装队列，正在装就等它装完；年龄规则见 install-leftovers.ts 的 manualInstallLeftoverMinimumAgeMs。 */
   cleanInstallLeftoversNow(): Promise<InstallLeftoverSweepResult>
@@ -681,6 +703,11 @@ export interface SystemServiceOptions {
   systemSnapshotCacheFile?: string
   /** 外部客户端检测结果落在哪；缺省不落盘（测试与旧行为）。见 external-client-snapshot-cache.ts。 */
   externalClientSnapshotCacheFile?: string
+  /**
+   * config:get 读下的工具配置在几毫秒内接着用（config-read-cache.ts，0.2.24 深查 R3）。缺省 = 0，每次现读
+   * （测试与旧行为）：测试常在同一毫秒里原地改写同样长的文件，靠文件身份和修改时间分不出来。
+   */
+  configReadCacheMs?: number
   /** 记进落盘的旧结果；别的版本写的也认，但不带推荐版本这类判断（见 system-snapshot-cache.ts）。 */
   appVersion?: string
   /** Native profile roots and policy reads are isolated in tests. */
@@ -735,6 +762,8 @@ export interface SystemServiceOptions {
   cliModelHints?: () => Promise<CliModelHints | null>
   /** 换线路自动改了工具配置、出了重开提示、外部客户端换成了：叫一声，界面重读（main.ts 发 network:relay-route-changed）。 */
   onToolRouteFollowed?: () => void
+  /** 换账号、换线路以后替 Antigravity 改完了设置：叫一声，界面只重读那两张卡（main.ts 发 antigravity:settings-followed）。 */
+  onAntigravityFollowed?: () => void
   /** Codex 有个对话太大、换到线路 2 的重开提示出了：叫一声，main.ts 再发一条系统通知（客户这会儿多半在 Codex 里）。 */
   onCodexPayloadRestart?: () => void
   /** 设置快照里那条「新开 Codex 对话」的提示（codex-payload-limit.ts）；没有给 undefined。缺省 = 没有。 */
@@ -885,7 +914,7 @@ export interface SystemServiceOptions {
    * 免得单测装一次工具就去扫开发机的临时目录。
    */
   sweepInstallLeftovers?: (locations: readonly InstallLeftoverLocation[], options?: InstallLeftoverSweepOptions) => Promise<InstallLeftoverSweepResult>
-  /** 只量不删，「星芒占用的空间」那一行用。缺省 = 量出来是 0（测试与旧行为），同上只有 main.ts 接真实现。 */
+  /** 只量不删，「星芒占用空间」那一行用。缺省 = 量出来是 0（测试与旧行为），同上只有 main.ts 接真实现。 */
   measureInstallLeftovers?: (locations: readonly InstallLeftoverLocation[], options?: InstallLeftoverSweepOptions) => Promise<number>
   /**
    * Windows 上装、卸 Codex 之前让手机遥控放开它那份 Codex（codex-remote-service.ts 的 releaseCodex，#1407 P3-3）：
@@ -1095,6 +1124,18 @@ export function withCodexDesktopProgressLog(
   }
 }
 
+/** 当前账号缓存里 Antigravity 用的那几把：Gemini 那一格（和下线的 Gemini CLI 同一把）。明文只在主进程里比（I3）。 */
+export function antigravityAccountKeys(cachedKeys: readonly StoredManagedCliKey[]): string[] {
+  return cachedKeys.filter((entry) => entry.provider === 'gemini').map((entry) => entry.key)
+}
+
+/** Antigravity 那一簇的日志归到哪一类：设置算配置，装算安装，其余（打开、看开没开着）算系统。 */
+export function antigravityLogSource(event: string): 'config' | 'install' | 'system' {
+  if (event.startsWith('antigravity.settings.')) return 'config'
+  if (event.endsWith('.installed') || event.endsWith('.bucket-fallback')) return 'install'
+  return 'system'
+}
+
 export function createSystemService(
   store: AppSettingsStore,
   serviceOptions: SystemServiceOptions = {},
@@ -1129,8 +1170,35 @@ export function createSystemService(
     followManagedKeysNow,
     cancelPendingExternalRouteRecheck,
     topUpClaudeDesktopModels,
+    seedClaudeDesktopWorkspace,
   } = createExternalClientRouteService(context, {
     fetchAvailableModels,
+  })
+  // Antigravity 那一簇：装和打开排同一个安装队列（I11），写设置和别的工具配置排同一队。
+  const readCurrentManagedCliKeys = serviceOptions.readCurrentManagedCliKeys
+  const antigravity = createAntigravityService({
+    platform,
+    architecture: process.arch,
+    env: process.env,
+    userHome: providerRoots.userHome,
+    executionMode: context.windowsExecutionMode,
+    enqueue: (key, task, options) => installationQueue.enqueue(key, task, options),
+    serializeSettingsWrite: serializeConfigWrite,
+    gatewayBaseUrl: () => context.activeRelaySite().providerBaseUrls.gemini,
+    // 换账号、换线路以后跟上（复查 A 第 1 轮第 3 条）：线路定没定、是哪个账号、当前账号缓存的 Gemini 那把，
+    // 都是外部客户端跟 Key、跟线路用的同一份。跟上了叫界面只重读那两张卡（复查 A 第 2 轮第 2 条）。
+    gatewayRouteSettled: () => relayRouting.selection(context.activeRelaySite().id) !== undefined,
+    accountOwner: () => serviceOptions.getExternalClientAccountId?.() ?? null,
+    ...(readCurrentManagedCliKeys ? { cachedAccountKeys: async () => antigravityAccountKeys(await readCurrentManagedCliKeys()) } : {}),
+    onFollowed: () => serviceOptions.onAntigravityFollowed?.(),
+    terminalEnvironment: (env) => interactiveTerminalEnvironment(env, sameUserTerminalEnvironment),
+    fetch: downloadFetch,
+    runCommand: executeCommand,
+    // 谷歌那一路在海外，同 OpenCode 临时接上下载线路；存储桶那一路国内直连，安装器自己不包。
+    withVendorDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
+    launchWindowsTerminal: context.launchCliPowerShellForService,
+    launchMacosTerminal: context.launchMacosTerminalForService,
+    log: (level, event, message, detail) => runtimeLog?.log(level, antigravityLogSource(event), event, message, detail),
   })
   // Owns the Codex Desktop version-probe caches and the install/uninstall/
   // launch busy lock in its own closure; only the pieces that cross the
@@ -1163,6 +1231,8 @@ export function createSystemService(
     // 一样临时接上下载线路。Windows 的国内镜像那一路用不着它。
     withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
     bucketDownloads: desktopBucketDownloads,
+    // Codex 第一次启动要借 Windows 更新服务向微软完成验证，客户把更新关了就起不来（2026-11-23 那台）。
+    inspectWindowsUpdateBlocked: () => inspectWindowsUpdateServiceBlocked(),
     userHome: providerRoots.userHome,
     ...(latestMacosDesktopVersions ? { latestMacosDesktopVersions } : {}),
     // 中文增强没开起来时，启动那边改走普通启动，只往控制台打一句，打包版不留控制台；原错误（连同 PowerShell 那层）记在这一条里。
@@ -1245,6 +1315,7 @@ export function createSystemService(
     repairCliHooks,
     setClaudeWriteBoundary,
     setClaudeCommitAttribution,
+    saveStandingInstructions,
     autoRepairStaleCliHooks,
     restoreCliHooksRemovedByUninstall,
     toolModelChecker,
@@ -1389,6 +1460,7 @@ export function createSystemService(
     repairCliHooks,
     setClaudeWriteBoundary,
     setClaudeCommitAttribution,
+    saveStandingInstructions,
     autoRepairStaleCliHooks,
     restoreCliHooksRemovedByUninstall,
     switchToOfficialAccount,
@@ -1452,6 +1524,8 @@ export function createSystemService(
     launchExternalClient,
     switchExternalClientSource,
     topUpClaudeDesktopModels,
+    seedClaudeDesktopWorkspace,
+    antigravity,
     inspectInstallationQueue: () => installationQueue.snapshot(),
     onInstallationQueueChange: (listener) => installationQueue.onChange(listener),
     enqueueCodexRemoteLaunch: (launch) => installationQueue.enqueue(codexRemoteLaunchQueueKey, launch),

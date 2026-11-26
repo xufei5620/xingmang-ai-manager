@@ -18,6 +18,7 @@
 - `account-switch-sync.ts` — 切换账号时「顺手把工具也换过去」：只挑原本连着旧账号、磁盘上地址仍是旧站某条已登记线路且凭据没被改过的工具，切完回报哪些工具还开着要重开。App 与 `SavedAccounts.tsx` 共用。
 - `SavedAccounts.tsx` — 「切换账号」框：保存过的账号、切换时默认一起换走在用账号密钥的工具（自己填的密钥默认不动）、切过去才发现登录失效的给「重新登录这个账号」。文件里的 `card` 样式按它自己的注释眼下没有页面用。
 - `external-link-fallback.tsx` — 公告、协议里的链接被主进程外链白名单拦下时的出路（I12，白名单不放宽）：只认 http(s) 且不带账号密码段的地址，复制给用户自己去浏览器打开；只看主进程给的错误码，不比对文案。
+- `markdown-view.tsx` / `markdown-renderer.tsx` — 公告、用户协议和隐私政策的 Markdown 排版（总单 77，R9）：react-markdown 连带 remark / micromark 约 150KB 不进首屏包，`MarkdownView` 打开那个框时才用 `import()` 读 `markdown-renderer.tsx`（框一开就 `preloadMarkdown()`，跟读内容并着走）；读不进来时退成原文照排，不让整个界面掉进出错页。`markdown-renderer.tsx` 别处不许静态引，`first-screen-imports.test.ts` 钉住 react-markdown、remark-gfm 只能由按需加载的那几块静态引；客服二维码库 qrcode 留在首屏（欢迎页首屏就要那张图，改成按需加载拖慢过 Mac 开发版开机，见 `features/app/useSupportContact.ts`）。聊天页自己用 react-markdown，它整页本来就懒加载，不走这里。
 - `LocalAvatar.tsx` / `local-avatar.ts` — 本机头像：选图、裁剪、压成 256 见方的 PNG 按账号存进 localStorage；保存前比对的是最后一次真正上屏的账号，并发渲染被丢弃时也不会存到别的账号上。
 - `AccountFilters.tsx` — 用量账单、异步任务那种「常驻几个框 + 展开筛选」的筛选条，以及展开按钮上「已生效几个」的计数。
 - `background-work.ts` — 「手上有事」登记处：聊天在生成、视频在做、工具在装、登录后同步密钥这几处用 `useBackgroundWork` 登记，窗口缩托盘久了主进程要关界面省内存前看它（`electron/renderer-release.ts`）。
@@ -32,15 +33,17 @@
 - `features/feedback/FeedbackPage.tsx` — 反馈与客服（`FeedbackPage`：留言反馈、运行日志、复制/导出反馈报告，右边的「找客服」卡）。
 - `features/settings/SettingsPage.tsx` — 设置页（`SettingsPage`：外观显示、启动关闭、工具管理、网络加速、消息通知、备份迁移、隐私数据、版本更新八组，左栏搜索设置和快捷键弹窗）。
 - `business-actions.ts` — 各业务页共用的 `BusinessActions` 参数类型，连同装工具的结果、「找客服」卡、点名要落的反馈页签几个类型（只有类型）。
-- `features/tools/install-result.ts` — 装工具那几句结果、首页那份任务算不算这一行在装、「安装指南」落教程哪一章；检查页和扩展三页都用（扩展页经 `pages-maintenance` 拿，拆之前就这样）。
-- `pages-management.tsx` — 只做转出（#1070 第 11 步拆开）：记录页、扩展三页和它们共用的两个文件都搬了出去（下面四条），原来从这里 import 的地方（`pages-business.tsx`、`pages-featured.tsx`、测试）不用改。
+- `features/tools/install-result.ts` — 装工具那几句结果、首页那份任务算不算这一行在装、「安装指南」落教程哪一章；检查页用（`pages-maintenance` 照旧转出）。
+- `pages-management.tsx` — 只做转出（#1070 第 11 步拆开）：现在只转出记录页。原来还转出扩展三页和它们共用的那一份，0.2.25 合成「插件」页以后旧页删了，共用的直接从 `features/extensions/extensions-common.tsx` 拿。
 - `features/sessions/SessionsPage.tsx` — 记录页（`SessionsPage`：各工具会话、接着聊、归档）。
-- `features/extensions/ExtensionsPage.tsx` — 扩展三页（`ExtensionsPage`：外接工具 MCP、技能、插件）：分得清「没有可装的」和「官方市场还没加进来」，Codex 插件目录由星芒代下；安装一律走主进程既有通道。下线的 Gemini 不列。
-- `features/extensions/extensions-common.tsx` — 扩展三页和「星芒精选」页共用的判断、解析和卡片：列表怎么分组、每一行能点什么、添加连接时的检查与解析、要 Python 或 uv 时那句提示、精选条目的卡片和详情。
+- `features/extensions/PluginsHub.tsx` — 「插件」页（0.2.25 精选、外接工具、技能、插件合成一页，侧栏「插件」）：左边「插件」「技能」和「已安装」清单，右边「推荐」「自己加的」，点开一条看每家装没装、开关、移除；Codex 插件目录由星芒代下。装、卸、启停全走主进程既有通道，没有新通道。老页面名（featured / mcp / skills / plugins）是它的别名，落哪一栏经 `features/app/extension-tool-intent.ts` 带过来。
+- `features/extensions/PluginsHubDialogs.tsx` — 「插件」页的安装框（一次装进勾上的几家）、技能「从文件夹导入」、「添加插件」先问装进哪一家。
+- `features/extensions/plugins-hub-model.ts` — 「插件」页的纯函数：三家列表按「种类 + 名字」合成一条、分组（常用、写代码、Claude 官方、GPT 官方、自己加的）、每家是装了 / 能装 / 没装工具 / 只有别家版。
+- `features/extensions/ExtensionAddDialog.tsx` — 自定义连接、添加插件、添加插件市场那张表（名称检查、粘贴整段配置、Grok 插件先问信任）。
+- `features/extensions/extensions-common.tsx` — 「插件」页和它几个对话框共用的判断与解析：官方市场要不要提醒、每一行能点什么、添加连接时的检查与解析、要 Python 或 uv 时那句提示、精选条目的详情。
 - `features/extensions/mcp-paste.ts` — 「自定义连接」里粘贴框的识别：提供方给的整段配置（各家 JSON、Codex / Grok 的 TOML 片段、一行命令、地址、`claude mcp add …`）认成本地程序 / 网络服务，替他填表、点名还是示例文字的几项。只认不写，提交照旧走 `submitMcpInstall`。
-- `features/tools/provider-options.ts` — 记录页和扩展三页共用的工具选单：认不认这个工具（下线的 Gemini 不认）、按导航次序的选项、编号换名字。
+- `features/tools/provider-options.ts` — 记录页和「插件」页共用的工具选单：认不认这个工具（下线的 Gemini 不认）、按导航次序的选项、编号换名字。
 - `pages-account.tsx` — 个人中心（`AccountPage`）：账号概览、充值订阅、用量账单、密钥管理（含「配置到工具」写 Key）、账号安全、邀请返利六个页签的装配；下线的 Gemini 不替它写 Key、不列它的额度。
-- `pages-featured.tsx` — 「星芒精选」页：把随包精选清单摆成卡片，一次装进几个工具；装法和扩展页底下的精选是同一条路（不另开通道，主进程校验照样过一遍）。
 
 ## features/tools/ 首页、工具卡片与写 Key 链
 
@@ -51,6 +54,7 @@
 - `features/tools/model.ts` — 工具的展示模型：哪些工具上界面（注册表里的，不含下线的 Gemini）、装没装、来源是当前账号/官方/手填/被改过/未确认、能不能卸、能不能换成星芒装的；首页、配置框、引导的判定都从这里出。
 - `features/tools/ConfigDialog.tsx` — 工具配置弹窗（v4 第 5 批）：三张来源卡、带说明的密钥下拉、模型行、两段折叠与行内重置；保存失败先说认得出的原因、原话跟在后面。
 - `features/tools/OtherModelsDialog.tsx` — Codex「换用别家模型」小弹窗：沿用工具里现成那把当前账号密钥（主进程的沿用通道，不读出、不换 Key，I3），只问用哪个型号；来源不对时先一键改用当前账号（备份、写入、自检都在主进程）。
+- `features/tools/antigravity.ts` / `features/tools/useAntigravityActions.ts` — 首页 Antigravity 两张卡（命令行、桌面端，0.2.25 起）：这台电脑用不了（Linux，或主进程说 `supported` 为假）就一张不摆；安装进度挂在卡片上、装完那一句（设置没写成时接上主进程那句原因、用提醒色），打开时桌面端开着且拿不到这次设置就请客户先退出。两张卡不是外接客户端，不借哪个工具的密钥、不进配置弹窗，卡片定义在 `registry/clients.ts` 的 `antigravityTools`；主进程那一簇见 `main-cli-clients.md` 的 Antigravity 一节。
 - `features/tools/ExternalClientDialog.tsx` — 接入外部桌面客户端（Claude Desktop、WorkBuddy、OpenCode）的配置弹窗：借哪个工具的密钥、选哪个型号，保存后跑一次可连接自检。
 - `features/tools/OptionPicker.tsx` / `features/tools/dialog-parts.tsx` — 弹窗里的小零件：一项两行（名字 + 灰字）的下拉，让同名密钥分得开；单选卡片组；有未保存修改时先亮离开条的「取消」和离开链接。
 - `features/tools/ToolConversationsDialog.tsx` — 卡片「…」里「接着之前的对话」：这个工具每个文件夹一行，每次打开现读，不用首页那份一分钟缓存。
@@ -69,7 +73,7 @@
 - `features/tools/key-sync-failure.ts` — Key 同步失败的那半句原因：先脱敏（I13），认得出的说目录里的标题，「这个账号没开通对应工具」换成能照做的话，认不出的英文不上屏。
 - `features/tools/online-resync.ts` — 没网时打开软件、签 Key 必然失败，网络回来自动补跑一次；只回答「这次失败是不是网络或证书造成的」「要不要补跑」，不碰 React、不发请求。
 - `features/tools/backup-key.ts` — 恢复备份时标出备份里那把 Key 属于谁；主进程只给归属结论和账号名，从不给 Key 或摘要（I3）。
-- `features/tools/connection-check.ts` — 可连接检查各层的中文名、「去处理」跳哪一页、哪些工具能一键重写 Key；层名表与 `electron/connection-check.ts` 是有意重复的字面量（主进程那份依赖 node:*，I6），用 `Record` 让漏键变编译错。
+- `features/tools/connection-check.ts` — 可连接检查各层的中文名、「前往处理」跳哪一页、哪些工具能一键重写 Key；层名表与 `electron/connection-check.ts` 是有意重复的字面量（主进程那份依赖 node:*，I6），用 `Record` 让漏键变编译错。
 
 打开、模型与线路：
 - `features/tools/recent-workspaces.ts` — 首页「打开」记住的文件夹、「接着聊」该接哪条会话、新建项目文件夹的文案；读回的会话页先去掉下线的 Gemini。
@@ -116,7 +120,8 @@
 
 余额与账号读取：
 - `features/app/balance-store.ts` — **软件里唯一按时去服务端拉数据的地方**：余额在用户看着时每分钟一次、被挡住或在后台每 10 分钟一次；公告、订阅都搭它的车，每次读回的余额也交给主进程判断余额低和花费突增。连续几次本机网络失败也由它认出来，给断网横幅用。
-- `features/app/balance-context.tsx` — 余额 store 的 React 接口：按账号作用域共用一份，StrictMode 重连时等最后一个使用者离开才释放；顺带给出当前能用的订阅。
+- `features/app/balance-context.tsx` — 余额 store 的 React 接口：按账号作用域共用一份，StrictMode 重连时等最后一个使用者离开才释放；顺带给出当前能用的订阅。根组件只建 store、不订阅（R8）：要用余额的地方用 `useSharedBalanceSelector` 只挑要的那一样，或者用 `AccountBalanceSelect` 把挑出来的值交给一小块去画；别在 `App.tsx` 里订阅整份快照，那会让每分钟一次的刷新把整个界面重画一遍（`testing/app-check.mjs` 有用例数重画次数钉住）。
+- `features/app/account-money.tsx` — 侧栏账号卡、状态栏、个人中心要的那几样钱数（余额折美元、还能用几天、账号概览摘要、低余额档）在这里算，套在根组件外面；外壳放在 `AccountMoneyView` 里，余额刷新时只有外壳跟着重画，页面不动。
 - `features/app/subscription-cache.ts` — 订阅读取缓存：跟着余额读回顺带看、几分钟内读过不再读，刚买完订阅强制再读。
 - `features/app/balance-runway.ts` — 「余额还能用多久」：按近 7 天用量算、订阅剩余也算进去；侧栏账号卡、侧栏「余额低」、首页、账号概览读同一个判断。
 - 「余额低」「花费突然变多」两个系统通知已搬到主进程（`electron/balance-alerts.ts`、`electron/spend-spike.ts`），界面关着也照常提醒；界面这边只剩设置里的开关。
@@ -150,12 +155,12 @@
 - `features/app/settings-queue.ts` — 设置保存排成一队串行提交，前一次失败不挡后一次。
 - `features/app/ThemeCards.tsx` — 外观主题的三张预览卡（颜色写死，不跟当前主题变）。
 - `features/app/AppUninstall.tsx` — 设置 › 版本更新里「卸载星芒」：Mac 给真卸载按钮（可连同星芒装的命令行工具一起删，删前备份配置），Windows/Linux 只说去哪儿卸。
-- `features/app/data-transfer.ts` — 「搬到新电脑」导入导出的说法，以及把导入的设置交给保存队列的补丁。
+- `features/app/data-transfer.ts` — 「迁移到新电脑」导入导出的说法，以及把导入的设置交给保存队列的补丁。
 - `features/app/remembered-login.ts` — 设置里「记住密码」那行该做什么：已登录只剩「清掉它」，没登录去登录框；Linux 没有系统密码保管时不给勾、说清这次关掉就要重登。
 - `features/app/ui-scale-shortcut.ts` — Ctrl/⌘ 加减号与 0 缩放界面的按键识别与下一档倍率（输入法打字中不算）。
 
 跨页跳转的「先放这儿、到了再取」：
-- `features/app/settings-group-intent.ts` / `features/app/row-focus.ts` / `features/app/extension-tool-intent.ts` — 切页只传页面名，要落的设置分组、要翻到的那一行、扩展页要先选的工具先放在模块里，目标页挂上（或已挂着时经订阅收到）再取走，取走即清空。
+- `features/app/settings-group-intent.ts` / `features/app/row-focus.ts` / `features/app/extension-tool-intent.ts` — 切页只传页面名，要落的设置分组、要翻到的那一行、「插件」页要落的那一栏先放在模块里，目标页挂上（或已挂着时经订阅收到）再取走，取走即清空。
 
 杂项：
 - `features/app/api.ts` — App 启动与账号、设置、公告这一组 IPC 的封装（启动时并发读齐设置、平台能力、会话、更新状态、窗口能力）。
@@ -182,23 +187,36 @@
 
 ## features/chat/ 桌面聊天（App 懒加载）
 - `features/chat/README.md` — 聊天页约定：同账号内只藏不卸、换账号按 scope 重建并取消旧请求；记录存主进程文件，localStorage 只作旧版迁移来源；写盘前剥掉凭据与运行时负载。
-- `features/chat/ChatPage.tsx` — 聊天页：会话栏、消息区、输入框（模式、按厂商列全部分组模型的模型菜单、画图选项、加图片）；等主进程把记录读回来才显示，避免空状态抢先自动保存覆盖记录。
-- `features/chat/useChatController.ts` — 聊天控制器：打开时准备账号的全部分组（一次三个）、按模型落定计费分组、发送/停止/重试、编辑重发、图片生成与取消、断网后重发；后台刷新只重读分组列表、只准备新冒出来的分组，不换用户的模型和草稿，模型哪儿都没有了也不悄悄换。
+- `features/chat/ChatPage.tsx` — 「创作」里对话那一半（原聊天页，根节点还是 `page-chat`）：左边一列（带了 `create` 时对话、视频、画布项目混排，上面一排按类筛选）、消息区、输入框（模式、按厂商列全部分组模型的模型菜单、画图选项、加图片）；等主进程把记录读回来才显示，避免空状态抢先自动保存覆盖记录。
+- `features/chat/useChatController.ts` — 聊天控制器：打开时准备账号的全部分组（一次三个）、按模型落定计费分组、发送/停止/重试、编辑重发、图片生成与取消、「生成视频」那一档的交单、接回、停止（请求号先存再交，同时最多 3 段）、断网后重发；后台刷新只重读分组列表、只准备新冒出来的分组，不换用户的模型和草稿，模型哪儿都没有了也不悄悄换。
 - `features/chat/state.ts` — 会话与消息的数据结构和纯操作：全部分组的模型表与厂商分节（`buildChatCatalog` / `chatModelVendor`）、同一模型几个分组都有时挑哪个计费（`pickChatGroup`）、记着的模型怎么落定（`settleChatModel`）、推荐分组 `GPT`、默认对话与生图模型、每轮请求快照、失败话术（过打码表，I13）。
 - `features/chat/storage.ts` — 聊天记录读写：经主进程按对话分文件写盘、每次只重写改过的；写盘前剥掉 `sk-`、`Bearer`、`api_key=` 与 `blob:`、内联 base64（I13）；旧 localStorage 记录只读迁移，文件里有了才删旧副本。
-- `features/chat/transfer.ts` — 「搬到新电脑」里聊天记录那一半（「常用的话」跟着走）：导入前先同步卸下聊天页，免得它下一次自动保存把导入的对话又冲掉。
+- `features/chat/transfer.ts` — 「迁移到新电脑」里聊天记录那一半（「常用的话」跟着走）：导入前先同步卸下聊天页，免得它下一次自动保存把导入的对话又冲掉。
 - `features/chat/api.ts` — 聊天 IPC 的封装；只复用 `electron/ai-chat-protocol` 里无 Node 依赖的模型能力与请求校验函数，不改协议。
+- `features/chat/image-settings.ts` / `features/chat/ImageOptions.tsx` — 出图用的那一份设置和那一排选项（融合第 4 步）：前者按账号把型号、分组、尺寸、画质、分辨率记在这台电脑上（`xingmang-ui-v2:image-settings:〈账号〉`，读进来当外来的东西逐字段核），改了告诉正开着的另一边，另有「挪到这个型号收的范围里」「放到一段生成图片的对话上」两个纯函数；后者是尺寸、画质、分辨率三个菜单和自定义宽高两格。对话里「生成图片」那一档和视频工作台的出图框用的是这同一份、同一排。
+- `features/chat/video.ts` / `features/chat/ChatVideo.tsx` — 输入框第三档「生成视频」（融合第 2 步，只在「创作」页把 `create.video` 交下来时有）：前者是纯函数（交给主进程的那一单、一条视频回复收尾成什么样、重新生成时拿上一单的请求号怎么办、页面上那几行字），后者是对话里等着的那一块和出好的那一段（点了在页面里放 `xingmang-asset://video/<编号>`、「添加到视频」「另存视频」「用播放器打开」）。没加 IPC 通道，用视频工作台那几条。
 - `features/chat/ParametersDialog.tsx` / `features/chat/parameters.ts` — 每个对话自己的参数对话框：点「应用」才写回，滑块没动过就是「默认」、请求里不带这一项。
 - `features/chat/PhrasesDialog.tsx` — 输入框旁「常用」点开的「常用的话」：客户自己存的话（最多 30 条，存在这个账号的聊天记录索引里），点「填进输入框」只填不发。
 - `features/chat/links.ts` / `features/chat/math.ts` — 模型输出里的链接从不打开、只给复制，host 按 URL 解析认（`xm.solov.cc@evil.example` 显示真去处，I12 同理）；公式渲染成 MathML，不带字体文件、关掉 `\href` 等命令，CSP 不用放宽。
 - `features/chat/index.ts` — 本目录出口，App 懒加载时从这里取 `ChatPage`。
 - `features/chat/chat.css` — 聊天页样式（消息最宽 684、输入框最宽 740，悬停才露出的按钮）。
 
-## features/video-studio/ 视频剪辑（侧栏「视频剪辑」页和它的拼片引擎）
+## features/create/ 「创作」（聊天、画布、视频剪辑合成的一页，App 懒加载）
+- `features/create/CreatePage.tsx` / `create.css` — 「创作」页（侧栏 `chat` 那一项，融合第 1 步）：对话那一半仍是 `ChatPage`，这里管视频和画布项目那一半，经 `ChatPage` 的可选属性 `create` 把多出来的行、右边的面板、起始页的几张卡、只出现一次的提示和左下角的作品库（第 3 步）交给它。右边点开视频是 `VideoStudioPage`（懒加载，按视频编号 `key`，看别的东西时只藏不卸），点开画布项目是一张卡（封面、名字、时间、「打开画布」）加下面那块「此项目中的作品」（第 5 步，`CreateLibrary.tsx` 的 `CanvasProjectWorks`；项目卡在 `library.render` 里画，好拿到作品库那套按钮）；视频的改名框和删除确认也在这里。画布项目的名字、时间和封面的作品编号经 `canvas:list-projects` 读，页面每次露面、窗口每次回到前台重读一遍。作品库里点「查看画布项目」走 `showCanvasProject`：只在这一页里把右边换成那个项目；先重读一遍项目清单，项目已经不在了就提示一句、留在作品库。
+- `features/create/list.ts` — 纯函数：左边那一列怎么排（置顶的对话单独一段，其余按今天 / 昨天 / 更早，对话保持聊天页的先后、视频和画布项目按最后动过的时间插进去）、筛选那一排列哪几类、视频和画布项目按名字搜、时间怎么写。
+- `features/create/CreateLibrary.tsx` / `useCreateLibrary.ts` / `library.ts` — 主窗口的作品库（融合第 3 步）。`CreateLibrary.tsx` 是右边那一块（筛选、搜索、一格一格、「加载更多」）、点开一件的小框（大图或页面里直接放的视频）、和从别处叫出来的选择框 `LibraryPicker`（镜头上的「从作品库选图」「使用已有片段」、起始页第三张卡）；`useCreateLibrary.ts` 经 `library:list` 分页读当前账号的作品（主进程只列编号和时间、不读文件），页面露面、窗口回到前台、刚出完东西时再读第一页；第 5 步起主进程连画布项目里生成的一起列（每条带 `canvas`：哪个项目、是做出来的还是只是用过），`useCreateLibrary` 多传一个项目编号就只列那个项目的，`CanvasProjectWorks` / `CanvasProjectWorksView` 是项目卡下面那一块（同一套格子和点开的小框，不出「查看画布项目」）；`library.ts` 是纯函数：每件作品是哪段对话、哪条视频、哪个画布项目做出来的（`libraryEntryOrigin`：做出来的优先于只是用过的，对话和视频优先于画布）、哪些算成片、搜索时页面这边对得上的编号、标题和那行小字怎么写、作品怎么换成对话和视频工作台各自用的样子。
+- `features/create/canvas-intake.tsx` — 「添加到画布」（融合第 5 步）：对话里生成的图和作品库里的图共用的那颗按钮和选项目的小菜单 `AddToCanvasMenu`，加几个纯函数（菜单里列哪些项目、新项目叫什么、交给主进程的那一份、添加完和没添加成时说的话）。抄图在主进程（`canvas:add-project-image`），这里只交图片编号和选的项目；`CreatePage.tsx` 的 `addImageToCanvas` 一次只发一张，成了以后右下角带「打开画布」。
+- `features/create/index.ts` — 本目录出口，App 懒加载时从这里取 `CreatePage`。
+
+## features/video-studio/ 视频剪辑（「创作」里一条视频的工作台和它的拼片引擎）
 - `features/video-studio/README.md` — 页面的流程和工程怎么存；拼片引擎的约定：输入输出、编码先后、字节转移给后台线程、上限。
-- `features/video-studio/VideoStudioPage.tsx` / `video-studio.css` — 「视频剪辑」页（经 `pages-business.tsx` 懒加载）：想法、分镜、拼成一条视频三张卡；没登录、历史账号各一个空状态；要花钱的先弹确认。片段用缩略图代表，点了交给系统播放器（主窗口 CSP 不放 `media-src`）。
-- `features/video-studio/useVideoStudio.ts` — 页面的状态：读各分组的模型、写分镜、同时最多 3 段的出片队列和进度、让 AI 画镜头图（走对话页出图那条 `chat:generate-image`，停下走 `chat:cancel`）、拼片、按账号存工程和草稿箱（手上有事在跑时不换，换回来的草稿里没等到的片段照重开页面那样接回）；停下时说清哪几段已经交给服务端、照样扣费。
-- `features/video-studio/project.ts` — 纯函数：工程的形状与默认值、分镜落成镜头、排序增删、出片段的请求（Grok 给宽高、MiniMax 给画面比例；镜头选了图就带上，Grok 当第一帧、MiniMax 换成图生视频）、镜头图的多选分配、AI 画镜头图的请求（尺寸跟画面比例走，按 720p 算）和迟到结果的认领、每段剪头剪尾的可选几档（剪完至少留 1 秒）、每镜单独定的时长（换视频模型时一起挪到能出的一档）、配乐和片段原声的两路音量、草稿箱（新建、换出换进、删，最多 20 份，另存一格）、`localStorage` 存取与逐字段校验（缩略图只认作品库的地址）。
+- `features/video-studio/VideoStudioPage.tsx` / `video-studio.css` — 一条视频的工作台（由 `features/create/CreatePage.tsx` 懒加载、挂在「创作」右边）：想法、分镜、拼成一条视频三张卡，自己没有页面标题和草稿箱；没登录、历史账号、临时停用各一个空状态；要花钱的先弹确认（让 AI 画镜头图弹的是 `ShotImageDialog.tsx`）。片段用缩略图代表，点了交给系统播放器（页面里直接放的只有对话里出好的那一段，见 `features/chat/ChatVideo.tsx`）。
+- `features/video-studio/ShotImageDialog.tsx` — 「AI 生成图片」点了以后的出图框（融合第 4 步）：跟对话里「生成图片」那一档共用同一排选项（`features/chat/ImageOptions.tsx`）和同一份设置（`features/chat/image-settings.ts`），画面描述、参考图、报价和余额；点「生成图片」才把框里选的交给 `useVideoStudio` 的 `drawShotImage`。
+- `features/video-studio/useVideoStudio.ts` — 页面的状态：读各分组的模型、写分镜、同时最多 3 段的出片队列和进度、让 AI 画镜头图（走对话页出图那条 `chat:generate-image`，停下走 `chat:cancel`）、拼片；工程从外面交来的 `source` 读、往它写（开哪一条归 `useVideoStudioLibrary.ts`），点开的那一条里没等到的片段照重开页面那样接回；停下时说清哪几段已经交给服务端、照样扣费。
+- `features/video-studio/library.ts` / `useVideoStudioLibrary.ts` — 这个账号做过的视频，一条一个文件（主进程 `video-studio-project-store.ts`）：前者是纯函数（文件内容、名字、排序、0.2.24 留在 localStorage 里的草稿怎么抄成文件、抄完怎么核对），后者是读、攒 400 毫秒一批写、紧急时立刻写、改名、删、从工作台外面整份换掉（`replace`：对话里的一段视频「添加到视频」时用，换版本号让开着的工作台重新读、旧的那份不再能写），和「现在开着哪一条、它手上有事时不换」。
+- `features/video-studio/transfer.ts` — 设置页「迁移到新电脑」里的视频那一半：导出带哪几条（读得出来的，文件原样），导入时编号相同、内容一样的跳过，内容不同的另存一份、名称加「（导入）」，本机的不改；最多 200 条，放不下的报数。`library.ts` 的 `runVideoStudioImport` 让导入期间重新挂上的「创作」等它写完再读。
+- `features/video-studio/clip.ts` — 纯函数：存着的一段视频怎么读回来（镜头和对话里出的视频共用，缩略图按编号换成现在的版本）、页面里直接放用的地址。
+- `features/video-studio/project.ts` — 纯函数：工程的形状与默认值、分镜落成镜头、排序增删、出片段的请求（Grok 给宽高、MiniMax 给画面比例；镜头选了图就带上，Grok 当第一帧、MiniMax 换成图生视频）、镜头图的多选分配、AI 画镜头图的请求（写法同对话里出图；出图框打开时用哪个型号、尺寸怎么跟画面比例走、哪些往共用的那一份里记）和迟到结果的认领、每段剪头剪尾的可选几档（剪完至少留 1 秒）、每镜单独定的时长（换视频模型时一起挪到能出的一档）、配乐和片段原声的两路音量、序列化与逐字段校验（缩略图只认作品库的地址）、0.2.24 那两格 `localStorage`（手头一条、草稿箱最多 20 份）的只读读法；镜头上挂一段作品库里现成的片段（`borrowed`：不用生成、总时长按片段自己的长度算，`assignVideoStudioShotClip` / `removeVideoStudioShotClip`），拿几段现成片段新开一条视频（`createVideoStudioProjectFromClips`）。
 - `features/video-studio/compose-client.ts` — 页面这一头：`composeInVideoStudioWorker` 每次新开一个后台线程拼片，取消就直接关掉线程；回包按白名单读。
 - `features/video-studio/compose-worker.ts` — 后台线程本身，一个线程只拼一次。
 - `features/video-studio/compose.ts` — 用 mediabunny（MPL-2.0）读片段、逐帧画到 OffscreenCanvas 上烧字幕、WebCodecs 编码、写 MP4；画面一段接一段、每段画完接这一段的声音。
@@ -233,12 +251,12 @@
 ## features/settings/ 与 features/tutorial/
 - `features/settings/VersionCard.tsx` — 设置 › 版本更新最上面的版本卡：当前版本、更新内容、下载进度与主按钮，撤回、要管理员密码、磁盘不够、失败几种提示；Windows 授权窗、Mac 钥匙串、Linux 系统安装窗口各有提前说明。
 - `features/settings/BackupCard.tsx` — 设置 › 备份迁移的备份列表、预览与恢复，恢复后提醒回首页看或重开工具；下线的 Gemini 不列。
-- `features/settings/codex-remote/CodexRemoteCard.tsx` — 设置 › 工具管理的「手机遥控 Codex」整卡：干活的文件夹（YF-19 起能加几个，`WorkspaceRow` 一个一行、正在用的标出来、别的能「用这个」「移除」）、每个渠道一块（凭据、打开遥控、配对码与绑定的人）；`CodexRemotePanel` 只管按快照摆，取数和操作在外层。「干活的文件夹」上面的「最近一次」（YF-13，停下这一轮 / 都拒绝）、余额不到 $1 的黄条（YF-12，余额在外层 `useRemoteLowBalance` 读）、另一个渠道登录过时没登录的那块收成一行（YF-7，`remoteChannelCollapsed`）；飞书还差几步那块的打开机器人对话二维码在 `FeishuRemoteSection.tsx`（YF-3），「怎么建飞书机器人」六步下面的「打开飞书开放平台」「看教程」也在那里（YF-4）。
+- `features/settings/codex-remote/CodexRemotePage.tsx` — 侧栏「手机遥控」一页（0.2.25 起；以前是设置 › 工具管理的整卡，目录名没改）：页头写 Codex 在干什么；「连接方式」两张可选的小卡（页签，`MethodPicker`，先选哪种按 `initialRemoteMethod`），下面只摆选中那一种的那一块（凭据、打开遥控、配对码与绑定的人）；「通用设置」卡里是干活的文件夹（YF-19 起能加几个，`WorkspaceRow`）、手机端的对话（`ConversationRow.tsx`：新对话或接着本机 Codex 已有的哪一段，「选择对话」弹出列表）、手机端使用的模型（`ModelRow`，列表跟首页 Codex「默认模型」同一份 `codexModelChoices`，第一项「与电脑端相同」）、自动打开、无消息自动关闭时间。登录的 Windows 账号本身是管理员时页头下面一条黄底提醒（`codexRemoteAdminAccountNotice`）。`CodexRemotePageView` 只管按快照摆，取数和操作在外层 `CodexRemotePage`。连接方式上面的「最近一次」（YF-13，停下这一轮 / 都拒绝）、余额不到 $1 的黄条（YF-12，余额在外层 `useRemoteLowBalance` 读）；飞书还差几步那块的打开机器人对话二维码在 `FeishuRemoteSection.tsx`（YF-3），「怎么建飞书机器人」六步下面的「打开飞书开放平台」「看教程」也在那里（YF-4）。
 - `features/settings/codex-remote/channel-sections.tsx` — 各渠道那一块的登记表（`Record<RemoteChannelId, …>`，主进程加渠道这里漏了是编译错）：标题、提示句和填凭据的组件。
 - `features/settings/codex-remote/FeishuRemoteSection.tsx` — 飞书那一块：填 App ID / App Secret（附怎么建机器人的六步，只写字不放链接），填过了只显示 App ID。
 - `features/settings/codex-remote/WeixinRemoteSection.tsx` — 微信那一块（实验功能）：黄色提醒、扫码登录 / 重新扫码，扫码弹窗（二维码图由主进程给、手机上要输数字时换成输入框）；拿二维码走卡片的 `run`，弹窗里的轮询自己管（`useLatestRequest`），登录好了靠主进程推的快照变成「已登录」。
-- `features/settings/codex-remote/remote-view.ts` — 卡上几处说法的纯函数（状态小标签、绑定的人、开关说明）和按 `revision` 取新快照。
-- `features/settings/codex-remote/useCodexRemoteActive.ts` — 外壳状态栏「手机遥控中」用的：有渠道开着就亮，点了到设置里那张卡。
+- `features/settings/codex-remote/remote-view.ts` — 页上几处说法的纯函数（状态小标签、绑定的人、开关说明）和按 `revision` 取新快照。
+- `features/settings/codex-remote/useCodexRemoteActive.ts` — 外壳状态栏「手机遥控中」用的：有渠道开着就亮，点了到「手机遥控」那一页。
 - `features/tutorial/TutorialPage.tsx` — 教程页：分类按钮与搜索、两列卡片、文章与吸顶条、「读到第几步」；顶部搜索没结果时带字进来接着搜。
 - `features/tutorial/TutorialIllustration.tsx` — 教程每一步的示意插图（用界面同款图标拼出来，不是截图），每种插图配标题与说明。
 - `features/tutorial/tutorial-progress.ts` / `features/tutorial/tutorial-search.ts` — 教程卡上的「已完成 k / n 步」（只存本机 localStorage、只进不退，不为它开主进程通道）和教程页与顶部搜索共用的分词匹配、高亮。
@@ -254,7 +272,7 @@
 - `registry/connection-routes.ts` — 连接线路的选项与保存补丁：只叫线路1/线路2，星芒账号「自动」先走线路2、历史账号先走线路1，按账号分开存，存下的值（direct / primary）不变。
 - `registry/curated-extensions.ts` — 「星芒精选」：把随包 `bundled-catalog/curated-extensions.json`（构建期内联，不要服务端、不加 IPC）收窄成类型并按页面、工具筛；安装不另开通道，免得绕过主进程对命令与参数的校验。
 - `registry/extensions.ts` — 扩展三页与精选页共用的字：这一类叫什么、各家官方怎么叫、已装列表按范围分组。
-- `registry/clients.ts` — 外接客户端的种类标签与能借用哪个工具的 Key（不含下线的 Gemini）。
+- `registry/clients.ts` — 外接客户端的种类标签与能借用哪个工具的 Key（不含下线的 Gemini）；另有首页 Antigravity 两张卡的定义 `antigravityTools`。
 - `registry/status.ts` — 各类状态牌的字和语气色（工具、运行环境、密钥、订单、任务）。
 - `registry/icons.ts` — 常用动作（打开、安装、刷新、配置……）的图标映射。
 

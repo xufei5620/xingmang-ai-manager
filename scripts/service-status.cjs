@@ -60,7 +60,7 @@ const PLATFORM_AWARE_CLIENT = '0.2.20'
 const REMOTE_SWITCH_CLIENT = '0.2.23'
 // 挂在哪一页、按钮去哪，与客户端 knownIssuePages / knownIssueActions 一致；条数上限与它的 maxKnownIssues 等一致。
 const KNOWN_ISSUE_PAGES = ['all', 'home', 'chat', 'recharge', 'settings']
-const KNOWN_ISSUE_PAGE_LABELS = { all: '每一页', home: '首页', chat: '聊天', recharge: '充值页', settings: '设置' }
+const KNOWN_ISSUE_PAGE_LABELS = { all: '每一页', home: '首页', chat: '创作（0.2.24 及以前叫聊天）', recharge: '充值页', settings: '设置' }
 const KNOWN_ISSUE_ACTIONS = ['update', 'support']
 const KNOWN_ISSUE_ACTION_LABELS = { update: '「查看更新」', support: '「找客服」' }
 const MAX_KNOWN_ISSUES = 8
@@ -78,10 +78,12 @@ const FEATURE_LABELS = {
   acceleration: '网络加速（新连接）',
   'codex-desktop-chinese': 'Codex 桌面端中文补丁',
   'claude-desktop-code-seed': '替 Claude Desktop 放程序',
+  'claude-desktop-workspace-seed': '替 Claude Desktop 放 Cowork 工作区',
 }
 const FEATURE_TOOL_LABELS = {
   claude: 'Claude Code', codex: 'Codex CLI', grok: 'Grok CLI', codexDesktop: 'Codex 桌面端',
   claudeDesktop: 'Claude Desktop', workbuddy: 'WorkBuddy', opencode: 'OpenCode',
+  antigravityCli: 'Antigravity 命令行', antigravityDesktop: 'Antigravity 桌面端',
 }
 const FEATURE_IDS = [
   ...Object.keys(FEATURE_LABELS),

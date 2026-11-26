@@ -2,6 +2,7 @@
 // 换线路定点改写要的账号信息也在这里交给 system-service，撤销时一并收回。
 // #1070 第 7 步从 ipc.ts 原样搬来：按域一个文件，ipc.ts 只管组装，各域共用的东西在 context.ts。
 import os from 'node:os'
+import { validateStandingInstructions } from '../../standing-instructions'
 import { apiKeyDigest } from '../../backups'
 import { isActiveProviderId, type ProviderId } from '../../catalog'
 import { configureManagedClis, type ManagedCliKeyStoreLike } from '../../account-cli-provisioner'
@@ -43,7 +44,7 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
       // create keys, call a model, or establish automatic overwrite consent.
       let keys: Awaited<ReturnType<ManagedCliKeyStoreLike['read']>> = []
       try { keys = await options.managedCliKeys!.read(userId) } catch { /* Unknown ownership stays protected. */ }
-      // 开机后第一次读到本账号的配置时，先把指向旧位置的提醒设置改好再报（修不好首页照旧给「修好它」）。
+      // 开机后第一次读到本账号的配置时，先把指向旧位置的提醒设置改好再报（修不好首页照旧给「立即修复」）。
       // 放在下面的会话复核之前：改的时候换了账号，这次读取照样作废。
       await service.autoRepairStaleCliHooks?.().catch(() => [])
       const current = accountService.getSessionState()
@@ -134,7 +135,7 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
   }
   registerTrustedHandler('config:answer-claude-command-confirmation', async (_event, choice: unknown) => {
     if (choice !== 'ask' && choice !== 'keep') throw new Error('回答格式错误')
-    if (!service.answerClaudeCommandConfirmation) throw new Error('这个版本还不能改这一项')
+    if (!service.answerClaudeCommandConfirmation) throw new Error('当前版本暂不支持修改此项')
     // 跟设置里两个 Claude Code 开关同一份备份：真要改 settings.json 才做，「设置 › 备份迁移」里能找回改之前的样子。
     return service.answerClaudeCommandConfirmation(choice, await claudeToggleBackup())
   })
@@ -148,7 +149,7 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
     const running = accountSourceSwitches.get(provider)
     if (running) {
       if (running.target === target) return running.promise
-      throw new Error('这个工具正在切换账号，等这次切完再试')
+      throw new Error('该工具正在切换账号，请待切换完成后重试')
     }
     const promise = switchAccountSourceOnce(provider, target)
     accountSourceSwitches.set(provider, { target, promise })
@@ -160,7 +161,7 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
   })
   registerTrustedHandler('config:repair-cli-hooks', async (_event, provider: unknown) => {
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
-    if (!service.repairCliHooks) throw new Error('这个版本还不能修提醒设置')
+    if (!service.repairCliHooks) throw new Error('当前版本暂不支持修复提醒设置')
     // 和保存配置同一份备份：「设置 › 备份迁移」里能找回改之前的样子。
     options.backupStore.create(provider, 'pre-save', undefined, await readBackupAccountContext())
     return service.repairCliHooks(provider)
@@ -173,19 +174,24 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
       try {
         options.backupStore.create('claude', 'pre-save', undefined, context)
       } catch {
-        throw new Error('没能先备份 Claude Code 的配置，这次没有改')
+        throw new Error('未能先备份 Claude Code 的配置，本次未修改')
       }
     }
   }
   registerTrustedHandler('config:set-claude-write-boundary', async (_event, enabled: unknown) => {
     if (typeof enabled !== 'boolean') throw new Error('开关格式错误')
-    if (!service.setClaudeWriteBoundary) throw new Error('这个版本还不能改这个开关')
+    if (!service.setClaudeWriteBoundary) throw new Error('当前版本暂不支持修改此开关')
     return service.setClaudeWriteBoundary(enabled, await claudeToggleBackup())
   })
   registerTrustedHandler('config:set-claude-commit-attribution', async (_event, hidden: unknown) => {
     if (typeof hidden !== 'boolean') throw new Error('开关格式错误')
-    if (!service.setClaudeCommitAttribution) throw new Error('这个版本还不能改这个开关')
+    if (!service.setClaudeCommitAttribution) throw new Error('当前版本暂不支持修改此开关')
     return service.setClaudeCommitAttribution(hidden, await claudeToggleBackup())
+  })
+  registerTrustedHandler('config:save-standing-instructions', async (_event, text: unknown) => {
+    const instructions = validateStandingInstructions(text)
+    if (!service.saveStandingInstructions) throw new Error('当前版本暂不支持保存长期嘱咐')
+    return service.saveStandingInstructions(instructions)
   })
   async function switchAccountSourceOnce(provider: ProviderId, target: 'account' | 'official') {
     if (target === 'account' && !accountService.getSessionState().account?.userId) throw new Error('请先登录账号，再改用当前账号')
@@ -213,7 +219,7 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
       },
       writeAccountConfig: async (id) => {
         // 工具自己读不了的配置，只更新要照着原文件改，只会报「写错了」；来源没确认时配置窗口里
-        // 又只有这一颗按钮，点不到「重置为初始状态」（第三十批跟进项）。这时改走「修好它」那一种：读不了的
+        // 又只有这一颗按钮，点不到「重置为初始状态」（第三十批跟进项）。这时改走「立即修复」那一种：读不了的
         // 那份重建，Codex 只坏了 auth.json 时 config.toml 里客户自己的设置照留（X-1）。这次切换开头已经在
         //「备份」页留过一份，切不成照样从它恢复。
         const current = service.getConfig(options.previewOnboarding).providers[id]

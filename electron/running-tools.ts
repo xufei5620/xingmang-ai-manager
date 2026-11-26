@@ -101,16 +101,16 @@ export type RunningToolsGoal = 'account' | 'official'
  * 当成没开就一字不提。都没开就是空串，调用方什么也不补。
  */
 export function describeRunningTools(report: RunningToolsReport, goal: RunningToolsGoal): string {
-  const outcome = goal === 'official' ? '换回官方账号' : '用上当前账号'
+  const outcome = goal === 'official' ? '切换回官方账号' : '使用当前账号'
   const running = report.running.map((provider) => cliCatalog[provider].name)
   if (report.codexDesktopRunning === true) running.push('Codex 桌面端')
   const unknown = report.unknown.map((provider) => cliCatalog[provider].name)
   if (report.codexDesktopRunning === null) unknown.push('Codex 桌面端')
   const sentences: string[] = []
-  if (running.length) sentences.push(`${running.join('、')} 还开着，要关掉重开才会${outcome}。`)
+  if (running.length) sentences.push(`${running.join('、')} 仍在运行，需关闭后重新打开才会${outcome}。`)
   // Mac 上没有「帮我重开」，只点关窗口桌面端还在后台跑、读不到新设置，得说清怎么算关掉（第二十九批 A）。
-  if (report.codexDesktopRunning === true && !report.canRestartCodexDesktop) sentences.push('Codex 桌面端只关窗口不算，要在它的窗口里按 ⌘Q 完全退出再打开。')
-  if (unknown.length) sentences.push(`如果 ${unknown.join('、')} 还开着，${running.length ? '也' : ''}要关掉重开才会${outcome}。`)
+  if (report.codexDesktopRunning === true && !report.canRestartCodexDesktop) sentences.push('Codex 桌面端关闭窗口不等于退出，请在其窗口中按 ⌘Q 完全退出后重新打开。')
+  if (unknown.length) sentences.push(`如 ${unknown.join('、')} 仍在运行，${running.length ? '也' : ''}需关闭后重新打开才会${outcome}。`)
   return sentences.join('')
 }
 
@@ -144,8 +144,8 @@ export interface ToolRouteRestartHint {
   grok?: 'running' | 'unknown'
 }
 
-export const toolRouteRestartHintTitle = '刚才那条连接线路连不上，已经换到另一条。'
-export const codexPayloadRestartHintTitle = 'Codex 里这个对话超过了线路1 的 100MB 上限，已为你切到线路2，请重开 Codex 后继续。'
+export const toolRouteRestartHintTitle = '当前线路无法连接，已切换至另一条线路。'
+export const codexPayloadRestartHintTitle = 'Codex 中该对话已超过线路1 的 100MB 上限，已为您切换至线路2，请重新打开 Codex 后继续。'
 
 /**
  * Codex 有个对话太大、发不出去，又没换成线路（codex-payload-limit.ts），要客户新开对话：locked = 设置里选了只用
@@ -164,14 +164,14 @@ export interface CodexPayloadNotice {
 /** 提示正文，一样一句。编辑器插件看不出开没开，换了 Codex 就一律提一句「如果…」。 */
 export function describeToolRouteRestartHint(hint: ToolRouteRestartHint): string[] {
   const sentences: string[] = []
-  if (hint.codex?.cli) sentences.push('Codex 还开着：新建对话就走新线路，已经打开的对话要退出 Codex 再打开。')
-  if (hint.codex?.desktop === 'win32') sentences.push('Codex 桌面端还开着：新建对话就走新线路，已经打开的对话要完全退出再打开。')
-  if (hint.codex?.desktop === 'darwin') sentences.push('Codex 桌面端还开着：新建对话就走新线路，已经打开的对话要按 ⌘Q 完全退出再打开。')
-  if (hint.codex) sentences.push('如果在 VS Code 等编辑器里用着 Codex，新建对话就走新线路，已经打开的对话要重新加载窗口。')
-  if (hint.gemini === 'launched') sentences.push('从星芒打开的 Gemini 窗口要关掉再打开，才会走新线路。')
-  if (hint.gemini === 'unknown') sentences.push('如果 Gemini 还开着，要关掉再打开才会走新线路。')
-  if (hint.grok === 'running') sentences.push('Grok 还开着，要退出再打开才会走新线路。')
-  if (hint.grok === 'unknown') sentences.push('如果 Grok 还开着，要退出再打开才会走新线路。')
+  if (hint.codex?.cli) sentences.push('Codex 仍在运行：新建的对话将使用新线路，已打开的对话需退出 Codex 后重新打开。')
+  if (hint.codex?.desktop === 'win32') sentences.push('Codex 桌面端仍在运行：新建的对话将使用新线路，已打开的对话需完全退出后重新打开。')
+  if (hint.codex?.desktop === 'darwin') sentences.push('Codex 桌面端仍在运行：新建的对话将使用新线路，已打开的对话需按 ⌘Q 完全退出后重新打开。')
+  if (hint.codex) sentences.push('如在 VS Code 等编辑器中使用 Codex，新建的对话将使用新线路，已打开的对话需重新加载窗口。')
+  if (hint.gemini === 'launched') sentences.push('从星芒打开的 Gemini 窗口需关闭后重新打开，才会使用新线路。')
+  if (hint.gemini === 'unknown') sentences.push('如 Gemini 仍在运行，需关闭后重新打开才会使用新线路。')
+  if (hint.grok === 'running') sentences.push('Grok 仍在运行，需退出后重新打开才会使用新线路。')
+  if (hint.grok === 'unknown') sentences.push('如 Grok 仍在运行，需退出后重新打开才会使用新线路。')
   return sentences
 }
 

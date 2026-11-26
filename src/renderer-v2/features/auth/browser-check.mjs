@@ -115,11 +115,11 @@ test('login preserves drafts through legal documents and only authenticates afte
 test('registration status read retries once, names proxy software, and explains the disabled button', async () => {
   const page = await open('scenario=register&statusFail=timeout&statusFailures=2')
   try {
-    await page.getByTestId('register-status-loading').filter({ hasText: '正在再试一次' }).waitFor()
-    await page.getByTestId('register-status-error').filter({ hasText: '开着加速器或代理软件的话先关掉' }).waitFor()
+    await page.getByTestId('register-status-loading').filter({ hasText: '正在重试' }).waitFor()
+    await page.getByTestId('register-status-error').filter({ hasText: '如开启了加速器或代理软件，请先关闭' }).waitFor()
     assert.equal(await page.evaluate(() => document.documentElement.dataset.statusSites), 'solov,solov')
     assert.equal(await page.getByTestId('register-submit').isDisabled(), true)
-    await page.getByTestId('register-submit-hint').filter({ hasText: '要先连上账号服务' }).waitFor()
+    await page.getByTestId('register-submit-hint').filter({ hasText: '需连接账号服务后才能' }).waitFor()
     await page.getByTestId('register-status-retry').click()
     await page.getByTestId('register-send-code').waitFor()
     assert.equal(await page.getByTestId('register-submit').isDisabled(), false)
@@ -130,7 +130,7 @@ test('registration status read retries once, names proxy software, and explains 
 test('registration status read says the computer is offline and reloads when the network returns', async () => {
   const page = await open('scenario=register&statusFail=offline')
   try {
-    await page.getByTestId('register-status-error').filter({ hasText: '没连上网' }).waitFor()
+    await page.getByTestId('register-status-error').filter({ hasText: '网络未连接' }).waitFor()
     assert.equal(await page.evaluate(() => document.documentElement.dataset.statusSites), 'solov')
     await page.evaluate(() => window.dispatchEvent(new Event('online')))
     await page.getByTestId('register-send-code').waitFor()
@@ -200,7 +200,7 @@ test('recovery validates reset links and keeps the generated password available 
     const recorded = await calls(page)
     assert.deepEqual(recorded.find((item) => item.method === 'reset').input, { email: 'person@gmail.com', token: 'one+two', siteId: 'solov' })
     assert.deepEqual(recorded.find((item) => item.method === 'login').input, { username: 'person@gmail.com', password: 'new-test-password', siteId: 'solov' })
-    assert.equal(recorded.find((item) => item.method === 'notice').input, '已用临时密码登录，记得改成自己的密码')
+    assert.equal(recorded.find((item) => item.method === 'notice').input, '已使用临时密码登录，请及时修改密码')
   } finally { await page.close() }
 })
 
@@ -269,7 +269,7 @@ test('recovery shows the temporary password when the change fails after signing 
     await page.getByTestId('forgot-set-submit').click()
     await page.getByTestId('forgot-new-password').waitFor()
     assert.equal(await page.getByTestId('forgot-new-password').inputValue(), 'new-test-password')
-    await page.getByTestId('auth-message').filter({ hasText: '新密码没设上' }).waitFor()
+    await page.getByTestId('auth-message').filter({ hasText: '新密码设置失败' }).waitFor()
     assert.equal(await page.getByTestId('forgot-finish').count(), 0)
     assert.equal(await page.getByTestId('forgot-back-login').count(), 0)
     // 说不清是什么错，先拿新密码试登一次：登不上，才说新密码没设上。
@@ -281,7 +281,7 @@ test('recovery shows the temporary password when the change fails after signing 
     const recorded = await calls(page)
     assert.deepEqual(recorded.map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password', 'login', 'remember', 'authenticated', 'notice'])
     assert.equal(recorded.find((item) => item.method === 'remember').input, null)
-    assert.equal(recorded.find((item) => item.method === 'notice').input, '已用临时密码登录，记得改成自己的密码')
+    assert.equal(recorded.find((item) => item.method === 'notice').input, '已使用临时密码登录，请及时修改密码')
   } finally { await page.close() }
 })
 
@@ -313,12 +313,12 @@ test('recovery takes a refusal the server spelled out at its word, and continuin
     await page.getByTestId('forgot-set-confirm').fill('my-own-password')
     await page.getByTestId('forgot-set-submit').click()
     await page.getByTestId('forgot-continue').waitFor()
-    await page.getByTestId('auth-message').filter({ hasText: '已经用下面这个临时密码登录了' }).waitFor()
+    await page.getByTestId('auth-message').filter({ hasText: '已使用以下临时密码登录' }).waitFor()
     assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password'])
     await page.evaluate(() => window.authHarness.endSession())
     await page.getByTestId('forgot-continue').click()
     await page.getByTestId('forgot-finish').waitFor()
-    await page.getByTestId('auth-message').filter({ hasText: '复制它去登录' }).waitFor()
+    await page.getByTestId('auth-message').filter({ hasText: '请复制后登录' }).waitFor()
     assert.equal(await page.getByTestId('forgot-new-password').inputValue(), 'new-test-password')
     assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password'])
     await page.getByTestId('forgot-finish').click()
@@ -326,7 +326,7 @@ test('recovery takes a refusal the server spelled out at its word, and continuin
     const recorded = await calls(page)
     assert.deepEqual(recorded.map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password', 'login', 'remember', 'authenticated', 'notice'])
     assert.equal(recorded.at(-4).input.password, 'new-test-password')
-    assert.equal(recorded.find((item) => item.method === 'notice').input, '已用临时密码登录，记得改成自己的密码')
+    assert.equal(recorded.find((item) => item.method === 'notice').input, '已使用临时密码登录，请及时修改密码')
   } finally { await page.close() }
 })
 
@@ -339,7 +339,7 @@ test('recovery remembers nothing and hands over to the login form when it cannot
     await page.getByTestId('forgot-remember').check()
     await page.getByTestId('forgot-set-submit').click()
     await page.getByTestId('login-dialog').waitFor()
-    await page.getByTestId('auth-message').filter({ hasText: '没能确认新密码有没有设上' }).waitFor()
+    await page.getByTestId('auth-message').filter({ hasText: '无法确认新密码是否生效' }).waitFor()
     await page.getByTestId('auth-error').waitFor()
     assert.equal(await page.getByTestId('login-account').inputValue(), 'person@example.test')
     assert.equal(await page.getByTestId('login-password').inputValue(), 'my-own-password')
@@ -376,7 +376,7 @@ test('login stays in the dialog with the password kept when the main process is 
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('login-remember').check()
     await page.getByTestId('login-submit').click()
-    await page.getByTestId('auth-message').filter({ hasText: '刚才的登录没有保持住' }).waitFor()
+    await page.getByTestId('auth-message').filter({ hasText: '登录状态未能保持' }).waitFor()
     assert.equal(await page.getByTestId('login-password').inputValue(), 'fixture-password')
     assert.deepEqual((await calls(page)).map((item) => item.method), ['login'])
   } finally { await page.close() }
@@ -391,7 +391,7 @@ test('recovery falls back to the temporary password and the login page when sign
     await page.getByTestId('forgot-set-submit').click()
     await page.getByTestId('forgot-new-password').waitFor()
     await page.getByTestId('auth-error').waitFor()
-    await page.getByTestId('auth-message').filter({ hasText: '复制它去登录' }).waitFor()
+    await page.getByTestId('auth-message').filter({ hasText: '请复制后登录' }).waitFor()
     assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset', 'login'])
     // 「用临时密码登录」再试一次还是没登上：退回登录框，账号和临时密码都已填好，红字跟过去。
     await page.getByTestId('forgot-finish').click()
@@ -428,7 +428,7 @@ test('recovery on an account with two-step verification asks for the code before
 test('chat guide keeps all four steps and never installs a runtime or tool', async () => {
   const page = await open('scenario=guide&loggedOut=1')
   try {
-    // 四个工具（Gemini CLI 已下线，不再列）加「先在星芒里聊天」「做图、做视频」。
+    // 四个工具（Gemini CLI 已下线，不再列）加「在星芒中直接提问」「生成图片和视频」。
     assert.equal(await page.locator('input[type=radio]').count(), 6)
     assert.equal(await page.getByTestId('guide-route-gemini').count(), 0)
     assert.equal(await page.getByText('Gemini').count(), 0)
@@ -454,11 +454,11 @@ test('chat guide keeps all four steps and never installs a runtime or tool', asy
 test('the images-and-videos choice installs nothing and finishes on the video page once signed in', async () => {
   const page = await open('scenario=guide&loggedOut=1')
   try {
-    // 排在「先在星芒里聊天」后面，是最后一项。
+    // 排在「在星芒中直接提问」后面，是最后一项。
     assert.equal(await page.locator('input[type=radio]').last().getAttribute('value'), 'create')
     const choice = page.locator('.auth-guide-choice').filter({ has: page.getByTestId('guide-route-create') })
-    assert.equal(await choice.locator('strong').innerText(), '做图、做视频')
-    assert.match(await choice.innerText(), /什么都不用装，用画布和视频剪辑/)
+    assert.equal(await choice.locator('strong').innerText(), '生成图片和视频')
+    assert.match(await choice.innerText(), /无需安装，在「创作」中使用画布和视频/)
     await page.getByTestId('guide-route-create').check()
     await page.getByTestId('guide-next').click()
     // 没登录先去登录；登好了不再停在哪一步，直接走完、进视频剪辑页。
@@ -534,7 +534,7 @@ test('a key from another site switches to the signed-in account in one click and
     assert.equal((await page.getByTestId('guide-switch-account').textContent())?.trim(), '改用 peaker')
     await page.getByTestId('guide-switch-account').click()
     await page.waitForFunction(() => document.querySelector('[data-testid="start-guide"]')?.getAttribute('data-guide-step') === 'ready')
-    assert.match(await page.getByTestId('guide-switched-note').textContent() ?? '', /原来的设置已备份，在「设置 › 备份迁移」里能找回/)
+    assert.match(await page.getByTestId('guide-switched-note').textContent() ?? '', /原设置已备份，可在「设置 › 备份迁移」中恢复/)
     assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'switch'])
   } finally { await page.close() }
 })
@@ -547,7 +547,7 @@ test('a key that was not written offers resync on the connect step and moves on 
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-key-sync-failure').waitFor()
-    assert.equal(await page.getByTestId('guide-key-sync-failure').textContent(), 'Claude Code：密钥没有写进去，点「重新同步」再试')
+    assert.equal(await page.getByTestId('guide-key-sync-failure').textContent(), 'Claude Code：密钥写入失败，请点击「重新同步」')
     assert.equal((await page.getByTestId('guide-key-sync-retry').textContent())?.trim(), '重新同步')
     assert.match(await page.getByTestId('guide-key-sync-retry').getAttribute('class') ?? '', /xm-btn-primary/)
     assert.match(await page.getByTestId('guide-config').getAttribute('class') ?? '', /xm-btn-secondary/)
@@ -588,7 +588,7 @@ test('a failed switch keeps the step and offers the matching way out', async () 
   } finally { await page.close() }
 })
 
-// 已知29：写不进配置文件时不再叫人去查安装目录。出口按「写不进」那一类走，D14 起是「找客服」。
+// 已知29：写不进配置文件时不再叫人去查安装目录。出口按「写不进」那一类走，D14 起是「联系客服」。
 test('a switch that cannot write the config file says what to close and offers support', async () => {
   const page = await open('scenario=guide&installed=1&runtime=1&unknown=1&switchable=1&switchDenied=1')
   try {
@@ -598,36 +598,36 @@ test('a switch that cannot write the config file says what to close and offers s
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-switch-account').click()
     await page.getByTestId('guide-error').waitFor()
-    assert.equal(await page.getByTestId('guide-error').textContent(), '改用当前账号没有成功：写不进配置文件。常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口后点「再试一次」，还不行就点「复制给客服」发给客服。')
-    assert.equal((await page.getByTestId('guide-retry').textContent())?.trim(), '再试一次')
+    assert.equal(await page.getByTestId('guide-error').textContent(), '改用当前账号失败：无法写入配置文件。通常是安全软件拦截或文件被其他程序占用。请关闭正在使用该工具的窗口后点击「重试」，如仍失败，请点击「复制给客服」并发送给客服。')
+    assert.equal((await page.getByTestId('guide-retry').textContent())?.trim(), '重试')
     assert.equal((await page.getByTestId('guide-copy-support').textContent())?.trim(), '复制给客服')
-    assert.equal((await page.getByTestId('guide-exit-support').textContent())?.trim(), '找客服')
+    assert.equal((await page.getByTestId('guide-exit-support').textContent())?.trim(), '联系客服')
     assert.equal(await page.getByTestId('guide-exit-log').count(), 0)
     const failure = JSON.parse(await page.evaluate(() => document.documentElement.dataset.guideFailure ?? '{}'))
-    assert.equal(failure.reason, '写不进配置文件')
+    assert.equal(failure.reason, '无法写入配置文件')
     assert.match(failure.detail, /EPERM/)
     assert.doesNotMatch(failure.detail, /Users/)
     await page.getByTestId('guide-copy-support').click()
-    await page.getByTestId('guide-copy-support-status').filter({ hasText: '已复制，发给客服就行' }).waitFor()
+    await page.getByTestId('guide-copy-support-status').filter({ hasText: '已复制，请发送给客服' }).waitFor()
     const copied = await page.evaluate(() => window.copiedSupport)
     assert.match(copied, /做什么：新手引导 · Codex CLI 改用当前账号/)
-    assert.match(copied, /原因：写不进配置文件/)
-    assert.doesNotMatch(copied, /写不进安装目录|Users/)
+    assert.match(copied, /原因：无法写入配置文件/)
+    assert.doesNotMatch(copied, /无法写入安装目录|Users/)
     await page.getByTestId('guide-retry').click()
     await page.locator('[data-guide-step="ready"]').waitFor()
     assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'switch', 'switch'])
   } finally { await page.close() }
 })
 
-// 第十九批 1：引导里装工具失败也要有出口。Node.js 太旧认不了证书时，「换成新版 Node.js」
-// 当主按钮，换完引导接着装刚才那个工具；换不了（Mac）时只给「找客服」这类出口。
+// 第十九批 1：引导里装工具失败也要有出口。Node.js 太旧认不了证书时，「更新 Node.js」
+// 当主按钮，换完引导接着装刚才那个工具；换不了（Mac）时只给「联系客服」这类出口。
 test('an install that fails on an outdated Node.js offers the replacement and carries on', async () => {
   const page = await open('scenario=guide&auto=1&switchable=1&certFail=1&replaceNode=1')
   try {
     await page.getByTestId('guide-route-claude').check()
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-install').click()
-    await page.getByTestId('guide-error').filter({ hasText: '点「换成新版 Node.js」，换好后星芒会接着装' }).waitFor()
+    await page.getByTestId('guide-error').filter({ hasText: '请点击「更新 Node.js」，更新后将自动继续安装' }).waitFor()
     assert.match(await page.getByTestId('guide-exit-replaceNode').getAttribute('class') ?? '', /primary/)
     await page.getByTestId('guide-exit-replaceNode').click()
     await page.locator('[data-guide-step="connect"]').waitFor()
@@ -657,19 +657,19 @@ test('an unrecognised install failure keeps the raw text and copies it for suppo
     await page.getByTestId('guide-route-claude').check()
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-install').click()
-    await page.getByTestId('guide-error').filter({ hasText: 'Claude Code 没装上（没认出是哪一类问题，原话在下面）。点「再试一次」，还不行就点「复制给客服」发给客服。' }).waitFor()
+    await page.getByTestId('guide-error').filter({ hasText: 'Claude Code 安装失败（未能识别问题类型，原始信息如下）。请点击「重试」；如仍失败，请点击「复制给客服」并发送给客服。' }).waitFor()
     const raw = page.getByTestId('guide-error-raw')
     assert.equal(await raw.getAttribute('open'), '')
-    assert.match(await raw.textContent() ?? '', /给客服看的原话.*E999/)
+    assert.match(await raw.textContent() ?? '', /原始信息（供客服查看）.*E999/)
     assert.doesNotMatch(await raw.textContent() ?? '', /abcdefghijklmnop/)
     const failure = JSON.parse(await page.evaluate(() => document.documentElement.dataset.guideFailure ?? '{}'))
     assert.equal(failure.action, '新手引导 · 安装 Claude Code')
     await page.getByTestId('guide-copy-support').click()
-    await page.getByTestId('guide-copy-support-status').filter({ hasText: '已复制，发给客服就行' }).waitFor()
+    await page.getByTestId('guide-copy-support-status').filter({ hasText: '已复制，请发送给客服' }).waitFor()
     const copied = await page.evaluate(() => window.copiedSupport)
     assert.match(copied, /^星芒AI管理工具 · 给客服的信息\n账号 peaker（ID 7）/)
     assert.match(copied, /做什么：新手引导 · 安装 Claude Code/)
-    assert.match(copied, /原因：没认出是哪一类问题，原话在下面/)
+    assert.match(copied, /原因：未能识别问题类型，原始信息如下/)
     assert.match(copied, /原话：npm ERR! code E999/)
     assert.doesNotMatch(copied, /abcdefghijklmnop/)
     await page.getByTestId('guide-retry').click()
@@ -686,7 +686,7 @@ test('a support copy that cannot reach the clipboard lays the lines out to selec
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-install').click()
     await page.getByTestId('guide-copy-support').click()
-    await page.getByTestId('guide-copy-support-status').filter({ hasText: '没能写进剪贴板，手动选中下面这几行复制就行' }).waitFor()
+    await page.getByTestId('guide-copy-support-status').filter({ hasText: '复制失败，请手动选中以下内容复制' }).waitFor()
     assert.match(await page.getByTestId('guide-copy-support-text').textContent() ?? '', /做什么：新手引导 · 安装 Claude Code/)
   } finally { await page.close() }
 })
@@ -744,7 +744,7 @@ test('command-line preparation unlocks Node then the CLI from confirmed snapshot
 })
 
 // 第十一批 2：能代装运行环境的平台上，「准备工具」这一步只剩一颗「安装」，
-// Node.js 那一行只报状态；失败时说清是哪一段没装上，并给一颗「再试一次」。
+// Node.js 那一行只报状态；失败时说清是哪一段没装上，并给一颗「重试」。
 test('a command-line tool installs with one button when the runtime can be prepared automatically', async () => {
   const page = await open('scenario=guide&auto=1&installFail=1')
   try {
@@ -755,7 +755,7 @@ test('a command-line tool installs with one button when the runtime can be prepa
     assert.equal(await page.getByTestId('guide-python').count(), 0)
     assert.equal(await page.getByTestId('guide-install').isEnabled(), true)
     await page.getByTestId('guide-install').click()
-    await page.getByTestId('guide-error').filter({ hasText: '运行环境没装上（下载超时），Claude Code 还没开始装' }).waitFor()
+    await page.getByTestId('guide-error').filter({ hasText: '运行环境安装失败（下载超时），Claude Code 尚未开始安装' }).waitFor()
     await page.getByTestId('guide-retry').click()
     // 装好之后替用户点「下一步」；还没连上，所以停在「确认连接」。
     await page.locator('[data-guide-step="connect"]').waitFor()
@@ -766,7 +766,7 @@ test('a command-line tool installs with one button when the runtime can be prepa
 })
 
 // 全面检测 Q8：「打开工具」失败时说主进程给的原因，不借登录那套「输入已保留」，
-// 并且和「安装」一样给一颗「再试一次」。
+// 并且和「安装」一样给一颗「重试」。
 test('a failed tool launch in the guide keeps the real reason and can be retried', async () => {
   const page = await open('scenario=guide&installed=1&connected=1&runtime=1&launchFail=1')
   try {
@@ -788,21 +788,21 @@ test('the setup result keeps installation, billing and first-task completion as 
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-result').waitFor()
-    assert.match(await page.getByTestId('guide-result-install').innerText(), /已装好/)
-    assert.match(await page.getByTestId('guide-result-connection').innerText(), /当前账号[\s\S]*设置已读到/)
-    assert.match(await page.getByTestId('guide-result-billing').innerText(), /花的是当前账号的余额/)
-    assert.match(await page.getByTestId('guide-result-next').innerText(), /打开后在左侧栏最上面把模式切到「Codex」，再把下面这句话发给它试试/)
+    assert.match(await page.getByTestId('guide-result-install').innerText(), /已安装/)
+    assert.match(await page.getByTestId('guide-result-connection').innerText(), /当前账号[\s\S]*已读取设置/)
+    assert.match(await page.getByTestId('guide-result-billing').innerText(), /从当前账号余额扣除/)
+    assert.match(await page.getByTestId('guide-result-next').innerText(), /打开后请在左侧栏顶部将模式切换为「Codex」，然后发送以下内容进行测试/)
     await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { window.copiedFirstTask = value } } }))
     await page.getByTestId('guide-first-task-copy').click()
     // 复制成功只弹一句短提示，框里不再留一行字。
-    await page.locator('.xm-toasts .xm-toast').filter({ hasText: '已复制，粘贴到' }).waitFor()
+    await page.locator('.xm-toasts .xm-toast').filter({ hasText: '已复制，请粘贴到' }).waitFor()
     assert.equal(await page.getByTestId('guide-first-task-copy-status').count(), 0)
     assert.equal(await page.evaluate(() => window.copiedFirstTask), await page.getByTestId('guide-first-task-prompt').innerText())
     assert.equal((await calls(page)).some((entry) => entry.method === 'launch' || entry.method === 'complete'), false)
     await page.getByTestId('guide-open-tool').click()
     await page.getByTestId('guide-error').waitFor()
     assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'ready')
-    assert.match(await page.getByTestId('guide-result-next').innerText(), /打开后在左侧栏最上面把模式切到「Codex」，再把下面这句话发给它试试/)
+    assert.match(await page.getByTestId('guide-result-next').innerText(), /打开后请在左侧栏顶部将模式切换为「Codex」，然后发送以下内容进行测试/)
     assert.equal((await calls(page)).some((entry) => entry.method === 'complete'), false)
     await page.getByTestId('guide-retry').click()
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('complete'))
@@ -814,23 +814,23 @@ test('a real backup and a verified switch appear after account switching, and a 
   try {
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-next').click()
-    assert.match(await page.getByTestId('guide-result-billing').innerText(), /可能不扣当前账号的余额/)
+    assert.match(await page.getByTestId('guide-result-billing').innerText(), /可能不从当前账号扣费/)
     await page.getByTestId('guide-switch-account').click()
     await page.locator('[data-guide-step="ready"]').waitFor()
     assert.equal(await page.getByTestId('guide-switched-note').getAttribute('data-backup-id'), 'fixture-backup')
-    assert.match(await page.getByTestId('guide-result-connection').innerText(), /当前账号 peaker[\s\S]*能连上/)
-    assert.match(await page.getByTestId('guide-switched-note').innerText(), /已改用 peaker。原来的设置已备份/)
+    assert.match(await page.getByTestId('guide-result-connection').innerText(), /当前账号 peaker[\s\S]*连接正常/)
+    assert.match(await page.getByTestId('guide-switched-note').innerText(), /已改用 peaker。原设置已备份/)
     await page.getByTestId('guide-ready-rescan').click()
     await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((entry) => entry.method === 'detect').length === 2)
     await page.evaluate(() => window.authHarness.setTool('codexDesktop', { installed: false }))
-    await page.getByTestId('guide-result-install').filter({ hasText: '还没装好' }).waitFor()
+    await page.getByTestId('guide-result-install').filter({ hasText: '尚未安装' }).waitFor()
     assert.equal(await page.getByTestId('guide-open-tool').isDisabled(), true)
     assert.equal(await page.getByTestId('guide-home').isDisabled(), true)
     assert.equal((await calls(page)).some((entry) => entry.method === 'launch'), false)
   } finally { await page.close() }
 })
 
-// 主路卡点 F3：新账号余额 $0 走完引导，「去充值」排在最底下，小屏上要往下翻才看得到。
+// 主路卡点 F3：新账号余额 $0 走完引导，「前往充值」排在最底下，小屏上要往下翻才看得到。
 test('an empty wallet puts top-up in view on the last step without scrolling', async () => {
   const page = await open('scenario=guide&installed=1&connected=1&runtime=1&switchable=1&walletEmpty=1')
   try {
@@ -838,7 +838,7 @@ test('an empty wallet puts top-up in view on the last step without scrolling', a
     await page.setViewportSize({ width: 1280, height: 620 })
     await page.getByTestId('guide-route-claude').check()
     while (await page.getByTestId('start-guide').getAttribute('data-guide-step') !== 'ready') await page.getByTestId('guide-next').click()
-    assert.equal(await page.getByTestId('guide-wallet-empty').innerText(), '当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。')
+    assert.equal(await page.getByTestId('guide-wallet-empty').innerText(), '当前账号余额为 $0，充值后方可使用 AI 工具。充值即时生效，无需重新设置。')
     const body = page.locator('.xm-dialog-body')
     assert.equal(await body.evaluate((element) => element.scrollTop), 0)
     const box = await page.getByTestId('guide-recharge-button').boundingBox()
@@ -861,9 +861,9 @@ test('an unverified switch still shows why it could not be confirmed', async () 
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-switch-account').click()
     await page.locator('[data-guide-step="ready"]').waitFor()
-    assert.match(await page.locator('.auth-guide-lead').first().innerText(), /已改用你的账号，但这次没能确认能用/)
-    assert.match(await page.getByTestId('guide-switched-note').innerText(), /当前账号余额不足，充值后就能用。原来的设置已备份/)
-    assert.match(await page.getByTestId('guide-result-connection').innerText(), /没试通/)
+    assert.match(await page.locator('.auth-guide-lead').first().innerText(), /已改用当前账号，但未能确认连接可用/)
+    assert.match(await page.getByTestId('guide-switched-note').innerText(), /当前账号余额不足，充值后就能用。原设置已备份/)
+    assert.match(await page.getByTestId('guide-result-connection').innerText(), /连接测试未通过/)
   } finally { await page.close() }
 })
 
@@ -872,13 +872,13 @@ test('official login remains pending and a denied first-task copy offers selecta
   try {
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-next').click()
-    assert.match(await page.getByTestId('guide-result-connection').innerText(), /ChatGPT 账号，还没登录/)
-    assert.match(await page.getByTestId('guide-result-billing').innerText(), /不扣当前账号的余额/)
+    assert.match(await page.getByTestId('guide-result-connection').innerText(), /ChatGPT 账号，未登录/)
+    assert.match(await page.getByTestId('guide-result-billing').innerText(), /不扣除当前账号余额/)
     assert.equal(await page.getByTestId('guide-next').isDisabled(), true)
     await page.getByTestId('guide-config').click()
     await page.getByTestId('guide-next').click()
     await page.locator('[data-guide-step="ready"]').waitFor()
-    assert.match(await page.getByTestId('guide-result-billing').innerText(), /花的是当前账号的余额/)
+    assert.match(await page.getByTestId('guide-result-billing').innerText(), /从当前账号余额扣除/)
     await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('denied') } } }))
     await page.getByTestId('guide-first-task-copy').click()
     await page.getByTestId('guide-first-task-copy-status').filter({ hasText: '手动选中' }).waitFor()
@@ -894,14 +894,14 @@ test('an old installed version is flagged with an update button that never block
     await page.getByTestId('guide-route-claude').check()
     await page.getByTestId('guide-next').click()
     await page.getByTestId('guide-update').waitFor()
-    assert.match(await page.locator('.auth-guide-lead').textContent(), /已经装好，但版本旧了，建议先点「更新」/)
+    assert.match(await page.locator('.auth-guide-lead').textContent(), /已安装，但版本较旧，建议先点击「更新」/)
     assert.match(await page.locator('.auth-guide-checklist').textContent(), /已安装 v2\.1\.42，新版是 2\.1\.277/)
     assert.equal(await page.getByTestId('guide-tool-status').textContent(), '可更新')
     assert.equal(await page.getByTestId('guide-next').isEnabled(), true)
     await page.getByTestId('guide-update').click()
-    await page.getByTestId('guide-tool-status').filter({ hasText: '已装好' }).waitFor()
+    await page.getByTestId('guide-tool-status').filter({ hasText: '已安装' }).waitFor()
     assert.equal(await page.getByTestId('guide-update').count(), 0)
-    assert.match(await page.locator('.auth-guide-checklist').textContent(), /已安装 v2\.1\.277，可以直接用/)
+    assert.match(await page.locator('.auth-guide-checklist').textContent(), /已安装 v2\.1\.277，可直接使用/)
     assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'prepare')
     assert.deepEqual(await calls(page), [{ method: 'detect' }, { method: 'install', input: { route: 'claude', version: '2.1.277' } }])
   } finally { await page.close() }
@@ -1019,20 +1019,20 @@ test('a mistyped mailbox is pointed out before the code is sent, and can still b
   try {
     await page.getByTestId('register-email').fill('123456@qq.con')
     await page.getByTestId('register-send-code').click()
-    await page.getByTestId('register-email-suggestion').filter({ hasText: '你是不是想填 123456@qq.com？' }).waitFor()
+    await page.getByTestId('register-email-suggestion').filter({ hasText: '您是否要填写 123456@qq.com？' }).waitFor()
     assert.deepEqual((await calls(page)).filter((item) => item.method === 'verification'), [])
     await page.getByTestId('register-email-fix').click()
     assert.equal(await page.getByTestId('register-email').inputValue(), '123456@qq.com')
     assert.equal(await page.getByTestId('register-email-suggestion').count(), 0)
     await page.getByTestId('register-send-code').click()
-    await page.getByTestId('auth-message').filter({ hasText: '验证码已发到 123456@qq.com。几分钟内没收到的话，看看垃圾邮件。' }).waitFor()
+    await page.getByTestId('auth-message').filter({ hasText: '验证码已发送至 123456@qq.com。如数分钟内未收到，请检查垃圾邮件。' }).waitFor()
     assert.deepEqual((await calls(page)).filter((item) => item.method === 'verification').map((item) => item.input), ['123456@qq.com'])
   } finally { await page.close() }
   const insisting = await open('scenario=register')
   try {
     await insisting.getByTestId('register-email').fill('someone@gmial.com')
     await insisting.getByTestId('register-send-code').click()
-    await insisting.getByTestId('register-email-suggestion').filter({ hasText: '再点一次「获取验证码」' }).waitFor()
+    await insisting.getByTestId('register-email-suggestion').filter({ hasText: '请再次点击「获取验证码」' }).waitFor()
     await insisting.getByTestId('register-send-code').click()
     await insisting.getByTestId('register-send-code').filter({ hasText: '秒后重发' }).waitFor()
     assert.deepEqual((await calls(insisting)).filter((item) => item.method === 'verification').map((item) => item.input), ['someone@gmial.com'])
@@ -1045,7 +1045,7 @@ test('leaving the email field points out a mistyped mailbox without sending anyt
     await page.getByTestId('register-email').fill('abc@163.co')
     assert.equal(await page.getByTestId('register-email-suggestion').count(), 0)
     await page.getByTestId('register-password').click()
-    await page.getByTestId('register-email-suggestion').filter({ hasText: '你是不是想填 abc@163.com？' }).waitFor()
+    await page.getByTestId('register-email-suggestion').filter({ hasText: '您是否要填写 abc@163.com？' }).waitFor()
     assert.deepEqual(await calls(page), [])
   } finally { await page.close() }
 })
@@ -1056,7 +1056,7 @@ test('a full-width at sign and full stop are corrected instead of rejected', asy
     await page.getByTestId('register-email').fill(' 123456＠qq。com ')
     assert.equal(await page.getByTestId('register-user').inputValue(), '123456')
     await page.getByTestId('register-send-code').click()
-    await page.getByTestId('auth-message').filter({ hasText: '验证码已发到 123456@qq.com' }).waitFor()
+    await page.getByTestId('auth-message').filter({ hasText: '验证码已发送至 123456@qq.com' }).waitFor()
     assert.equal(await page.getByTestId('register-email').inputValue(), '123456@qq.com')
     assert.equal(await page.getByText('请填写正确的邮箱', { exact: true }).count(), 0)
   } finally { await page.close() }
@@ -1089,7 +1089,7 @@ test('a taken username points at the username field instead of a generic failure
     await page.getByTestId('register-password').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('register-submit').click()
-    await page.getByText('这个用户名已经有人用了，换一个试试', { exact: true }).waitFor()
+    await page.getByText('该用户名已被占用，请更换', { exact: true }).waitFor()
     await page.waitForFunction(() => document.activeElement?.id === 'register-user')
     assert.equal(await page.getByTestId('auth-error').count(), 0)
     assert.equal(await page.getByTestId('register-password').inputValue(), 'fixture-password')
@@ -1116,7 +1116,7 @@ test('a network failure on login names proxy software and offers retry and suppo
     await page.getByTestId('login-password').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('login-submit').click()
-    await page.getByTestId('auth-error').filter({ hasText: '连不上账号服务。开着加速器或代理软件的话先关掉；还不行就换一个网络（例如手机热点）再试一次。' }).waitFor()
+    await page.getByTestId('auth-error').filter({ hasText: '无法连接账号服务。如开启了加速器或代理软件，请先关闭；如仍无法连接，请切换网络（如手机热点）后重试。' }).waitFor()
     assert.equal(await page.getByTestId('auth-exit-forgot').count(), 0)
     await page.getByTestId('auth-exit-help').click()
     assert.equal((await calls(page)).filter((item) => item.method === 'help').length, 1)
@@ -1134,7 +1134,7 @@ test('a refused Mac keychain explains the prompt and offers to reopen the app', 
     await page.getByTestId('login-password').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('login-submit').click()
-    await page.getByTestId('auth-error').filter({ hasText: 'Mac 钥匙串这次没放行，星芒读不到本机的登录信息，原来的账号都还在。点「重新打开星芒」，弹出钥匙串密码框时输入这台 Mac 的开机密码，点「始终允许」就好。一直提示密码不对的话，试试以前用过的旧开机密码。' }).waitFor()
+    await page.getByTestId('auth-error').filter({ hasText: 'Mac 钥匙串未授权，星芒无法读取本机登录信息，已保存的账号不受影响。请点击「重新打开星芒」，在钥匙串弹窗中输入本机开机密码并点击「始终允许」。如持续提示密码错误，请尝试以前使用的开机密码。' }).waitFor()
     assert.equal(await page.getByTestId('auth-exit-retry').count(), 0)
     await page.getByTestId('auth-exit-help').waitFor()
     await page.getByTestId('auth-exit-relaunch').filter({ hasText: '重新打开星芒' }).click()
@@ -1146,7 +1146,7 @@ test('a refused Mac keychain explains the prompt and offers to reopen the app', 
     await windows.getByTestId('login-password').fill('fixture-password')
     await windows.getByTestId('auth-agree').check()
     await windows.getByTestId('login-submit').click()
-    await windows.getByTestId('auth-error').filter({ hasText: '这台电脑上存的登录信息暂时读不出来，原来的没动。请完全退出星芒再打开；还不行点「找客服」。' }).waitFor()
+    await windows.getByTestId('auth-error').filter({ hasText: '暂时无法读取本机登录信息，已保存的数据不受影响。请完全退出并重新打开星芒；如仍有问题，请点击「联系客服」。' }).waitFor()
     assert.equal(await windows.getByTestId('auth-exit-relaunch').count(), 0)
     await windows.getByTestId('auth-exit-help').waitFor()
   } finally { await windows.close() }
@@ -1159,10 +1159,10 @@ test('a login without network waits for the network and then says to try again',
     await page.getByTestId('login-password').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('login-submit').click()
-    await page.getByTestId('auth-error').filter({ hasText: '这台电脑现在没连上网。连上网后再试一次。' }).waitFor()
+    await page.getByTestId('auth-error').filter({ hasText: '网络未连接，请联网后重试。' }).waitFor()
     await page.context().setOffline(true)
     await page.context().setOffline(false)
-    await page.getByTestId('auth-message').filter({ hasText: '网络回来了' }).waitFor()
+    await page.getByTestId('auth-message').filter({ hasText: '网络已恢复' }).waitFor()
     assert.equal(await page.getByTestId('auth-error').count(), 0)
     await page.getByTestId('auth-exit-retry').click()
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
@@ -1190,7 +1190,7 @@ test('a wrong password offers password recovery and registration under the red t
 })
 
 // F2：中文输入法下打出来的全角＠、全角句号，注册那边会替客户改掉，登录和找回以前不改：
-// 历史账号报「请使用注册邮箱登录」，星芒账号报账号或密码不对，点去找回又报「请填写注册时用的邮箱」。
+// 历史账号报「请使用注册邮箱登录」，星芒账号报账号或密码不对，点去找回又报「请填写注册邮箱」。
 test('a full-width at sign and full stop in a login email are corrected for both account sources (F2)', async () => {
   const page = await open()
   try {
@@ -1229,7 +1229,7 @@ test('recovery corrects a full-width email, including one carried over from the 
     await recovery.getByTestId('forgot-email').fill(' person＠example。test ')
     await recovery.getByTestId('forgot-send').click()
     await recovery.getByTestId('forgot-token').waitFor()
-    assert.equal(await recovery.getByText('请填写注册时用的邮箱', { exact: true }).count(), 0)
+    assert.equal(await recovery.getByText('请填写注册邮箱', { exact: true }).count(), 0)
     assert.deepEqual((await calls(recovery)).at(-1), { method: 'send-reset', input: { email: 'person@example.test', siteId: 'solov' } })
     await recovery.getByTestId('forgot-token').fill('a-valid-reset-token')
     await recovery.getByTestId('forgot-reset').click()
@@ -1411,7 +1411,7 @@ test('welcome tells people it does more than code in the third card', async () =
   const page = await open('scenario=welcome')
   try {
     const cards = page.locator('.auth-welcome-feature strong')
-    assert.deepEqual(await cards.allInnerTexts(), ['不用敲命令', '一个账号就够', '不止写代码'])
+    assert.deepEqual(await cards.allInnerTexts(), ['无需输入命令', '一个账号就够', '不止写代码'])
     assert.equal(await page.locator('.auth-welcome-feature').nth(2).locator('p').innerText(), '聊天、出图、画布、视频剪辑，用的是同一个账号。')
     assert.equal(await page.getByText('用量随时能对账').count(), 0)
   } finally { await page.close() }
@@ -1579,7 +1579,7 @@ test('welcome offers the theme switch in its window bar and a direct way into a 
     await theme.click()
     await page.getByTestId('welcome-history-login').click()
     assert.deepEqual((await calls(page)).map((item) => item.method), ['theme', 'history-login-entry'])
-    assert.equal(await page.locator('.auth-welcome h1').innerText(), '装好就能用的\nAI 编程工具')
+    assert.equal(await page.locator('.auth-welcome h1').innerText(), '安装即用的\nAI 编程工具')
   } finally { await page.close() }
 })
 
@@ -1674,7 +1674,7 @@ test('a current account with two-step verification finishes login with the code 
     await page.getByTestId('auth-error').filter({ hasText: '6 位数字' }).waitFor()
     await page.getByTestId('login-2fa-code').fill('111111')
     await page.keyboard.press('Enter')
-    await page.getByTestId('auth-error').filter({ hasText: '验证码不对或已过期' }).waitFor()
+    await page.getByTestId('auth-error').filter({ hasText: '验证码错误或已过期' }).waitFor()
     assert.equal(await page.getByTestId('login-2fa-code').inputValue(), '')
     await page.getByTestId('login-2fa-code').fill('123 456')
     await page.getByTestId('login-2fa-submit').click()
@@ -1698,7 +1698,7 @@ test('two-step verification offers a backup code and sends the user back to the 
     assert.equal(await page.getByTestId('login-2fa-code').getAttribute('placeholder'), '备用码')
     await page.getByTestId('login-2fa-code').fill('abcd-efgh')
     await page.getByTestId('login-2fa-submit').click()
-    await page.getByTestId('auth-error').filter({ hasText: '等太久了，请重新输入密码登录' }).waitFor()
+    await page.getByTestId('auth-error').filter({ hasText: '验证已超时，请重新输入密码登录' }).waitFor()
     await page.getByTestId('login-password').waitFor()
     assert.equal(await page.getByTestId('login-password').inputValue(), '')
     assert.equal(await page.getByTestId('login-account').inputValue(), 'totp@example.test')

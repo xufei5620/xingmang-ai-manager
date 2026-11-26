@@ -47,9 +47,12 @@ export interface StorageUsageService {
   clean(target: StorageCleanTarget): Promise<StorageCleanResult>
 }
 
-/** 卡片上面「工具配置备份」里看得到的那几份：已下线的工具和校验不过的不在那里，不数也不删。 */
+/**
+ * 「清理旧备份」数的、删的那几份：还在用的工具、校验过了的。已下线的工具不数也不删；校验不过的
+ * 在「工具配置备份」里单独一行、各自删（R2-2），这里也不数不删，免得清理时删掉客户没看过的。
+ */
 function shownBackup(backup: ConfigBackupSummary): boolean {
-  return isActiveProviderId(backup.provider)
+  return backup.valid && isActiveProviderId(backup.provider)
 }
 
 /**
@@ -76,7 +79,7 @@ export function outermostDirectories(directories: readonly string[], platform: N
 }
 
 /**
- * 「设置 › 备份迁移 › 星芒占用的空间」的主进程那一半（决定单 D100）。只在客户打开这一组时由界面问一次，
+ * 「设置 › 备份迁移 › 星芒占用空间」的主进程那一半（决定单 D100）。只在客户打开这一组时由界面问一次，
  * 不在后台常驻算；六行各问各的，快的先出来，所有读盘共用一个限流（storage-usage.ts）。
  *
  * 日志只记哪一行、多少字节、几份没删掉，不记路径和系统原话（I13）：原话里带着用户名。

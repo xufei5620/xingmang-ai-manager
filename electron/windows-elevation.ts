@@ -195,23 +195,47 @@ export async function inspectWindowsElevationCapability(
 }
 
 /**
+ * 提权装好的东西归谁，决定普通账号该往哪儿走。Node.js 是机器级 MSI，换个管理员账号装一次，
+ * 这台电脑上每个账号都能用；Codex 桌面端、Claude Desktop 走 Add-AppxPackage，只注册给装它的那个账号。
+ */
+export type WindowsElevatedInstallTarget =
+  | { kind: 'machine' }
+  | { kind: 'account'; product: string }
+
+// 「Windows 账号」而不是「当前账号」：界面上「当前账号」指的是登录星芒的那个账号。
+const standardAccountAccountStep = '请使用管理员账号登录 Windows，并在该账号中安装和使用'
+const standardAccountMachineReach = '安装后本机所有 Windows 账号均可使用'
+
+/**
  * The sentence appended when the account provably cannot elevate on its own.
  * Deliberately not an instruction to re-run the app as administrator: running
  * elevated bypasses the problem instead of fixing it, and this app is built to
  * run unelevated (I2 keeps the elevation boundary narrow on purpose).
+ *
+ * Nor is it "type an administrator's password at the prompt": both elevated
+ * installers refuse a token that belongs to another account (exit 2225), so
+ * over-the-shoulder credentials never finish the install. The old sentence sent
+ * standard users round that loop. The way out is installing from an account
+ * that is itself an administrator.
  */
-export function windowsStandardAccountAdvice(): string {
-  return '这个 Windows 账号不在管理员组，需要在授权窗口里输入一个管理员账号的密码才能继续；公司或学校的电脑请联系 IT 协助。'
+export function windowsStandardAccountAdvice(target: WindowsElevatedInstallTarget = { kind: 'machine' }): string {
+  const tail = '公司或学校的电脑请联系 IT 协助。'
+  if (target.kind === 'account') {
+    const product = /^[A-Za-z0-9]/.test(target.product) ? ` ${target.product}` : target.product
+    return `此 Windows 账号没有管理员权限，无法安装${product}。如需使用，${standardAccountAccountStep}。${tail}`
+  }
+  return `此 Windows 账号没有管理员权限，无法完成安装。请先使用管理员账号登录 Windows，并在星芒中完成 Node.js 的安装，${standardAccountMachineReach}；随后切换回此账号并点击「重试」。${tail}`
 }
 
 /** 用户在授权窗口点了「否」或直接关掉。 */
 export function windowsElevationCancelledMessage(
   subject: string,
   capability: WindowsElevationCapability = 'unknown',
+  target: WindowsElevatedInstallTarget = { kind: 'machine' },
 ): string {
   const head = `已取消管理员授权，${subject}安装未开始。`
   return capability === 'standard'
-    ? `${head}${windowsStandardAccountAdvice()}`
+    ? `${head}${windowsStandardAccountAdvice(target)}`
     : `${head}重新点击安装即可再次授权。`
 }
 
@@ -219,11 +243,16 @@ export function windowsElevationCancelledMessage(
 export function windowsElevationDeniedMessage(
   subject: string,
   capability: WindowsElevationCapability = 'unknown',
+  target: WindowsElevatedInstallTarget = { kind: 'machine' },
 ): string {
   const head = `未获得管理员权限，${subject}安装已停止。`
-  return capability === 'standard'
-    ? `${head}${windowsStandardAccountAdvice()}`
-    : `${head}请在弹出的授权窗口点击「是」；如果这台电脑用的是普通账号，需要输入一个管理员账号的密码。`
+  if (capability === 'standard') return `${head}${windowsStandardAccountAdvice(target)}`
+  // 没问出账号类型（或问出是管理员）：先叫他点「是」，再把普通账号能走通的那条路说上。
+  // 不说「输入管理员账号的密码」，理由见 windowsStandardAccountAdvice（#1321）。
+  const standard = target.kind === 'account'
+    ? standardAccountAccountStep
+    : `请先使用管理员账号登录 Windows 完成安装，${standardAccountMachineReach}`
+  return `${head}请在弹出的授权窗口中点击「是」；如本机登录的是普通账号，${standard}。`
 }
 
 export function parseWindowsTokenElevationType(value: string): WindowsTokenElevationType | null {
@@ -473,11 +502,11 @@ export function classifyWindowsExecutionProbeFailure(error: unknown): WindowsExe
 }
 
 const probeFailureDescriptions: Readonly<Record<WindowsExecutionProbeFailureReason, string>> = {
-  timeout: '确认权限这一步超过 15 秒没做完，常见于电脑较慢或刚开机',
-  'powershell-unavailable': '系统自带的命令行组件找不到或打不开',
-  blocked: '确认权限这一步被安全软件或电脑的管控策略拦下了',
-  'unexpected-output': '确认权限时系统给出的结果看不懂',
-  failed: '确认权限这一步出错了',
+  timeout: '权限确认超过 15 秒未完成，常见于电脑运行较慢或刚开机',
+  'powershell-unavailable': '系统自带的命令行组件缺失或无法打开',
+  blocked: '权限确认被安全软件或电脑的管控策略拦截',
+  'unexpected-output': '无法识别权限确认时系统返回的结果',
+  failed: '权限确认出错',
 }
 
 /** 检查页与反馈报告共用的那半句原因，面向用户，不带任何上游原文。 */
@@ -635,7 +664,7 @@ export function buildCliLaunchPlan(
 ): WindowsPowerShellLaunchPlan {
   const cliExecutable = requireWindowsLaunchValue(request.executable, 'CLI 路径')
   const cliArguments = (request.argv ?? []).map((argument) => requireWindowsLaunchValue(argument, 'CLI 参数'))
-  const workspace = requireWindowsLaunchValue(request.workspace, '工作目录')
+  const workspace = requireWindowsLaunchValue(request.workspace, '项目文件夹')
   const title = requireWindowsLaunchValue(request.title, '窗口标题')
   const powershellExecutable = requireWindowsLaunchValue(resolvedPowerShellExecutable, '系统 PowerShell 路径')
   if (!path.win32.isAbsolute(powershellExecutable)) {
@@ -791,16 +820,16 @@ export function describeWindowsCliLaunchError(error: unknown): string {
     || code === 'EPERM'
     || /access (?:is )?denied|permission denied|拒绝访问|无权访问/i.test(detail)
   ) {
-    return 'Windows 拒绝访问 PowerShell 或工作目录，请检查目录权限后重试'
+    return 'Windows 拒绝访问 PowerShell 或项目文件夹，请检查文件夹权限后重试'
   }
   if (/directory (?:name )?is invalid|cannot find.*path|找不到.*路径|目录.*(?:无效|不存在)/i.test(detail)) {
-    return '工作目录已失效或无法访问，请重新选择工作目录'
+    return '项目文件夹已失效或无法访问，请重新选择项目文件夹'
   }
   // 中文 Windows 上 PowerShell 的原话本来就是中文，照旧接上；英文的（spawn … EMFILE、英文系统的报错）和
   // 什么都没说的，只说原因已经记进运行日志：原话在 system-service.ts 的 terminal.failed 那条里（#1100 第1、4条）。
   return detail && isChineseSentence(detail)
     ? `Windows 无法启动 PowerShell：${detail}`
-    : 'Windows 没能启动 PowerShell，原因已经记进运行日志。'
+    : 'Windows 未能启动 PowerShell，原因已记录到运行日志。'
 }
 
 /** What the broker and Node reported about a launch that failed, for the log only. */
@@ -845,9 +874,9 @@ function assertAccessibleWorkspace(workspace: string): void {
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
     if (code === 'EACCES' || code === 'EPERM') {
-      throw new Error('工作目录无法访问，请检查目录权限后重试')
+      throw new Error('项目文件夹无法访问，请检查文件夹权限后重试')
     }
-    throw new Error('工作目录不存在或已失效，请重新选择')
+    throw new Error('项目文件夹不存在或已失效，请重新选择')
   }
 }
 

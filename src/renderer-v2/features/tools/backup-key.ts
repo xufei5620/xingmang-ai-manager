@@ -17,15 +17,15 @@ export function backupKeyView(backup: Pick<ConfigBackupSummary, 'keyOwnership' |
       return { tone: 'ok', label: '当前账号的密钥', restoreWarning: null }
     case 'other': {
       const name = backup.keyAccountName
-      const lead = name ? `这份备份里是账号 ${name} 的密钥` : '这份备份里的密钥不是当前账号的'
+      const lead = name ? `此备份中为账号 ${name} 的密钥` : '此备份中的密钥不属于当前账号'
       return {
         tone: 'warn',
         label: name ? `账号 ${name} 的密钥` : '不是当前账号的密钥',
-        restoreWarning: `${lead}。恢复后这个工具会改用那把密钥，用量不会记在当前账号上，那把密钥失效了还会连不上。`,
+        restoreWarning: `${lead}。恢复后该工具将改用该密钥，用量不计入当前账号，密钥失效后将无法连接。`,
       }
     }
     case 'none':
-      return { tone: 'neutral', label: '没有密钥', restoreWarning: null }
+      return { tone: 'neutral', label: '无密钥', restoreWarning: null }
     default:
       return null
   }

@@ -189,6 +189,95 @@ describe('saved session switching', () => {
   })
 })
 
+// 0.2.25 总单第 72 项（11-18 复核 D25）：账号服务等不及丢掉了这次登录，服务器却在之后登上了。
+describe('a login answered after it was abandoned', () => {
+  function revocations(fetchImpl: ReturnType<typeof harness>['fetchImpl']) {
+    return requestsTo(fetchImpl, '/api/user/auth/logout', 'POST').map(([, init]) => init?.headers as Record<string, string>)
+  }
+  function abandonable(h: ReturnType<typeof harness>, userId: number) {
+    const answer = deferred<Response>()
+    h.setHandler((pathname, init) => {
+      if (pathname === '/api/user/auth/logout') return response(null)
+      if (pathname === '/api/user/login' && JSON.parse(String(init.body)).username === String(userId)) return answer.promise
+    })
+    return answer
+  }
+
+  it('ends the late server session once with its own credentials and keeps nothing locally', async () => {
+    const h = harness()
+    const answer = abandonable(h, 1)
+    const rejected = expect(h.login(1)).rejects.toBeInstanceOf(NewApiSessionChangedError)
+    await vi.waitFor(() => expect(requestsTo(h.fetchImpl, '/api/user/login')).toHaveLength(1))
+    h.client.logout()
+    const changes = h.onSessionChange.mock.calls.length
+    answer.resolve(loginResponse(1))
+    await rejected
+    await vi.waitFor(() => expect(revocations(h.fetchImpl)).toHaveLength(1))
+    await settle()
+    expect(revocations(h.fetchImpl)).toEqual([expect.objectContaining({ Authorization: 'Bearer access-1', 'New-Api-User': '1', Cookie: 'refresh_token=cookie-1' })])
+    expect(h.client.getSessionState().authenticated).toBe(false)
+    expect(h.client.getPersistableSession()).toBeNull()
+    expect(h.onSessionChange).toHaveBeenCalledTimes(changes)
+  })
+
+  it('never ends the session that replaced it', async () => {
+    const h = harness()
+    const answer = abandonable(h, 1)
+    const rejected = expect(h.login(1)).rejects.toBeInstanceOf(NewApiSessionChangedError)
+    await vi.waitFor(() => expect(requestsTo(h.fetchImpl, '/api/user/login')).toHaveLength(1))
+    await h.login(2)
+    answer.resolve(loginResponse(1))
+    await rejected
+    await vi.waitFor(() => expect(revocations(h.fetchImpl)).toHaveLength(1))
+    await settle()
+    expect(revocations(h.fetchImpl).map((headers) => headers.Authorization)).toEqual(['Bearer access-1'])
+    expect(h.client.getSessionState().account?.userId).toBe(2)
+    expect(h.client.getPersistableSession()).toEqual(target(2))
+  })
+
+  it.each([
+    ['refused', () => response(null, { status: 401, success: false, message: '用户名或密码错误，或用户已被封禁' })],
+    ['asking for a second factor', () => response({ require_2fa: true, flow_token: 'fixture-flow', expires_at: 1_790_000_000 })],
+    ['unreadable', () => response({ user: user(1) }, { cookies: ['refresh_token=cookie-1'] })],
+  ])('sends nothing when the late answer was %s', async (_label, late) => {
+    const h = harness()
+    const answer = abandonable(h, 1)
+    const rejected = expect(h.login(1)).rejects.toBeInstanceOf(NewApiSessionChangedError)
+    await vi.waitFor(() => expect(requestsTo(h.fetchImpl, '/api/user/login')).toHaveLength(1))
+    h.client.logout()
+    answer.resolve(late())
+    await rejected
+    await settle()
+    expect(revocations(h.fetchImpl)).toEqual([])
+  })
+
+  it('does not end a login that is still the current attempt', async () => {
+    const h = harness()
+    abandonable(h, 0)
+    await h.login(1)
+    await settle()
+    expect(revocations(h.fetchImpl)).toEqual([])
+    expect(h.client.getSessionState().account?.userId).toBe(1)
+  })
+
+  it('ends a second-factor login answered after it was abandoned', async () => {
+    const h = harness()
+    const answer = deferred<Response>()
+    h.setHandler((pathname) => {
+      if (pathname === '/api/user/auth/logout') return response(null)
+      if (pathname === '/api/user/login/2fa') return answer.promise
+    })
+    const rejected = expect(h.client.completeTwoFactorLogin({ flowToken: 'fixture-flow', code: '123456' })).rejects.toBeInstanceOf(NewApiSessionChangedError)
+    await vi.waitFor(() => expect(requestsTo(h.fetchImpl, '/api/user/login/2fa')).toHaveLength(1))
+    h.client.logout()
+    answer.resolve(loginResponse(3))
+    await rejected
+    await vi.waitFor(() => expect(revocations(h.fetchImpl)).toHaveLength(1))
+    expect(revocations(h.fetchImpl)).toEqual([expect.objectContaining({ Authorization: 'Bearer access-3', 'New-Api-User': '3', Cookie: 'refresh_token=cookie-3' })])
+    expect(h.client.getSessionState().authenticated).toBe(false)
+  })
+})
+
 describe('session ownership of asynchronous responses', () => {
   it('retains rotated cookies after a silent-refresh business retry fails', async () => {
     const h = harness()

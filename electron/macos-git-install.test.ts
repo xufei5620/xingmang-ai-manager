@@ -60,7 +60,7 @@ describe('macOS Git install through the Command Line Tools installer', () => {
 
     await expect(requestMacCommandLineToolsInstall(async () => {
       throw exitError('something else')
-    })).rejects.toThrow('没能打开苹果的安装窗口')
+    })).rejects.toThrow('未能打开系统安装窗口')
   })
 
   it('keeps what xcode-select said as the cause when the installer window does not open', async () => {
@@ -111,7 +111,7 @@ describe('macOS Git install through the Command Line Tools installer', () => {
     for (const outcome of ['installed', 'cancelled', 'unconfirmed', 'timed-out'] as MacGitInstallWaitOutcome[]) {
       expect(macGitInstallOutcomeMessage(outcome)).not.toMatch(/终端|xcode|brew|PATH|命令行开发者工具/i)
     }
-    expect(macGitInstallOutcomeMessage('cancelled')).toBe('没有装 Git。需要时再点一次「安装 Git」就行。')
+    expect(macGitInstallOutcomeMessage('cancelled')).toBe('未安装 Git。如有需要，请再次点击「安装 Git」。')
   })
 })
 
@@ -168,7 +168,7 @@ describe('installMacGitRuntime', () => {
       version: null,
       architecture: 'x64',
       pathRefreshRequired: false,
-      message: '没有装 Git。需要时再点一次「安装 Git」就行。',
+      message: '未安装 Git。如有需要，请再次点击「安装 Git」。',
     })
     const pending = dependencies({ wait: async () => 'timed-out' })
     await expect(installMacGitRuntime(pending.deps, 'x64')).resolves.toMatchObject({ installed: false, action: 'pending' })
@@ -176,7 +176,7 @@ describe('installMacGitRuntime', () => {
 
   it('points at the Xcode agreement instead of opening a window that would not appear', async () => {
     const { deps, calls } = dependencies({ inspectShim: async () => 'license-pending' })
-    await expect(installMacGitRuntime(deps, 'arm64')).rejects.toThrow('点「同意」')
+    await expect(installMacGitRuntime(deps, 'arm64')).rejects.toThrow('点击「同意」')
     expect(calls).toEqual([])
   })
 

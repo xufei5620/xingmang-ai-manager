@@ -17,7 +17,7 @@ function writeClipboard(text: string): Promise<void> {
 }
 
 /**
- * 密钥管理最下面「用在别的软件里」那张卡（Q1）：地址按当前账号给（星芒账号 xm，历史账号 api），
+ * 密钥管理最下面「在其他软件中使用」那张卡（Q1）：地址按当前账号给（星芒账号 xm，历史账号 api），
  * 客户改不了，也不写站点名。说明在 other-apps.ts。
  */
 export function OtherAppsCard({

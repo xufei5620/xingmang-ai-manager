@@ -2,14 +2,17 @@ import { AI_CHAT_PHRASE_LIMITS, AI_CHAT_TEXT_FILE_LIMITS, IMAGE_SKILL_GROUP_NAME
 import { resolveMissingAiAssetMessage } from '../../../../electron/ai-asset-missing'
 import { resolveNewestModelOfFamily } from '../../../../electron/cli-model-defaults'
 import { matchNetworkFailureMessage, networkFailureMessages, networkFailureReasonForMessage } from '../../../../electron/network-failure'
-import type { AiChatAsset, AiChatErrorCode, AiChatGroupSummary, AiChatMessageInput, AiChatParametersInput, AiChatStreamEvent, AiChatTextFile } from '../../../../electron/ipc-contract'
+import type { AiChatAsset, AiChatCutOff, AiChatErrorCode, AiChatGroupSummary, AiChatMessageInput, AiChatParametersInput, AiChatStreamEvent, AiChatTextFile, AiVideoClip } from '../../../../electron/ipc-contract'
 import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
 import { matchRelayQuotaFailureMessage, relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
+import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
 import { rawErrorMessage, speaksChinese, userFacingErrorMessage } from '../../business-common'
-import { canEditImages, canReadImages, chatLimits, inspectModel, noImageEditModelMessage } from './api'
+import { canEditImages, canReadImages, canStartVideoFromImage, chatLimits, inspectModel, noImageEditModelMessage } from './api'
 import { redactPersistentChatText } from './storage'
 
-export type ChatMode = 'text' | 'image'
+// video：「生成视频」那一档（融合第 2 步）。老版本读到不认识的档当成「文本对话」。
+export type ChatMode = 'text' | 'image' | 'video'
+export type ChatVideoAspect = '16:9' | '9:16' | '1:1'
 export type MessageStatus = 'pending' | 'streaming' | 'complete' | 'canceled' | 'error'
 export interface ChatSettings {
   mode: ChatMode
@@ -20,6 +23,25 @@ export interface ChatSettings {
   size: string
   quality: 'low' | 'medium' | 'high' | 'auto'
   imageResolution: '1K' | '2K' | '4K'
+  /** 「生成视频」的画面和每段几秒；没设过就是横屏 16:9、5 秒（chatVideoAspect / chatVideoSeconds）。 */
+  videoAspect?: ChatVideoAspect
+  videoSeconds?: number
+}
+/**
+ * 对话里出的一段视频。跟图片分开放（不进 assets）：老版本把不认识的图片类型当成 png，放进去会是一张裂图；
+ * 单独一个字段，老版本只是看不到它。
+ */
+export interface ChatVideo {
+  /**
+   * 这一单的请求号。发出去之前先存下，没等到结果时一直留着：关掉软件再打开，拿它回主进程把这一段接回来，
+   * 钱已经扣了的视频不会只留在作品库里、对话里却什么都没有。出成了就去掉。
+   */
+  requestId?: string
+  clip?: AiVideoClip
+  /** 上一次提交没等到服务端的答复：可能已经扣了钱，却接不回来；再生成前要说清可能多扣一次（同视频工作台）。 */
+  unconfirmed?: boolean
+  /** 这一单交出去前主进程没能在本机记下，由页面替它记着：重开以后查不到也不能当它没发过。 */
+  unrecorded?: boolean
 }
 export interface ChatMessage {
   id: string
@@ -31,9 +53,13 @@ export interface ChatMessage {
   requestId?: string
   error?: string
   mayStillComplete?: boolean
+  /** 回答没写完就停了：到了长度上限（length）或被内容审核拦下（filtered）。只在 complete 上有。 */
+  cutOff?: AiChatCutOff
   assets?: AiChatAsset[]
   /** Text files sent with a user message: their text goes to the AI together with the message (messageWithFiles). */
   files?: AiChatTextFile[]
+  /** 「生成视频」的那条回复：生成好的片段，或者还在等的那一单。 */
+  video?: ChatVideo
   settings?: ChatSettings
 }
 // draftImages 是输入框里已经加上、还没发出去的图片；发出去以后挂在那条用户消息的 assets 上。draftFiles 同理，挂在 files 上。
@@ -56,6 +82,13 @@ export const DEFAULT_CHAT_MODEL = 'gpt-5.6-sol'
 // 分组里有 gpt-image-2.6-flare 就默认用它，没有依次 2.5-flare、gpt-image-2。
 // sunburst 慢、偏精修，不当默认，客户可以自己在下拉里挑。
 export const DEFAULT_IMAGE_MODELS = ['gpt-image-2.6-flare', 'gpt-image-2.5-flare', 'gpt-image-2'] as const
+// 出视频默认挑哪个，视频工作台也用这一份。优先 Grok：1 到 15 秒都能出、只要一句描述；MiniMax 最短 5 秒。
+// 账号里都没有就取模型表里第一个。
+export const DEFAULT_VIDEO_MODELS = ['grok-imagine-video-1.5', 'grok-imagine-video', 'minimax-h3-base', 'minimax-h3-fast', 'minimax-h3-mini'] as const
+export const DEFAULT_CHAT_VIDEO_ASPECT: ChatVideoAspect = '16:9'
+export const DEFAULT_CHAT_VIDEO_SECONDS = 5
+// 一段视频的描述最多这么多字，同视频工作台一个镜头的画面描述：「添加到视频」时原样放进镜头，不用截。
+export const CHAT_VIDEO_PROMPT_LIMIT = videoStudioPlanLimits.maximumPromptLength
 
 export function createId(): string { return crypto.randomUUID() }
 export function defaultChatSettings(): ChatSettings { return { mode: 'text', group: '', model: '', systemPrompt: '', parameters: {}, size: '1024x1024', quality: 'low', imageResolution: '1K' } }
@@ -82,6 +115,7 @@ export function resolveChatModel(models: readonly string[], remembered = '', pre
  */
 export function resolveDefaultChatModel(mode: ChatMode, models: readonly string[], remembered = ''): string {
   if (mode === 'image') return resolveChatModel(models, remembered, DEFAULT_IMAGE_MODELS)
+  if (mode === 'video') return resolveChatModel(models, remembered, DEFAULT_VIDEO_MODELS)
   const sameFamily = resolveNewestModelOfFamily(models, DEFAULT_CHAT_MODEL)
   return resolveChatModel(models, remembered, sameFamily ? [DEFAULT_CHAT_MODEL, sameFamily] : DEFAULT_CHAT_MODEL)
 }
@@ -114,7 +148,7 @@ export interface ChatGroupPreparation { phase: 'loading' | 'ready' | 'error'; mo
  * 先后照后台列分组的先后、分组里模型的先后；图片分组里的模型主进程已经按偏好排好了。
  */
 export function buildChatCatalog(groups: readonly Pick<AiChatGroupSummary, 'name'>[], preparations: Readonly<Record<string, ChatGroupPreparation | undefined>>, mode: ChatMode): ChatCatalogEntry[] {
-  const kind = mode === 'image' ? 'image' : 'chat'
+  const kind = mode === 'image' ? 'image' : mode === 'video' ? 'video' : 'chat'
   const entries = new Map<string, ChatCatalogEntry>()
   for (const group of groups) {
     const prepared = preparations[group.name]
@@ -151,7 +185,8 @@ export function pickChatGroup(candidates: readonly string[], context: ChatGroupC
   if (context.current && candidates.includes(context.current)) return context.current
   const recommended = recommendedChatGroup(context.groups, context.site)
   const imageGroup = (name: string) => imageGroupNames.has(name) || context.groups.some((group) => group.name === name && group.image === true)
-  const preferred = context.mode === 'image'
+  // 视频模型按出图的规矩挑分组：先挑图片分组，视频模型都在那里（同视频工作台）。
+  const preferred = context.mode !== 'text'
     ? candidates.find(imageGroup)
     : candidates.find((name) => name === recommended)
   if (preferred) return preferred
@@ -172,7 +207,7 @@ export function settleChatModel(settings: ChatSettings, catalog: readonly ChatCa
   const remembered = settings.model ? catalog.find((entry) => entry.model === settings.model) : undefined
   if (remembered) return pick(remembered)
   if (settings.model && context.keepMissing) return unchanged
-  const first = catalog.find((entry) => entry.model === (settings.mode === 'image' ? DEFAULT_IMAGE_MODELS[0] : DEFAULT_CHAT_MODEL))
+  const first = catalog.find((entry) => entry.model === (settings.mode === 'image' ? DEFAULT_IMAGE_MODELS[0] : settings.mode === 'video' ? DEFAULT_VIDEO_MODELS[0] : DEFAULT_CHAT_MODEL))
   if (!settled && !settings.model && first) return pick(first)
   if (!settled || !catalog.length) return unchanged
   const fallback = resolveDefaultChatModel(settings.mode, catalog.map((entry) => entry.model))
@@ -193,10 +228,26 @@ export function saveConversation(state: ChatWorkspace, conversation: Conversatio
 export function isGenerating(conversation: Conversation): boolean { return conversation.messages.some((message) => message.status === 'pending' || message.status === 'streaming') }
 // 出图那一条带着发出时的设置；换账号会把它掐掉、钱可能已经扣了，切换前要先问一句（D44）。出字的不算。
 export function isGeneratingImage(conversation: Conversation): boolean { return conversation.messages.some((message) => (message.status === 'pending' || message.status === 'streaming') && message.settings?.mode === 'image') }
+// 出视频的那一条：换账号、重启都掐不掉它（请求号存着，回来拿它接回），所以不算进上面那一问，也不算「聊天在回复」。
+export function isGeneratingVideo(conversation: Conversation): boolean { return conversation.messages.some((message) => (message.status === 'pending' || message.status === 'streaming') && Boolean(message.video)) }
+// 在回复或出图（界面一关就断的那两样），不算等视频的。
+export function isGeneratingReply(conversation: Conversation): boolean { return conversation.messages.some((message) => (message.status === 'pending' || message.status === 'streaming') && !message.video) }
 // 回复途中网断了，主进程要连着 3 分钟收不到字才停（给长思考模型留的，时限不改），这期间界面只转圈，
 // 客户以为卡死了。在那条下面说一句，让客户知道可以先停（D43）。出图的不说：停下也可能照样计费，停之前另有一问。
-export const offlineReplyNotice = '网络断了，这条回复可能接不上，可以先停止。'
-export function shouldShowOfflineReplyNotice(message: ChatMessage, offline: boolean): boolean { return offline && message.role === 'assistant' && (message.status === 'pending' || message.status === 'streaming') && message.settings?.mode !== 'image' }
+export const offlineReplyNotice = '网络已断开，本条回复可能无法继续，可先停止。'
+// 回答到了长度上限或被内容审核拦下，流照样正常收尾，以前就当成说完了，客户不知道后面还有（D10）。
+// 已经出来的字照留，只在下面说一句；接着写要客户自己发「继续」，不替他再发一次付费请求。
+export const chatCutOffNotices = {
+  length: '回答已达到单次输出长度上限，内容不完整。如需查看后续内容，请发送「继续」。',
+  lengthCap: '回答已达到「一次最多回多长」设置的上限，内容不完整。如需查看后续内容，请发送「继续」，或调大该设置后重新生成。',
+  filtered: '回答因触发内容安全审核而中止，内容不完整。请调整提问方式后重试。',
+} as const
+export function chatCutOffNotice(message: ChatMessage): string | null {
+  if (message.status !== 'complete' || !message.cutOff) return null
+  if (message.cutOff === 'filtered') return chatCutOffNotices.filtered
+  return message.settings?.parameters.maxTokens === undefined ? chatCutOffNotices.length : chatCutOffNotices.lengthCap
+}
+export function shouldShowOfflineReplyNotice(message: ChatMessage, offline: boolean): boolean { return offline && message.role === 'assistant' && (message.status === 'pending' || message.status === 'streaming') && (message.settings?.mode ?? 'text') === 'text' }
 
 // A stream chunk replaces only the conversation it belongs to, so every other
 // conversation keeps its object identity for the whole answer. Caching the
@@ -261,13 +312,13 @@ export function setConversationPinned(conversation: Conversation, pinned: boolea
   return rest
 }
 
-export const noImageModelMessage = '当前模型看不了图片，请换一个能看图的模型，或者先把图片去掉'
+export const noImageModelMessage = '当前模型不支持识别图片，请更换支持图片的模型，或先移除图片'
 // 聊天里发不出去时说的：草稿还在输入框里，横幅上给「重试」，网回来了点一下就发。
-export const offlineSendMessage = '没发出去：现在连不上网。网络恢复后点「重试」。'
+export const offlineSendMessage = '发送失败：网络未连接。请在网络恢复后点击「重试」。'
 
 // 更早消息里的图片：模型看不了图，或者一次要发的图超过上限时，就不再重复发，
 // 换成一句话，让 AI 知道那里原本有图。
-function earlierImagesNote(count: number): string { return `（这里附过 ${count} 张图片，这次没有再发给 AI）` }
+function earlierImagesNote(count: number): string { return `（此处曾附带 ${count} 张图片，本次未发送给 AI）` }
 
 // 带的文件和这条消息的字拼成一段发给 AI。每份文件前后有标记、写着文件名，AI 分得清哪段是文件、哪段是客户自己写的；
 // 只读了开头的标出来，AI 不会当成全文去总结。界面上不显示这段，客户看到的是文件卡片和自己写的字。
@@ -305,7 +356,21 @@ export function removeDraftFile(conversation: Conversation, index: number): Conv
   return withoutFiles
 }
 
-export const imageModeFilesMessage = '生成图片时带不了文件，请先把文件去掉，或者换回「文本对话」'
+export const imageModeFilesMessage = '生成图片时不支持附带文件，请先移除文件，或切换回「文本对话」'
+export const videoModeFilesMessage = '生成视频时无法附带文件，请先移除文件，或切换回「文本对话」'
+// 「生成视频」时带的图是开头图：视频从这张图动起来，只收一张。
+export const videoStartImageLimitMessage = '生成视频仅支持 1 张开头图，请先移除多余的图片'
+export const noVideoStartImageMessage = '当前模型不支持以图片生成视频，请更换模型，或先移除图片'
+/** 「生成视频」那一档的画面和时长；没设过的是横屏 16:9、5 秒。时长跟不跟得上型号由调用方按型号再挪（clampVideoStudioSeconds）。 */
+export function chatVideoAspect(settings: Pick<ChatSettings, 'videoAspect'>): ChatVideoAspect { return settings.videoAspect ?? DEFAULT_CHAT_VIDEO_ASPECT }
+export function chatVideoSeconds(settings: Pick<ChatSettings, 'videoSeconds'>): number { return settings.videoSeconds ?? DEFAULT_CHAT_VIDEO_SECONDS }
+/** 不是「文本对话」时带了文件，文件卡片下面说的那句。 */
+export function modeFilesMessage(mode: ChatMode): string { return mode === 'video' ? videoModeFilesMessage : imageModeFilesMessage }
+/** 视频描述太长时输入框下面说的那句；没超是空串。 */
+export function videoPromptLengthError(text: string): string {
+  const length = text.trim().length
+  return length > CHAT_VIDEO_PROMPT_LIMIT ? `视频描述最多 ${CHAT_VIDEO_PROMPT_LIMIT} 字，当前 ${length} 字，请删减后再发送。` : ''
+}
 /** 这个尺寸合不合型号的规矩，跟主进程 validateImageSize 同一套：按倍数算的型号，宽和高都要是整数倍、在上下限之间。 */
 export function imageSizeFits(size: string, policy: ImageSizePolicy): boolean {
   if (policy.kind === 'allow-list') return policy.values.includes(size)
@@ -353,8 +418,8 @@ function contextMessages(history: readonly ChatMessage[], settings: ChatSettings
   return messages
 }
 
-export const conversationTooLongMessage = '这段对话太长了，AI 一次读不下。点下面的按钮，你刚写的内容会搬到新对话里，模型和设置不变。'
-export const conversationReplyTooLongMessage = '这段对话里有一条回复太长，AI 读不下。点下面的按钮，你刚写的内容会搬到新对话里，模型和设置不变。'
+export const conversationTooLongMessage = '当前对话过长，超出 AI 的处理上限。点击下方按钮，已输入的内容将移至新对话，模型和设置保持不变。'
+export const conversationReplyTooLongMessage = '当前对话中有一条回复过长，超出 AI 的处理上限。点击下方按钮，已输入的内容将移至新对话，模型和设置保持不变。'
 export const LENGTH_NOTICE_RATIO = 0.7
 
 /** 看这段对话带出去的内容占了上限的几成，条数和字数哪个先到算哪个。 */
@@ -394,10 +459,10 @@ export function continueInNewConversation(state: ChatWorkspace, sourceId: string
 // 带了文件时「现在 N 字」也含文件，删字或拿掉文件都能降下来。
 export function draftLengthError(text: string, files?: readonly AiChatTextFile[]): string {
   const length = messageWithFiles(text.trim(), files).length
-  return length > chatLimits.messageLength ? `最多 ${chatLimits.messageLength} 字，现在 ${length} 字，删掉一些再发。` : ''
+  return length > chatLimits.messageLength ? `最多 ${chatLimits.messageLength} 字，当前 ${length} 字，请删减后发送。` : ''
 }
 
-export function planTurn(conversation: Conversation, input: { prompt: string; requestId: string; assistantId: string; userMessageId: string; retryId?: string; editId?: string; images?: AiChatAsset[]; files?: AiChatTextFile[] }): TurnPlan {
+export function planTurn(conversation: Conversation, input: { prompt: string; requestId: string; assistantId: string; userMessageId: string; retryId?: string; editId?: string; images?: AiChatAsset[]; files?: AiChatTextFile[]; videoUnconfirmed?: boolean }): TurnPlan {
   if (isGenerating(conversation)) throw new Error('当前对话仍在生成，请先停止或等待完成')
   let history = conversation.messages.slice()
   let settings = conversation.settings
@@ -407,7 +472,7 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
   let files: AiChatTextFile[] = []
   if (input.retryId) {
     const index = history.findIndex((message) => message.id === input.retryId && message.role === 'assistant')
-    if (index < 1) throw new Error('找不到要重新生成的回复')
+    if (index < 1) throw new Error('未找到要重新生成的回复')
     settings = history[index].settings ?? settings
     assistantId = input.retryId
     history = history.slice(0, index)
@@ -417,7 +482,7 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
     files = lastUser?.files ?? []
   } else if (input.editId) {
     const index = history.findIndex((message) => message.id === input.editId && message.role === 'user')
-    if (index < 0) throw new Error('找不到要编辑的消息')
+    if (index < 0) throw new Error('未找到要编辑的消息')
     images = history[index].assets ?? []
     files = history[index].files ?? []
     history = [...history.slice(0, index), { ...history[index], content: prompt }]
@@ -430,9 +495,14 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
   if (messageWithFiles(prompt, files).length > chatLimits.messageLength) throw new Error(`单条消息最多 ${chatLimits.messageLength} 个字符`)
   if (!settings.group || !settings.model) throw new Error('请先选择模型')
   // 生成图片时带的图是参考图，照着它改；要说清楚怎么改，光有图不够。
-  if (settings.mode === 'image' && !prompt) throw new Error('请先输入消息内容')
-  if (files.length && settings.mode === 'image') throw new Error(imageModeFilesMessage)
+  if (settings.mode !== 'text' && !prompt) throw new Error('请先输入消息内容')
+  if (files.length && settings.mode !== 'text') throw new Error(modeFilesMessage(settings.mode))
   if (images.length && settings.mode === 'image' && !canEditImages(settings.model)) throw new Error(noImageEditModelMessage)
+  if (settings.mode === 'video') {
+    if (prompt.length > CHAT_VIDEO_PROMPT_LIMIT) throw new Error(`单条视频描述最多 ${CHAT_VIDEO_PROMPT_LIMIT} 个字符`)
+    if (images.length > 1) throw new Error(videoStartImageLimitMessage)
+    if (images.length && !canStartVideoFromImage(settings.model)) throw new Error(noVideoStartImageMessage)
+  }
   if (images.length && settings.mode === 'text' && !canReadImages(settings.model)) throw new Error(noImageModelMessage)
   const messages = contextMessages(history, settings)
   // 生图只发这一句描述和参考图，前面的对话一条都不带，前文再长也不该拦它（N7）；
@@ -444,7 +514,9 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
     if (messages.length > chatLimits.messageCount || messages.reduce((total, message) => total + message.content.length, 0) > chatLimits.totalMessageLength) throw new Error(conversationTooLongMessage)
   }
   const snapshot = { ...settings, parameters: { ...settings.parameters } }
-  const assistant: ChatMessage = { id: assistantId, role: 'assistant', content: '', reasoning: '', status: 'pending', createdAt: Date.now(), requestId: input.requestId, settings: snapshot }
+  // 出视频的那条回复带着这一单的请求号（存盘时留着，见 ChatVideo）。沿用上一次结果不明的请求号重新出时，那句提醒跟着走。
+  const video: ChatVideo | undefined = settings.mode === 'video' ? { requestId: input.requestId, ...(input.videoUnconfirmed ? { unconfirmed: true } : {}) } : undefined
+  const assistant: ChatMessage = { id: assistantId, role: 'assistant', content: '', reasoning: '', status: 'pending', createdAt: Date.now(), requestId: input.requestId, settings: snapshot, ...(video ? { video } : {}) }
   const fresh = !input.retryId && !input.editId
   const title = conversation.messages.length || conversation.renamed ? conversation.title : autoConversationTitle(prompt) || autoConversationTitle(files[0]?.name ?? '') || '图片提问'
   const { draftImages: _sent, draftFiles: _sentFiles, ...rest } = conversation
@@ -456,22 +528,22 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   const message = rawErrorMessage(error)
   if (code === 'connection-timeout') return 'AI 服务响应较慢，本次等待已超时，请重试'
   // 主进程知道停下前已经发来了什么，会说清上面是不是半截、可能已经计费，原话上屏。
-  if (code === 'idle-timeout') return message || 'AI 服务太久没有返回内容，已经停下，请重试'
-  if (code === 'total-timeout') return message || '本次对话超过最长处理时间，已经停下，请重试'
+  if (code === 'idle-timeout') return message || 'AI 服务长时间未返回内容，已停止，请重试'
+  if (code === 'total-timeout') return message || '本次对话超过最长处理时间，已停止，请重试'
   // 准备分组时断网，主进程带来的是账号服务那一层说清了原因的那句话，原样上屏。
   if (code === 'network-error') return matchNetworkFailureMessage(message) ?? '无法连接 AI 服务，请检查网络后重试'
   if (code === 'stream-closed') return 'AI 服务提前结束了本次响应，请重试'
-  if (code === 'model-unavailable') return '当前模型暂时用不了，请刷新模型后重新选择'
+  if (code === 'model-unavailable') return '当前模型暂不可用，请刷新模型后重新选择'
   // 必须排在下面那几条按字面猜的正则之前：服务在维护时主进程给的话已经说清楚了，
   // 再被 /登录|密钥/ 之类撞上，就会变回「请重新登录」。
   if (code === 'service-unavailable' || networkFailureReasonForMessage(message) === 'serviceUnavailable') return networkFailureMessages.serviceUnavailable
-  if (code) return message || '本次请求没有完成，已保留内容，请稍后重试'
+  if (code) return message || '本次请求未完成，已保留内容，请稍后重试'
   // 图片文件在外面被删掉、挪走了：复制、拿去改、带着它发都不会再成，原话上屏，别叫客户重试（D37）。
   const missing = resolveMissingAiAssetMessage(message)
   if (missing) return missing
-  // 主进程在发付费请求之前试写保存位置，写不进就停下。原话里有「这次没有扣费」和
-  // 下一步怎么办，归进下面任何一类都会把这两句丢掉。
-  const unwritable = message.indexOf('保存位置写不进去')
+  // 主进程在发付费请求之前试写保存位置，写不进就停下。原话里有「本次未扣费」和
+  // 下一步怎么办，归进下面任何一类都会把这两句丢掉。开头 11-22 由「保存位置写不进去」改成「保存位置无法写入」，两种都认。
+  const unwritable = message.search(/保存位置(?:无法写入|写不进去)/)
   if (unwritable >= 0) return message.slice(unwritable)
   // 发付费请求之前还量了保存位置那块盘：剩得太少也停下，原话是装工具前查盘那句，说清哪块盘、还剩多少（D38，
   // electron/disk-space.ts 的 describeInsufficientDiskSpace）。落到下面会变成「请稍后重试」，盘没清怎么试都一样。
@@ -483,37 +555,37 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   if (/重复提交/.test(message)) return message
   // 付过钱的图存不进作品库、已经先暂存着（深查 S-1）：主进程那句说清了别重新生成、腾出空间后会自动存进去。
   // 落到最后那句「请稍后重试」，客户照做就再扣一次钱。
-  if (/先别重新生成/.test(message)) return message
+  if (/请勿重新生成|先别重新生成/.test(message)) return message
   // 出图请求根本没发出去（断网、解析不出地址、代理连不上）时，主进程按 network-failure.ts 说清了原因和下一步，
   // 原样上屏；落到下面按字面猜的几条，「先上网认证」「换个网络」这些出路就丢了（深查 W-1）。
   const network = matchNetworkFailureMessage(message)
   if (network) return network
   // 生图被服务端拦下的两句（#1101 第4条）主进程已经说清原因和下一步，原样上屏；不然会落到最后那句
   // 「请稍后重试」，被审核拦下的描述怎么重试都一样。
-  if (/参考图太大了|这次的描述或参考图没通过安全审核/.test(message)) return message
+  if (/参考图过大|本次描述或参考图未通过安全审核|参考图太大了|这次的描述或参考图没通过安全审核/.test(message)) return message
   // 主进程已经把余额不足、Key 额度上限、Key 失效分开说好了，这里原样放行；否则下面那条
   // 宽泛的「余额」正则会把「额度上限用完」又改回「请充值」。
   const quota = matchRelayQuotaFailureMessage(message)
   if (quota) return relayQuotaFailureMessages[quota]
   // 本来就是说给客户听的话原样上屏，必须排在下面按字面猜的几条前面：从没登录过时主进程说
   // 「请先登录星芒账号」，里面有「登录」两个字，以前被 /登录|密钥/ 改成「已失效，请重新登录」。
-  if (/^当前对话|^找不到要|^请先|^单条消息|^这段对话|^当前模型看不了图片|^这个模型不能照着图片改|^生成图片时带不了文件/.test(message)) return message
+  if (/^当前对话|^找不到要|^请先|^单条消息|^单条视频描述|^这段对话|^当前模型不支持识别图片|^当前模型不支持图片编辑|^当前模型不支持以图片生成视频|^生成图片时不支持附带文件|^生成视频时无法附带文件|^生成视频仅支持/.test(message)) return message
   if (/余额|额度不足|insufficient|quota|402/i.test(message)) return '账号余额或密钥额度不足，请充值后重试'
   if (/401|credential|未登录|登录|密钥|key.*失效/i.test(message)) return '当前登录或密钥已失效，请重新登录后重试'
-  if (/429|rate.limit|限流|频繁/i.test(message)) return '请求太频繁，请稍候再试'
+  if (/429|rate.limit|限流|频繁/i.test(message)) return '请求过于频繁，请稍后重试'
   if (/model.*unavailable|model.*permission|模型.*权限|模型.*不可用/i.test(message)) return '当前模型不可用，请选择其他模型后重试'
   if (/timeout|timed.?out|超时|network|连接|ECONN/i.test(message)) return '请求未完成，请检查网络后重试'
-  if (/size|尺寸/.test(message)) return '当前模型不支持这个图片尺寸，请调整后重试'
-  if (/quality|画质/.test(message)) return '当前模型不支持这个画质档位，请调整后重试'
+  if (/size|尺寸/.test(message)) return '当前模型不支持该图片尺寸，请调整后重试'
+  if (/quality|画质/.test(message)) return '当前模型不支持该画质档位，请调整后重试'
   if (/invalid.parameter|parameter|参数/.test(message)) return '参数超出可用范围，请检查后重试'
   if (/可能仍|结果不明确/.test(message)) return '请求提交结果不明确，服务端可能仍在处理，请勿立即重复提交'
   if (/cannot read images/.test(message)) return noImageModelMessage
-  return '本次请求没有完成，已保留内容，请稍后重试'
+  return '本次请求未完成，已保留内容，请稍后重试'
 }
 
 /** 另存图片没成：图片文件不在了就照实说（D37），别的原因照旧可以重试。 */
 export function chatAssetSaveErrorMessage(error: unknown): string {
-  return resolveMissingAiAssetMessage(rawErrorMessage(error)) ?? '图片没有保存成功，可以重试'
+  return resolveMissingAiAssetMessage(rawErrorMessage(error)) ?? '图片保存失败，请重试'
 }
 
 /**
@@ -523,19 +595,19 @@ export function chatAssetSaveErrorMessage(error: unknown): string {
  */
 // Ctrl+V 时页面看见了图片，主进程却一张都没拿到（这台电脑上复制的文件读不出位置、截图是空的）：
 // 别一声不吭，叫客户换选图那条路（J4）。
-export const pastedNothingMessage = '图片没贴上，点输入框右下角那颗带加号的图片按钮，选它就行'
+export const pastedNothingMessage = '图片粘贴失败，请点击输入框右下角带加号的图片按钮选择图片'
 
 export function attachmentErrorMessage(error: unknown): string {
   const message = userFacingErrorMessage(error)
   if (/请先登录/.test(message)) return '请先登录，再加图片'
-  return speaksChinese(message) ? redactSecretPatterns(message) : '图片没有加上，请再试一次'
+  return speaksChinese(message) ? redactSecretPatterns(message) : '图片添加失败，请重试'
 }
 
 /** 选文件失败时同选图：主进程的中文原话上屏，英文的换成兜底句。 */
 export function fileAttachmentErrorMessage(error: unknown): string {
   const message = userFacingErrorMessage(error)
-  if (/请先登录/.test(message)) return '请先登录，再加文件'
-  return speaksChinese(message) ? redactSecretPatterns(message) : '文件没有加上，请再试一次'
+  if (/请先登录/.test(message)) return '请先登录后再添加文件'
+  return speaksChinese(message) ? redactSecretPatterns(message) : '文件添加失败，请重试'
 }
 
 // 作品库按内容存图，同一张图换个文件名再选一次拿回的是同一个编号。一批里有两份时只留第一份：
@@ -559,7 +631,7 @@ export function removeDraftImage(conversation: Conversation, assetId: string): C
   return withoutImages
 }
 
-/** 余额不足给「去充值」，Key 额度上限给「去调额度」；Key 失效时点「重新生成」就会换新 Key。 */
+/** 余额不足给「前往充值」，Key 额度上限给「前往调整额度」；Key 失效时点「重新生成」就会换新 Key。 */
 export function chatErrorAction(message: string | undefined): 'recharge' | 'keys' | null {
   const quota = matchRelayQuotaFailureMessage(message ?? '')
   if (quota === 'balance') return 'recharge'
@@ -578,7 +650,7 @@ export function applyStreamEvent(state: ChatWorkspace, event: AiChatStreamEvent)
     if (message.status !== 'pending' && message.status !== 'streaming') return message
     if (event.type === 'content') return { ...message, status: 'streaming', content: message.content + event.content }
     if (event.type === 'reasoning') return { ...message, status: 'streaming', reasoning: message.reasoning + event.content }
-    if (event.type === 'complete') return { ...message, status: 'complete' }
+    if (event.type === 'complete') return { ...message, status: 'complete', ...(event.cutOff ? { cutOff: event.cutOff } : {}) }
     if (event.type === 'canceled') return { ...message, status: 'canceled', mayStillComplete: event.mayStillComplete }
     return { ...message, status: 'error', error: chatErrorMessage(event.message, event.code) }
   })

@@ -31,6 +31,7 @@ import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
 import {
   finiteCoordinate,
   hasInvalidNoteText,
+  isLabelSetting,
   isRecord,
   localAssetUrl,
   maximumGroupNameLength,
@@ -57,7 +58,7 @@ const knownNodeKinds = new Set<NodeKind>(builtinNodeRegistry.list()
 const forbiddenSettingsKey = /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|cookie|secret|password)/i
 const unsafeSettingsString = /(?:data:|https?:\/\/|file:|[A-Za-z]:\\|(?:^|\/)Users\/|(?:^|\/)home\/)/i
 
-function safeSettings(value: unknown, depth = 0, allowNoteText = false): Record<string, unknown> | undefined | null {
+function safeSettings(value: unknown, depth = 0, nodeKind?: NodeKind): Record<string, unknown> | undefined | null {
   if (value === undefined) return undefined
   if (!isRecord(value) || depth > 6 || Object.keys(value).length > 100) return null
   const result: Record<string, unknown> = {}
@@ -67,13 +68,14 @@ function safeSettings(value: unknown, depth = 0, allowNoteText = false): Record<
       try { result[key] = parseImageTransformRecipe(entry) } catch { return null }
       continue
     }
-    if (allowNoteText && depth === 0 && key === 'text') {
+    if (nodeKind === 'note' && depth === 0 && key === 'text') {
       const text = safeNoteText(entry)
       if (text !== undefined) result[key] = text
       continue
     }
     if (typeof entry === 'string') {
-      if (entry.length > 10_000 || entry.includes('\0') || unsafeSettingsString.test(entry)) continue
+      const label = depth === 0 && isLabelSetting(nodeKind, key)
+      if (entry.length > 10_000 || entry.includes('\0') || (!label && unsafeSettingsString.test(entry))) continue
       result[key] = entry
     } else if (typeof entry === 'number') {
       if (!Number.isFinite(entry)) return null
@@ -161,7 +163,7 @@ function readNode(value: unknown): WorkflowNode | null {
       : null
   const result = readAsset(value.data.result)
   if (Object.hasOwn(value.data, 'storyboardTask') || Object.hasOwn(value.data, 'exteriorTask') || Object.hasOwn(value.data, 'interiorTask') || Object.hasOwn(value.data, 'commerceTask') || Object.hasOwn(value.data, 'imageReferenceOrder')) return null
-  const settings = safeSettings(value.data.settings, 0, wireKind === 'note')
+  const settings = safeSettings(value.data.settings, 0, knownNodeKind(wireKind) ?? undefined)
   if (isRecord(value.data.settings)) {
     try {
       if (Object.hasOwn(value.data.settings, 'interiorTask')) { if (!settings) return null; settings.interiorTask = parseNodeInteriorTask(wireKind, value.data.settings.interiorTask) }

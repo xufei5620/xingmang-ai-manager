@@ -151,7 +151,7 @@ describe('platform system preferences', () => {
     expect(state.store.update).not.toHaveBeenCalled()
     state.app.setLoginItemSettings.mockImplementationOnce(() => undefined)
     await expect(state.service.setStartup(false)).rejects.toThrow(
-      '系统没有保存',
+      '系统未保存',
     )
   })
   // 决定单 D26：Windows 上写开机项多半是被 360、火绒拦了，叫客户去它的提示里放行；别的系统照旧。
@@ -159,20 +159,20 @@ describe('platform system preferences', () => {
     const windows = setup()
     windows.app.setLoginItemSettings.mockImplementationOnce(() => undefined)
     await expect(windows.service.setStartup(true)).rejects.toThrow(
-      '系统没有保存开机启动设置。装了 360、火绒这类安全软件的话，在它弹出的提示里点「允许」，再打开一次这个开关。',
+      '系统未保存开机启动设置。如已安装 360、火绒等安全软件，请在其弹出的提示中点击「允许」，然后重新开启此开关。',
     )
     const mac = setup('darwin')
     mac.app.setLoginItemSettings.mockImplementationOnce(() => undefined)
     await expect(mac.service.setStartup(true)).rejects.toThrow(
-      '系统没有保存开机启动设置，请在系统设置中检查。',
+      '系统未保存开机启动设置，请在系统设置中检查。',
     )
   })
   // 决定单 D30：Mac 上没有「托盘」，同一个图标在屏幕顶部的菜单栏里。
   it('describes login starts in the menu bar on macOS', async () => {
     const state = setup('darwin')
-    expect(state.service.getState().startup.note).toBe('打开后，开机时会在菜单栏里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。')
+    expect(state.service.getState().startup.note).toBe('开启后，开机时将在菜单栏中待命，不弹出窗口，开机后数分钟内也不会占用系统资源。')
     await state.service.setStartup(true)
-    expect(state.service.getState().startup.note).toBe('开机后在菜单栏里待命，不弹窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。要用时点屏幕顶部的星芒图标。')
+    expect(state.service.getState().startup.note).toBe('开机后在菜单栏中待命，不弹出窗口；开机后数分钟内不进行检测和更新，以免占用系统资源。需要时请点击屏幕顶部的星芒图标。')
     expect(state.service.getState().startup.note).not.toContain('托盘')
   })
   it('still reports a login item registered by an older version without the login argument', async () => {
@@ -269,11 +269,11 @@ describe('platform system preferences', () => {
 
     expect(service.getState().startup).toEqual({
       supported: true, requested: false, enabled: false, approvalRequired: false,
-      note: '打开后，开机时会在托盘里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。',
+      note: '开启后，开机时将在托盘中待命，不弹出窗口，开机后数分钟内也不会占用系统资源。',
     })
     await expect(service.setStartup(true)).resolves.toMatchObject({ startup: { requested: true, enabled: true } })
     expect(linuxAutostart.set).toHaveBeenLastCalledWith(true)
-    expect(service.getState().startup.note).toBe('开机后在托盘里待命，不弹窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。要用时点托盘图标。')
+    expect(service.getState().startup.note).toBe('开机后在托盘中待命，不弹出窗口；开机后数分钟内不进行检测和更新，以免占用系统资源。需要时请点击托盘图标。')
     await expect(service.setStartup(false)).resolves.toMatchObject({ startup: { requested: false, enabled: false } })
     expect(linuxAutostart.set).toHaveBeenLastCalledWith(false)
     expect(state.app.getLoginItemSettings).not.toHaveBeenCalled()
@@ -281,16 +281,16 @@ describe('platform system preferences', () => {
 
     // 任务栏上没地方放托盘时开机直接弹窗口，说明不能再说「在托盘里待命」。
     tray = false
-    expect(service.getState().startup.note).toBe('打开后，开机时会自动打开星芒窗口，开机头几分钟也不跟电脑抢资源。')
+    expect(service.getState().startup.note).toBe('开启后，开机时将自动打开星芒窗口，开机后数分钟内也不会占用系统资源。')
     file = { requested: true, enabled: true }
-    expect(service.getState().startup.note).toBe('开机后自动打开星芒窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。')
+    expect(service.getState().startup.note).toBe('开机后自动打开星芒窗口；开机后数分钟内不进行检测和更新，以免占用系统资源。')
     tray = null
     expect(service.getState().startup.note).toContain('托盘')
   })
   it('says how to fix a Linux launcher the desktop switched off', () => {
     const state = setup('linux')
     const service = new PlatformSystemService({ ...state.dependencies, linuxAutostart: { inspect: () => ({ requested: true, enabled: false }), set: vi.fn() } })
-    expect(service.getState().startup).toMatchObject({ supported: true, requested: true, enabled: false, note: expect.stringContaining('关掉再打开') })
+    expect(service.getState().startup).toMatchObject({ supported: true, requested: true, enabled: false, note: expect.stringContaining('关闭后重新开启') })
   })
   it('reports a Linux launcher it cannot read as off and keeps going', () => {
     const state = setup('linux')
@@ -306,8 +306,8 @@ describe('platform system preferences', () => {
     expect(devService.getState().startup).toMatchObject({ supported: false, note: '开发模式不设置开机自动启动。' })
     await expect(devService.setStartup(true)).rejects.toThrow('不能设置')
     for (const [platform, note] of [
-      ['win32', '打开后，开机时会在托盘里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。'],
-      ['darwin', '打开后，开机时会在菜单栏里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。'],
+      ['win32', '开启后，开机时将在托盘中待命，不弹出窗口，开机后数分钟内也不会占用系统资源。'],
+      ['darwin', '开启后，开机时将在菜单栏中待命，不弹出窗口，开机后数分钟内也不会占用系统资源。'],
     ] as const) {
       const state = setup(platform)
       const service = new PlatformSystemService({ ...state.dependencies, linuxAutostart, trayAvailable: () => false })
@@ -342,7 +342,7 @@ describe('platform system preferences', () => {
   it('says why the app window is direct after the broken proxy was bypassed', () => {
     expect(describeSessionProxy('DIRECT', true)).toEqual({
       route: 'direct',
-      summary: '应用窗口当前直接连接（电脑里的代理连不上，本次已自动绕开）',
+      summary: '应用窗口当前直接连接（本机代理无法连接，本次已自动绕过）',
     })
     expect(describeSessionProxy('DIRECT', false).summary).toBe(
       '应用窗口当前直接连接',
@@ -356,7 +356,7 @@ describe('platform system preferences', () => {
     // 已知30：代理开着、只是不转发星芒时，只有连星芒的请求改了直连。
     expect(describeSessionProxy('PROXY 127.0.0.1:7890', false, true)).toEqual({
       route: 'proxy',
-      summary: '应用窗口当前通过转发连接（账号和 AI 对话已自动改成直接连接）',
+      summary: '应用窗口当前通过转发连接（账号和 AI 对话已自动切换为直接连接）',
     })
     expect(describeSessionProxy('PROXY 127.0.0.1:7890', false, false).summary).toBe(
       '应用窗口当前通过转发连接',

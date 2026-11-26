@@ -75,7 +75,7 @@ export function RelayRouteRestartNotice({
       <Confirm
         open={asking}
         title="现在重开星芒？"
-        body={<p>{duringLogin ? '重开后按新线路连接。没填完的登录信息要重新填。请先保存工具里正在进行的工作。' : '重开后按新线路连接。登录状态和配好的工具都不变。请先保存工具里正在进行的工作。'}</p>}
+        body={<p>{duringLogin ? '重新打开后将使用新线路连接，未填写完的登录信息需重新填写。请先保存工具中正在进行的工作。' : '重新打开后将使用新线路连接，登录状态和已配置的工具不受影响。请先保存工具中正在进行的工作。'}</p>}
         cancelLabel="稍后"
         okLabel="现在重开"
         testId="settings-relay-relaunch-confirm"

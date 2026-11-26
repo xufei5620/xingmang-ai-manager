@@ -1,0 +1,151 @@
+import { renderToStaticMarkup } from 'react-dom/server'
+import { describe, expect, it } from 'vitest'
+import { tutorialTopics } from '../../registry/tutorials'
+import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
+import { addVideoStudioShot, createVideoStudioProject } from '../video-studio/project'
+import { CanvasProjectPane, CreateIntro, CreateStartCards, createVideoFilm, videoClipRefusal } from './CreatePage'
+
+function nothing() { /* a static render never calls back */ }
+
+function text(html: string): string {
+  return html.replace(/<[^>]+>/g, '')
+}
+
+function tutorialWords(id: string): string {
+  const topic = tutorialTopics.find((entry) => entry.id === id)
+  if (!topic) throw new Error(`no tutorial called ${id}`)
+  return JSON.stringify(topic)
+}
+
+describe('the pieces of the create page that are its own', () => {
+  it('offers a film and the canvas under the examples, in words a first-time customer can act on', () => {
+    const html = renderToStaticMarkup(<CreateStartCards video onVideo={nothing} onCanvas={nothing} />)
+    expect(html).toContain('data-testid="create-start"')
+    expect(text(html)).toBe('复杂创作从这里开始'
+      + '做一条带字幕的短视频输入创意，AI 将编写分镜、分段生成并合成为完整视频'
+      + '在画布中分步创作支持多图、精修、模板，以及保持人物在各镜头中一致开在大窗口里')
+    expect(html.indexOf('data-testid="create-card-video"')).toBeLessThan(html.indexOf('data-testid="create-card-canvas"'))
+    // 两张卡都是按钮：键盘走得到、读屏念得出。
+    expect(html.match(/<button type="button" class="create-card"/g)).toHaveLength(2)
+  })
+
+  // 融合第 3 步：作品库里有视频、这个账号又能做视频时多第三张卡。
+  it('adds a third card that joins clips already in the library, only when asked to', () => {
+    const html = renderToStaticMarkup(<CreateStartCards video clips onVideo={nothing} onCanvas={nothing} onClips={nothing} />)
+    expect(html.match(/<button type="button" class="create-card"/g)).toHaveLength(3)
+    expect(html.indexOf('data-testid="create-card-canvas"')).toBeLessThan(html.indexOf('data-testid="create-card-clips"'))
+    expect(text(html)).toContain('用已有片段合成视频从作品库选择片段，添加字幕和配乐，在本机合成，不产生费用')
+    // 没人接这张卡的地方不出它，免得点了没反应。
+    expect(renderToStaticMarkup(<CreateStartCards video clips onVideo={nothing} onCanvas={nothing} />)).not.toContain('create-card-clips')
+    expect(renderToStaticMarkup(<CreateStartCards video clips={false} onVideo={nothing} onCanvas={nothing} onClips={nothing} />)).not.toContain('create-card-clips')
+  })
+
+  it('leaves the film card out for an account that cannot start a film right now, and keeps the canvas', () => {
+    const html = renderToStaticMarkup(<CreateStartCards video={false} onVideo={nothing} onCanvas={nothing} />)
+    expect(html).not.toContain('create-card-video')
+    expect(html).not.toContain('做一条带字幕的短视频')
+    expect(html).toContain('data-testid="create-card-canvas"')
+  })
+
+  it('shows a canvas project as its name, when it was last changed, and one button that opens the canvas', () => {
+    const now = new Date(2026, 10, 20, 15, 0).getTime()
+    const html = renderToStaticMarkup(<CanvasProjectPane project={{ id: 'p1', name: '双 11 主图', updatedAt: new Date(2026, 10, 19, 21, 14).getTime() }} opening={false} onOpen={nothing} now={now} />)
+    expect(html).toContain('data-testid="create-canvas-pane"')
+    expect(html).toContain('<strong data-testid="create-canvas-name">双 11 主图</strong>')
+    expect(html).toContain('<span data-testid="create-canvas-time">画布项目 · 昨天 21:14 修改</span>')
+    expect(html).toContain('data-testid="create-canvas-open"')
+    expect(text(html)).toContain('打开画布')
+    expect(text(html)).toContain('画布在独立窗口中打开，运行期间可返回此处继续其他操作。')
+    expect(text(html)).toContain('重命名、复制、归档和删除请在画布窗口的「项目中心」中操作。')
+    // 项目卡上只有「打开画布」一颗：往项目里放图的「添加到画布」在图下面，改名、删除画布项目也不在这里。
+    expect(html.match(/<button/g)).toHaveLength(1)
+    expect(html).not.toContain('放进画布')
+  })
+
+  // 融合第 5 步：项目卡上有封面，下面摆这个项目里做出来的。
+  it('shows the cover the main process named by id, and the canvas icon when there is none', () => {
+    const assetId = 'a'.repeat(43)
+    const project = { id: 'p1', name: '双 11 主图', updatedAt: 1 }
+    const covered = renderToStaticMarkup(<CanvasProjectPane project={{ ...project, cover: { assetId, mediaType: 'image' } }} opening={false} onOpen={nothing} />)
+    expect(covered).toMatch(new RegExp(`data-cover="true"[^>]*data-testid="create-canvas-cover"><img src="xingmang-asset://thumb/v2/image/${assetId}" alt=""`))
+    const film = renderToStaticMarkup(<CanvasProjectPane project={{ ...project, cover: { assetId, mediaType: 'video' } }} opening={false} onOpen={nothing} />)
+    expect(film).toContain(`src="xingmang-asset://thumb/v2/video/${assetId}"`)
+    // 只走缩略图那个地址，不读原图、不读整段视频。
+    expect(covered + film).not.toMatch(/xingmang-asset:\/\/(image|video)\//)
+    const bare = renderToStaticMarkup(<CanvasProjectPane project={project} opening={false} onOpen={nothing} />)
+    expect(bare).toContain('data-testid="create-canvas-cover"')
+    expect(bare).not.toContain('data-cover')
+    expect(bare).not.toContain('<img')
+  })
+
+  it('puts what the project made between the card and the note about the project centre', () => {
+    const html = renderToStaticMarkup(<CanvasProjectPane project={{ id: 'p1', name: '海报', updatedAt: 1 }} opening={false} onOpen={nothing}><section data-testid="works">此项目中的作品</section></CanvasProjectPane>)
+    expect(html.indexOf('data-testid="create-canvas-open"')).toBeLessThan(html.indexOf('data-testid="works"'))
+    expect(html.indexOf('data-testid="works"')).toBeLessThan(html.indexOf('重命名、复制、归档和删除'))
+  })
+
+  it('writes a canvas project name as plain text, whatever the canvas stored', () => {
+    const html = renderToStaticMarkup(<CanvasProjectPane project={{ id: 'p1', name: '<img src=x onerror=alert(1)>', updatedAt: 0 }} opening={false} onOpen={nothing} />)
+    expect(html).not.toContain('<img')
+    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;')
+    // 没有时间的项目不编一个时间出来。
+    expect(html).toContain('<span data-testid="create-canvas-time">画布项目</span>')
+  })
+
+  it('marks the open button busy while the canvas window is being opened', () => {
+    const html = renderToStaticMarkup(<CanvasProjectPane project={{ id: 'p1', name: '海报', updatedAt: 1 }} opening onOpen={nothing} />)
+    expect(html).toMatch(/data-testid="create-canvas-open"[^>]*aria-busy="true"|aria-busy="true"[^>]*data-testid="create-canvas-open"/)
+  })
+
+  it('says once that the three pages were merged, and nothing before that is decided or after it is closed', () => {
+    const shown = renderToStaticMarkup(<CreateIntro state="shown" ready hasEarlierWork onDecide={nothing} onDismiss={nothing} />)
+    expect(shown).toContain('data-testid="create-intro"')
+    expect(text(shown)).toBe('聊天、画布和视频剪辑已合并至此页历史对话、画布项目和视频草稿均已保留在左侧列表中。生成的图片和视频可在左下角「作品库」中查看。')
+    expect(shown).toContain('<button')
+    expect(renderToStaticMarkup(<CreateIntro state="undecided" ready hasEarlierWork onDecide={nothing} onDismiss={nothing} />)).toBe('')
+    expect(renderToStaticMarkup(<CreateIntro state="gone" ready hasEarlierWork onDecide={nothing} onDismiss={nothing} />)).toBe('')
+  })
+
+  // 教程里带「」的按钮名要和界面上的一字不差：视频教程从「创作」进，引的是这一页的卡。
+  it('carries the card title the video tutorial tells the customer to click', () => {
+    const html = renderToStaticMarkup(<CreateStartCards video onVideo={nothing} onCanvas={nothing} />)
+    const words = tutorialWords('video')
+    expect(words).toContain('做一条带字幕的短视频')
+    expect(html).toContain('<strong>做一条带字幕的短视频</strong>')
+    expect(words).not.toContain('左侧视频剪辑')
+    expect(tutorialWords('canvas')).toContain('在画布中分步创作')
+    expect(html).toContain('<strong>在画布中分步创作</strong>')
+  })
+})
+
+describe('a film in the 添加到视频 menu', () => {
+  function film(shots: number, name?: string) {
+    let project = createVideoStudioProject()
+    for (let index = 0; index < shots; index += 1) project = addVideoStudioShot(project, () => `shot-${index}`)
+    return { id: 'film-1', updatedAt: 1, project, ...(name ? { name } : {}) }
+  }
+
+  it('reads as the name and how many shots it has', () => {
+    expect(createVideoFilm(film(4, '橘猫回家'))).toEqual({ id: 'film-1', title: '橘猫回家', detail: '4 个镜头' })
+    expect(createVideoFilm(film(0))).toEqual({ id: 'film-1', title: '新视频', detail: '尚未编写分镜' })
+  })
+
+  it('is greyed out with the reason once every shot slot is taken', () => {
+    const full = createVideoFilm(film(videoStudioPlanLimits.maximumShots, '新品口红'))
+    expect(full).toEqual({ id: 'film-1', title: '新品口红', detail: `${videoStudioPlanLimits.maximumShots} 个镜头，已满`, full: true })
+    expect(createVideoFilm(film(videoStudioPlanLimits.maximumShots - 1))).not.toHaveProperty('full')
+  })
+
+  it('takes a clip unless it is gone, busy, or full', () => {
+    expect(videoClipRefusal(film(4, '橘猫回家'), false, false)).toBeNull()
+    expect(videoClipRefusal(null, false, false)).toBe('该视频已删除，请选择其他视频。')
+    // The open workbench hangs finished work back on its own copy: a write from outside while it works would be lost.
+    expect(videoClipRefusal(film(4, '橘猫回家'), false, true)).toBe('「橘猫回家」正在进行其他操作（编写分镜、生成或合成），请待其完成后再添加。')
+    expect(videoClipRefusal(film(videoStudioPlanLimits.maximumShots, '新品口红'), false, false)).toBe('「新品口红」的镜头数量已达上限，请选择其他视频，或新建视频。')
+  })
+
+  it('does not ask whether a film made for this clip is full', () => {
+    // 新建的那一条照最近一条的设置起，里面的镜头会整份换成这一段：看它原来几个镜头没有意义。
+    expect(videoClipRefusal(film(videoStudioPlanLimits.maximumShots), true, false)).toBeNull()
+  })
+})

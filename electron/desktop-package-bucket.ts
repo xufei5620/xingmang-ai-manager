@@ -5,8 +5,8 @@ import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions
 import { isRecord } from './input-guards'
 
 /**
- * 星芒自己的腾讯云存储桶里放着 Codex、Claude 桌面端和 Mac 版 OpenCode 的官方离线包：
- * scripts/sync-chatgpt-official-cos.cjs、sync-claude-official-cos.cjs、sync-opencode-cos.cjs 定时从官方下载、
+ * 星芒自己的腾讯云存储桶里放着 Codex、Claude 桌面端、Mac 版 OpenCode 和 Antigravity 桌面端的官方离线包：
+ * scripts/sync-chatgpt-official-cos.cjs、sync-claude-official-cos.cjs、sync-opencode-cos.cjs、sync-antigravity-desktop-cos.cjs 定时从官方下载、
  * 在 GitHub 的 Windows / Mac 机器上核过签名才传上去，清单里写着每个包的大小和 SHA-256。装桌面端时先从这里下：国内快，也用不着加速（yoyo 2026-10-10
  * 「需要从存储桶下载，因为后期我打算去掉游戏加速这个功能」）。桶里没有、读不到、对不上，都悄悄换回
  * 原来那几路，客户看不出来。
@@ -27,7 +27,12 @@ const codexIndexKey = 'chatgpt/latest.json'
 const filesIndexes = {
   claude: { key: 'xingmang/offline/claude/latest.json', prefix: 'xingmang/offline/claude', product: 'claude-desktop' },
   opencode: { key: 'xingmang/offline/opencode/latest.json', prefix: 'xingmang/offline/opencode', product: 'opencode-desktop' },
+  // Antigravity 的 Windows 安装包和 Mac 的 zip 在两台机器上核，各写各的一份（同 agy，见 sync-antigravity-desktop-cos.cjs）。
+  antigravityWindows: { key: 'xingmang/offline/antigravity-desktop/windows.json', prefix: 'xingmang/offline/antigravity-desktop', product: 'antigravity-desktop' },
+  antigravityMacos: { key: 'xingmang/offline/antigravity-desktop/macos.json', prefix: 'xingmang/offline/antigravity-desktop', product: 'antigravity-desktop' },
 } as const
+// 这几份清单写 checkedAt，过期就先走官方（isDesktopBucketIndexStale）。Claude 桌面端和 OpenCode 的同步还不写，照旧不看。
+const freshnessTrackedIndexes: ReadonlySet<CodexWindowsSpec['index'] | keyof typeof filesIndexes> = new Set(['codex', 'antigravityWindows', 'antigravityMacos'])
 const maximumIndexBytes = 256 * 1024
 const indexTimeoutMs = 10_000
 // 同步作业每 6 小时跑一次，每次成功都把它核过的那几条的 checkedAt 刷成那一刻，包没变也刷。这么久
@@ -41,6 +46,9 @@ const maximumWindowsPackageBytes = 1_500 * 1024 * 1024
 const maximumMacPackageBytes = 2 * 1024 * 1024 * 1024
 // 同 macos-desktop-app-installer.ts 收 GitHub 那一份 OpenCode 的上限。
 const maximumOpenCodePackageBytes = 640 * 1024 * 1024
+// 同 antigravity-desktop-release.ts 收谷歌那一份的上限和版本号的样子。
+const maximumAntigravityPackageBytes = 1024 * 1024 * 1024
+const antigravityVersionPattern = /^(?:0|[1-9]\d{0,5})\.(?:0|[1-9]\d{0,5})\.(?:0|[1-9]\d{0,5})$/
 const redirectStatuses = new Set([301, 302, 303, 307, 308])
 // 桶那一路照目前的平均速度还要这么久以上才下得完，就不等了，换原来那几路（同 Codex 桌面端
 // 官网那一路的 10 分钟）。在国外的客户连上海的桶可能很慢，原来那几路对他们反而快。可国内客户
@@ -68,6 +76,10 @@ export type DesktopBucketPackageId =
   | 'claude-macos-universal'
   | 'opencode-macos-arm64'
   | 'opencode-macos-x64'
+  | 'antigravity-windows-x64'
+  | 'antigravity-windows-arm64'
+  | 'antigravity-macos-arm64'
+  | 'antigravity-macos-x64'
 
 export interface DesktopBucketPackage {
   id: DesktopBucketPackageId
@@ -79,8 +91,8 @@ export interface DesktopBucketPackage {
   /** The Content-Type the sync uploaded the object with. */
   contentType: string
   /**
-   * 同步作业最后一次核对这一条还和官方一致的时间（ISO 8601），清单没写就没有。目前只有 Codex 那份
-   * 清单写，readDesktopBucketPackage 据此判断过期（isDesktopBucketIndexStale）。
+   * 同步作业最后一次核对这一条还和官方一致的时间（ISO 8601），清单没写就没有。目前 Codex 和 Antigravity
+   * 桌面端的清单写，readDesktopBucketPackage 据此判断过期（isDesktopBucketIndexStale）。
    */
   checkedAt?: string
 }
@@ -103,8 +115,8 @@ export class DesktopBucketUnavailableError extends Error {
 
 /**
  * 清单那一条超过 desktopBucketIndexMaximumAgeMs 没和官方核对过：桶里的包本身没毛病，只是可能落后官方。
- * 单独一类，好让装 Codex 桌面端时先走后面那几路（Windows 是商店和官网，Mac 是官方），都没装上再回头用它
- * （readDesktopBucketPackage 的 allowStale）；别处照旧当作桶没走通。
+ * 单独一类，好让装 Codex、Antigravity 桌面端时先走后面那几路（Codex 的 Windows 是商店和官网，其余是官方），
+ * 都没装上再回头用它（readDesktopBucketPackage 的 allowStale）；别处照旧当作桶没走通。
  */
 export class DesktopBucketIndexStaleError extends DesktopBucketUnavailableError {
   constructor(checkedAt: string | undefined) {
@@ -115,9 +127,9 @@ export class DesktopBucketIndexStaleError extends DesktopBucketUnavailableError 
 
 export interface ReadDesktopBucketPackageOptions {
   /**
-   * 清单过期了也照样交出这一条。缺省 = 过期就抛 DesktopBucketIndexStaleError，只有装 Codex 桌面端时后面那几路
-   * 都没装上才会传 true：Windows 是商店、官网之后（桶里那一版只要比本机新，就比第三方的国内镜像可靠），
-   * Mac 是官方之后（再往后没有别的路了）。
+   * 清单过期了也照样交出这一条。缺省 = 过期就抛 DesktopBucketIndexStaleError，只有装 Codex、Antigravity 桌面端时
+   * 后面那几路都没装上才会传 true：Codex 的 Windows 是商店、官网之后（桶里那一版只要比本机新，就比第三方的国内镜像
+   * 可靠），其余是官方之后（再往后没有别的路了）。
    */
   allowStale?: boolean
 }
@@ -141,7 +153,7 @@ interface FilesIndexSpec {
   platform: 'windows' | 'macos'
   architecture: 'x64' | 'arm64' | 'universal'
   kind: 'installer' | 'app-archive'
-  format: 'msix' | 'pkg' | 'tar.gz'
+  format: 'msix' | 'pkg' | 'tar.gz' | 'exe' | 'zip'
   fileName: string
   contentType: string
   verification: string
@@ -183,6 +195,28 @@ const packageSpecs: Record<DesktopBucketPackageId, CodexWindowsSpec | CodexMacSp
     index: 'opencode', platformId: 'macos-x64', platform: 'macos', architecture: 'x64', kind: 'app-archive', format: 'tar.gz',
     fileName: 'opencode-desktop-mac-x64.app.tar.gz', contentType: 'application/gzip', verification: 'macos-developer-id-notarized',
     versionPattern: /^\d{1,4}\.\d{1,4}\.\d{1,6}$/, maximumBytes: maximumOpenCodePackageBytes,
+  },
+  // Antigravity 桌面端是谷歌那个安装包、那个 zip 原样（Windows 的 NSIS 安装包，Mac 的按芯片各一个，里面是
+  // Antigravity.app）；版本号的样子、大小上限同 antigravity-desktop-release.ts 收谷歌那一份。
+  'antigravity-windows-x64': {
+    index: 'antigravityWindows', platformId: 'windows-x64', platform: 'windows', architecture: 'x64', kind: 'installer', format: 'exe',
+    fileName: 'Antigravity-x64.exe', contentType: 'application/octet-stream', verification: 'windows-authenticode-google',
+    versionPattern: antigravityVersionPattern, maximumBytes: maximumAntigravityPackageBytes,
+  },
+  'antigravity-windows-arm64': {
+    index: 'antigravityWindows', platformId: 'windows-arm64', platform: 'windows', architecture: 'arm64', kind: 'installer', format: 'exe',
+    fileName: 'Antigravity-arm64.exe', contentType: 'application/octet-stream', verification: 'windows-authenticode-google',
+    versionPattern: antigravityVersionPattern, maximumBytes: maximumAntigravityPackageBytes,
+  },
+  'antigravity-macos-arm64': {
+    index: 'antigravityMacos', platformId: 'macos-arm64', platform: 'macos', architecture: 'arm64', kind: 'app-archive', format: 'zip',
+    fileName: 'Antigravity-darwin-arm64.zip', contentType: 'application/zip', verification: 'macos-developer-id-notarized',
+    versionPattern: antigravityVersionPattern, maximumBytes: maximumAntigravityPackageBytes,
+  },
+  'antigravity-macos-x64': {
+    index: 'antigravityMacos', platformId: 'macos-x64', platform: 'macos', architecture: 'x64', kind: 'app-archive', format: 'zip',
+    fileName: 'Antigravity-darwin-x64.zip', contentType: 'application/zip', verification: 'macos-developer-id-notarized',
+    versionPattern: antigravityVersionPattern, maximumBytes: maximumAntigravityPackageBytes,
   },
 }
 
@@ -274,7 +308,10 @@ function parseCodexEntry(root: Record<string, unknown>, spec: CodexWindowsSpec |
   }
 }
 
-/** xingmang/offline/claude/latest.json、xingmang/offline/opencode/latest.json：files 里按平台一条，目录是 SHA-256。 */
+/**
+ * xingmang/offline/claude/latest.json、xingmang/offline/opencode/latest.json、xingmang/offline/antigravity-desktop/{windows,macos}.json：
+ * files 里按平台一条，目录是 SHA-256。
+ */
 function parseFilesEntry(root: Record<string, unknown>, spec: FilesIndexSpec, id: DesktopBucketPackageId): DesktopBucketPackage | null {
   const index = filesIndexes[spec.index]
   if (root.schemaVersion !== 1 || root.product !== index.product || !Array.isArray(root.files) || root.files.length > 16) return null
@@ -295,7 +332,10 @@ function parseFilesEntry(root: Record<string, unknown>, spec: FilesIndexSpec, id
     || file.url !== objectUrl(key)
     || !isPackageSize(file.size, spec.maximumBytes)
   ) return null
-  return { id, version: file.version, url: objectUrl(key), bytes: file.size, sha256: file.sha256, contentType: spec.contentType }
+  return {
+    id, version: file.version, url: objectUrl(key), bytes: file.size, sha256: file.sha256, contentType: spec.contentType,
+    ...(freshnessTrackedIndexes.has(spec.index) && typeof root.checkedAt === 'string' ? { checkedAt: root.checkedAt } : {}),
+  }
 }
 
 /** 从桶里的清单原文挑出这个包；格式、地址、大小、摘要有一处不对就是 null。 */
@@ -308,7 +348,9 @@ export function parseDesktopBucketIndex(text: string, id: DesktopBucketPackageId
 
 /**
  * 只认桶本身的固定地址：https、这个主机、没有端口和账号、没有查询和片段，路径只能在同步脚本写的
- * 那几个目录下（Codex 插件目录那一路见 codex-plugin-catalog-bucket.ts，Grok 那一路见 grok-bucket.ts）。
+ * 那几个目录下（Codex 插件目录那一路见 codex-plugin-catalog-bucket.ts，Grok 那一路见 grok-bucket.ts，
+ * Antigravity 命令行那一路见 antigravity-cli-bucket.ts，
+ * Claude 桌面端的工作区和 Mac 程序包那一路见 claude-desktop-workspace-seed.ts、claude-desktop-mac-code-seed.ts）。
  */
 export function validateDesktopBucketUrl(value: string): URL {
   let url: URL
@@ -325,7 +367,7 @@ export function validateDesktopBucketUrl(value: string): URL {
     || url.password
     || url.search
     || url.hash
-    || !/^\/(?:chatgpt|xingmang\/offline\/(?:claude|codex-plugins|grok|opencode))\/[A-Za-z0-9._\-/]+$/.test(url.pathname)
+    || !/^\/(?:chatgpt|xingmang\/offline\/(?:antigravity-cli|antigravity-desktop|claude|claude-components|codex-plugins|grok|opencode))\/[A-Za-z0-9._\-/]+$/.test(url.pathname)
     || url.pathname.split('/').some((segment) => segment === '..' || segment === '.')
   ) {
     throw new Error('存储桶地址不在允许的范围内')
@@ -400,10 +442,10 @@ export async function readDesktopBucketPackage(
     }
     const release = parseDesktopBucketIndex(await readBoundedResponseText(response, maximumIndexBytes, '存储桶清单'), id)
     if (!release) throw new Error('存储桶清单里没有这台电脑能用的安装包，或清单格式对不上')
-    // 装 Codex 桌面端总是装最新的。Claude 桌面端和 OpenCode 的同步还不写 checkedAt，照旧不看。
+    // 装 Codex、Antigravity 桌面端总是装最新的。Claude 桌面端和 OpenCode 的同步还不写 checkedAt，照旧不看。
     if (
       !options.allowStale
-      && packageSpecs[id].index === 'codex'
+      && freshnessTrackedIndexes.has(packageSpecs[id].index)
       && isDesktopBucketIndexStale(release.checkedAt, desktopBucketResponseTime(response))
     ) {
       throw new DesktopBucketIndexStaleError(release.checkedAt)
@@ -660,7 +702,7 @@ export async function downloadDesktopBucketPackage(
   }
 }
 
-/** 记日志时那一行原话：开头带上是哪个包，免得客服分不清是 Codex、Claude 还是 OpenCode。 */
+/** 记日志时那一行原话：开头带上是哪个包，免得客服分不清是 Codex、Claude、OpenCode 还是 Antigravity。 */
 export function describeDesktopBucketFallback(id: DesktopBucketPackageId, error: unknown): string {
   const detail = error instanceof Error ? error.message : String(error)
   return `${id}：${detail || '存储桶这一路没走通'}`

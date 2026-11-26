@@ -5,6 +5,7 @@ import {
   type AiChatStreamEvent,
   type AiChatStreamLogEntry,
 } from './ai-chat-service'
+import { AiAnswerCutOffError, aiAnswerCutOffMessages } from './ai-answer-cut-off'
 import { ChatKeyQuotaExhaustedError, type ChatCredentialCoordinator } from './chat-credential-coordinator'
 import { networkFailureMessages } from './network-failure'
 import { relayQuotaFailureMessages } from './relay-quota-failure'
@@ -129,6 +130,71 @@ describe('AI chat streaming service', () => {
       expect.objectContaining({ type: 'delta', content: '这个请求无法处理' }),
       expect.objectContaining({ type: 'complete' }),
     ])
+  })
+
+  it('keeps the text of an answer cut off at the output cap and says it was cut off', async () => {
+    const events: AiChatStreamEvent[] = []
+    const logs: AiChatStreamLogEntry[] = []
+    const fetchImpl = vi.fn<TestFetch>(async () => sseResponse([
+      encoder.encode('data: {"choices":[{"delta":{"content":"第一段，写到一半"}}]}\n\n'),
+      encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n'),
+      encoder.encode('data: [DONE]\n\n'),
+    ]))
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl,
+      emit: (_senderId, event) => events.push(event),
+      log: (entry) => logs.push(entry),
+    })
+
+    service.start(startInput())
+    await service.whenIdle()
+
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'delta', content: '第一段，写到一半' }),
+      expect.objectContaining({ type: 'complete', cutOff: 'length' }),
+    ])
+    expect(logs).toEqual([expect.objectContaining({ status: 'complete', cutOff: 'length' })])
+    // Continuing is the customer's call: nothing is sent again on their behalf.
+    expect(fetchImpl).toHaveBeenCalledOnce()
+  })
+
+  it('says a filtered answer was stopped even when no text came back', async () => {
+    const events: AiChatStreamEvent[] = []
+    const fetchImpl = vi.fn<TestFetch>(async () => sseResponse([
+      encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"content_filter"}]}\n\n'),
+    ]))
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl,
+      emit: (_senderId, event) => events.push(event),
+    })
+
+    service.start(startInput())
+    await service.whenIdle()
+
+    expect(events).toEqual([expect.objectContaining({ type: 'complete', cutOff: 'filtered' })])
+  })
+
+  it('marks nothing on a normal finish', async () => {
+    const events: AiChatStreamEvent[] = []
+    const logs: AiChatStreamLogEntry[] = []
+    const fetchImpl = vi.fn<TestFetch>(async () => sseResponse([
+      encoder.encode('data: {"choices":[{"delta":{"content":"说完了"},"finish_reason":"stop"}]}\n\n'),
+    ]))
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl,
+      emit: (_senderId, event) => events.push(event),
+      log: (entry) => logs.push(entry),
+    })
+
+    service.start(startInput())
+    await service.whenIdle()
+
+    expect(events.at(-1)).toMatchObject({ type: 'complete' })
+    expect(events.at(-1)).not.toHaveProperty('cutOff')
+    expect(logs[0]).not.toHaveProperty('cutOff')
   })
 
   it('rejects a model outside the resolved group before sending a paid request', async () => {
@@ -333,7 +399,7 @@ describe('AI chat streaming service', () => {
     expect(events).toEqual([expect.objectContaining({
       type: 'error',
       code: 'upstream-http-error',
-      message: '当前 API Key 无权使用所选模型或分组',
+      message: '当前密钥无权使用所选模型或分组',
     })])
     expect(logs[0]).toEqual(expect.objectContaining({
       requestId: 'request-1',
@@ -496,26 +562,26 @@ describe('AI chat streaming service', () => {
     })
     service.start(startInput())
     await service.whenIdle()
-    expect(events).toEqual([expect.objectContaining({ message: '当前 API Key 无权使用所选模型或分组' })])
+    expect(events).toEqual([expect.objectContaining({ message: '当前密钥无权使用所选模型或分组' })])
   })
 
   // 服务端说清了是哪一种的，按它说下一步；原话本身不上屏（#1101 第2条、#1093 第12b条）。
   it.each([
     ['a conversation over the context window', 400,
       { error: { message: "This model's maximum context length is 128000 tokens. However, your messages resulted in 130512 tokens.", type: 'invalid_request_error', code: 'context_length_exceeded' } },
-      '这段对话太长了，超过了这个模型一次能读的长度。开一个新对话接着聊，或者换一个能读更长内容的模型。'],
+      '当前对话过长，已超过此模型单次可读取的长度。请新建对话继续，或更换支持更长内容的模型。'],
     ['a prompt the upstream calls too long', 400, { error: { message: 'prompt is too long: 210000 tokens > 200000 maximum', type: 'invalid_request_error' } },
-      '这段对话太长了，超过了这个模型一次能读的长度。开一个新对话接着聊，或者换一个能读更长内容的模型。'],
+      '当前对话过长，已超过此模型单次可读取的长度。请新建对话继续，或更换支持更长内容的模型。'],
     ['a moderation refusal', 400, { error: { message: 'Your request was rejected as a result of our safety system.', code: 'content_policy_violation' } },
-      '这次的内容没通过 AI 服务的安全审核，没有回复。改一改说法再发；一直被拦就换个模型。'],
+      '本次内容未通过 AI 服务的安全审核，未返回回复。请调整表述后重新发送；如持续被拦截，请更换模型。'],
     ['the relay sensitive-word filter', 400, { error: { message: 'sensitive words detected', type: 'new_api_error', code: 'sensitive_words_detected' } },
-      '这次的内容没通过 AI 服务的安全审核，没有回复。改一改说法再发；一直被拦就换个模型。'],
+      '本次内容未通过 AI 服务的安全审核，未返回回复。请调整表述后重新发送；如持续被拦截，请更换模型。'],
     ['a model the upstream does not know', 404, { error: { message: 'The model `gpt-old` does not exist or you do not have access to it.', code: 'model_not_found' } },
       '当前模型不在所选分组的可用列表中，请刷新后重新选择'],
     ['any other bad request', 400, { error: { message: 'Unsupported parameter: temperature', type: 'invalid_request_error' } },
-      'AI 服务没接受这次请求（HTTP 400）。换个模型，或者把参数调回默认再试；一直这样请找客服。'],
+      'AI 服务未接受本次请求（HTTP 400）。请更换模型，或将参数恢复默认后重试；如问题持续，请联系客服。'],
     ['a group without a channel for the model', 503, { error: { message: '当前分组 default 下对于模型 gpt-x 无可用渠道 (request id: r3)', type: 'new_api_error', code: 'model_not_found' } },
-      '所选分组下这个模型暂时用不了。换个模型或分组再发；一直这样请找客服。'],
+      '所选分组下的该模型暂不可用。请更换模型或分组后重新发送；如问题持续，请联系客服。'],
   ])('says what to do next for %s', async (_label, status, payload, expected) => {
     const events: AiChatStreamEvent[] = []
     const service = createAiChatService({
@@ -665,9 +731,9 @@ describe('AI chat streaming service', () => {
     const reports: unknown[] = []
     await expect(service.completeOnce({
       group: 'GPT', model: 'gpt-5.4', messages: [{ role: 'user', content: '描述', images: ['a'.repeat(43)] }],
-      readImages: async () => { throw new Error('视觉图片单张不能超过 4 MB，当前没有提交文字生成；请换小一点的图再试') },
+      readImages: async () => { throw new Error('视觉图片单张不能超过 4 MB，当前未提交文字生成；请更换较小的图片后重试') },
       billing: { onRelayDispatch: (sent) => { reports.push(['dispatch', sent]) }, onRelayAnswer: (id) => { reports.push(['answer', id]) } },
-    })).rejects.toThrow('视觉图片单张不能超过 4 MB，当前没有提交文字生成；请换小一点的图再试')
+    })).rejects.toThrow('视觉图片单张不能超过 4 MB，当前未提交文字生成；请更换较小的图片后重试')
     // An image id nobody resolved never goes out as a literal id either.
     await expect(service.completeOnce({
       group: 'GPT', model: 'gpt-5.4', messages: [{ role: 'user', content: '描述', images: ['a'.repeat(43)] }],
@@ -861,6 +927,22 @@ describe('AI chat streaming service', () => {
     finishing.dispose()
   })
 
+  it('does not hand back a completeOnce answer cut off at the output cap or by the content check', async () => {
+    for (const [reason, cutOff] of [['length', 'length'], ['content_filter', 'filtered']] as const) {
+      const fetchImpl = vi.fn<TestFetch>(async () => sseResponse([
+        encoder.encode('data: {"choices":[{"delta":{"content":"{\\"shots\\":["}}]}\n\n'),
+        encoder.encode(`data: {"choices":[{"delta":{},"finish_reason":"${reason}"}]}\n\n`),
+        encoder.encode('data: [DONE]\n\n'),
+      ]))
+      const service = createAiChatService({ credentialCoordinator: credentialCoordinator(), fetchImpl, emit: vi.fn() })
+      const outcome = service.completeOnce({ group: 'Gemini', model: 'gpt-5.4', messages: [{ role: 'user', content: '解析' }] })
+      await expect(outcome).rejects.toBeInstanceOf(AiAnswerCutOffError)
+      await expect(outcome).rejects.toMatchObject({ cutOff, message: aiAnswerCutOffMessages[cutOff] })
+      expect(fetchImpl).toHaveBeenCalledOnce()
+      service.dispose()
+    }
+  })
+
   it('rejects an unavailable completeOnce model before sending a request', async () => {
     const fetchImpl = vi.fn<TestFetch>()
     const service = createAiChatService({
@@ -955,7 +1037,7 @@ describe('AI chat time limits for long-thinking models', () => {
       expect.objectContaining({
         type: 'error',
         code: 'idle-timeout',
-        message: '回复太久没有新内容，已经停下；上面是已经收到的部分，这部分可能已经计费',
+        message: '回复长时间无新内容，已停止；上方为已收到的部分，该部分可能已计费',
       }),
     ])
 
@@ -963,12 +1045,12 @@ describe('AI chat time limits for long-thinking models', () => {
     expect(thinkingOnly.at(-1)).toMatchObject({
       type: 'error',
       code: 'idle-timeout',
-      message: '思考太久没有新内容，已经停下，还没收到正式回复；上面的思考过程可能已经计费，可以重新生成',
+      message: '思考过程长时间无新内容，已停止，尚未收到正式回复；上方的思考过程可能已计费，可重新生成',
     })
 
     const nothing = await runSilence([keepAliveFrame])
     expect(nothing).toEqual([
-      expect.objectContaining({ type: 'error', code: 'idle-timeout', message: 'AI 服务太久没有返回内容，已经停下，请重试' }),
+      expect.objectContaining({ type: 'error', code: 'idle-timeout', message: 'AI 服务长时间未返回内容，已停止，请重试' }),
     ])
   })
 
@@ -989,7 +1071,7 @@ describe('AI chat time limits for long-thinking models', () => {
       expect.objectContaining({
         type: 'error',
         code: 'total-timeout',
-        message: '回复写得太久，超过了最长处理时间，已经停下；上面是已经收到的部分，这部分可能已经计费',
+        message: '回复超过最长处理时间，已停止；上方为已收到的部分，该部分可能已计费',
       }),
     ])
   })
@@ -1033,7 +1115,7 @@ describe('AI chat time limits for long-thinking models', () => {
       limits: { idleTimeoutMs: 1_000, totalTimeoutMs: 60_000 },
     })
     const cut = silentService.completeOnce({ group: 'Gemini', model: 'gpt-5.4', messages: [{ role: 'user', content: '解析' }] })
-    const cutResult = expect(cut).rejects.toThrow('AI 服务太久没有返回内容，已经停下，请重试')
+    const cutResult = expect(cut).rejects.toThrow('AI 服务长时间未返回内容，已停止，请重试')
     await vi.advanceTimersByTimeAsync(0)
     silent.enqueue('data: {"choices":[{"delta":{"content":"{\\"shots\\":["}}]}\n\n')
     await vi.advanceTimersByTimeAsync(1_001)
@@ -1143,7 +1225,7 @@ describe('AI chat attached images', () => {
     service.start({ ...startInput(), messages: [{ role: 'user', content: '', images: [first] }] })
     await service.whenIdle()
     expect(fetchImpl).not.toHaveBeenCalled()
-    expect(events.at(-1)).toMatchObject({ type: 'error', code: 'image-unavailable', message: expect.stringContaining('没有扣费') })
+    expect(events.at(-1)).toMatchObject({ type: 'error', code: 'image-unavailable', message: expect.stringContaining('未扣费') })
   })
 
   it('turns an image missing from an earlier turn into a sentence instead of failing', async () => {

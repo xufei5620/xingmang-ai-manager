@@ -43,11 +43,16 @@ export function accountAssetQuery(search: string, offset = 0): CanvasAssetQuery 
  * Checks the page against the query it answers before anything is shown. A
  * host that answers another page, or more than it was asked for, gets a retry
  * rather than a grid whose count and paging disagree.
+ *
+ * An empty page at or past the end is a true answer, not a broken one: the
+ * library shrank after this page was asked for. It has to pass here, or the
+ * step back to the last page below is never reached and refreshing repeats
+ * the same error with "previous page" disabled (desktop 0.2.25 list item 59).
  */
 export function validateAccountAssetPage(value: CanvasAssetPage, query: CanvasAssetQuery): CanvasAssetPage {
   const counts = [value?.offset, value?.limit, value?.total].every((count) => Number.isSafeInteger(count) && count >= 0)
   if (!value || !Array.isArray(value.items) || !counts || value.offset !== query.offset || value.limit !== query.limit
-    || value.items.length > value.limit || value.offset + value.items.length > value.total) {
+    || value.items.length > value.limit || (value.items.length > 0 && value.offset + value.items.length > value.total)) {
     throw new Error('素材列表返回的信息不完整，请重新读取。')
   }
   return value
@@ -61,6 +66,11 @@ export function accountAssetItems(page: CanvasAssetPage): CanvasListedAssetSumma
 /** The last page that still has items, for a library that shrank while the view was open. */
 export function accountAssetLastPageOffset(page: CanvasAssetPage): number {
   return page.total > 0 ? Math.floor((page.total - 1) / accountAssetPageSize) * accountAssetPageSize : 0
+}
+
+/** Where to go instead of showing this page: the last page that still has items when this one is past the end, otherwise null. */
+export function accountAssetStepBackOffset(page: CanvasAssetPage): number | null {
+  return page.items.length === 0 && page.offset > 0 && page.offset >= page.total ? accountAssetLastPageOffset(page) : null
 }
 
 export function accountAssetRangeLabel(page: CanvasAssetPage): string {

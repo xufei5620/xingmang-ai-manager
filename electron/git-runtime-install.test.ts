@@ -91,7 +91,7 @@ describe('git-runtime-install', () => {
   it('rejects architectures Git for Windows does not ship an installer for', () => {
     expect(normalizeGitRuntimeArchitecture('x64')).toBe('x64')
     expect(normalizeGitRuntimeArchitecture('arm64')).toBe('arm64')
-    expect(() => normalizeGitRuntimeArchitecture('ia32')).toThrow('暂时不能自动安装 Git')
+    expect(() => normalizeGitRuntimeArchitecture('ia32')).toThrow('暂不支持自动安装 Git')
   })
 
   it('tries the domestic mirror first unless the customer is clearly outside mainland China', () => {
@@ -249,7 +249,7 @@ describe('git-runtime-install', () => {
     expect(result.source).toBe('npmmirror')
     expect(fetch.mock.calls.every(([url]) => url === mirror.url)).toBe(true)
     expect(ranges).toEqual([null, `bytes=${cut}-`])
-    expect(events.some((event) => event.message === '网络断了一下，正在从国内镜像接着下载 Git')).toBe(true)
+    expect(events.some((event) => event.message === '网络曾短暂中断，正在从国内镜像继续下载 Git')).toBe(true)
   })
 
   it('downloads over each real redirect route with a fetch that reports every hop, and resumes through the redirect again', async () => {
@@ -327,7 +327,7 @@ describe('git-runtime-install', () => {
       temporaryDirectoryMode: 'same-user',
       environment: userEnvironment,
       onProgress: (event) => events.push(event),
-    }, deps)).rejects.toThrow(/^Git 没装上。国内镜像：HTTP 404；Git 官方源：HTTP 404$/)
+    }, deps)).rejects.toThrow(/^Git 安装失败。国内镜像：HTTP 404；Git 官方源：HTTP 404$/)
     expect(deps.plans).toEqual([])
     expect(events.at(-1)).toMatchObject({ phase: 'error' })
   })
@@ -364,7 +364,7 @@ describe('git-runtime-install', () => {
       const deps = dependencies({ fetch: fetch as unknown as typeof globalThis.fetch })
 
       await expect(installGitRuntimeWith('x64', { networkRegion: 'mainland-china', temporaryDirectoryMode: 'same-user', environment: userEnvironment }, deps), location)
-        .rejects.toThrow(/^Git 没装上。国内镜像：Git 安装包下载跳转到了未经批准的地址；Git 官方源：HTTP 404$/)
+        .rejects.toThrow(/^Git 安装失败。国内镜像：Git 安装包下载跳转到了未经批准的地址；Git 官方源：HTTP 404$/)
       expect(calls.filter((url) => url !== mirror.url && !url.startsWith('https://github.com/git-for-windows/'))).toEqual([])
     }
   })
@@ -392,7 +392,7 @@ describe('git-runtime-install', () => {
       const deps = dependencies({ fetch: fetch as unknown as typeof globalThis.fetch })
 
       await expect(installGitRuntimeWith('x64', { networkRegion: 'mainland-china', temporaryDirectoryMode: 'same-user', environment: userEnvironment }, deps))
-        .rejects.toThrow(`Git 没装上。国内镜像：${message}；Git 官方源：HTTP 404`)
+        .rejects.toThrow(`Git 安装失败。国内镜像：${message}；Git 官方源：HTTP 404`)
       expect(calls).toHaveLength(mirrorCalls)
       expect(fetch.mock.calls.every(([, init]) => init?.redirect === 'manual')).toBe(true)
     }
@@ -435,13 +435,13 @@ describe('git-runtime-install', () => {
     await expect(installGitRuntimeWith('x64', { networkRegion: 'mainland-china', temporaryDirectoryMode: 'same-user', environment: userEnvironment }, dependencies({
       fetch: reporting('https://evil.example/Git.exe') as unknown as typeof globalThis.fetch,
       expectedSha256: () => digest,
-    }))).rejects.toThrow(/^Git 没装上。国内镜像：Git 安装包下载跳转到了未经批准的地址；Git 官方源：HTTP 404$/)
+    }))).rejects.toThrow(/^Git 安装失败。国内镜像：Git 安装包下载跳转到了未经批准的地址；Git 官方源：HTTP 404$/)
 
     // An approved host is not enough: the bytes must come from the hop that was asked for.
     await expect(installGitRuntimeWith('x64', { networkRegion: 'mainland-china', temporaryDirectoryMode: 'same-user', environment: userEnvironment }, dependencies({
       fetch: reporting(mirror.url.replace('https://npmmirror.com/mirrors/', 'https://cdn.npmmirror.com/binaries/')) as unknown as typeof globalThis.fetch,
       expectedSha256: () => digest,
-    }))).rejects.toThrow(/^Git 没装上。国内镜像：Git 安装包下载跳转到了未经批准的地址；Git 官方源：HTTP 404$/)
+    }))).rejects.toThrow(/^Git 安装失败。国内镜像：Git 安装包下载跳转到了未经批准的地址；Git 官方源：HTTP 404$/)
 
     const spelled = mirror.url.replace('https://npmmirror.com/', 'HTTPS://NPMMIRROR.COM:443/')
     await expect(installGitRuntimeWith('x64', { networkRegion: 'mainland-china', temporaryDirectoryMode: 'same-user', environment: userEnvironment }, dependencies({
@@ -566,7 +566,7 @@ describe('Git download deadline', () => {
       temporaryDirectoryMode: 'same-user',
       environment: userEnvironment,
       onProgress: countReported(server),
-    }, deps))).rejects.toThrow(/^Git 没装上。国内镜像：下载超时；Git 官方源：下载超时$/)
+    }, deps))).rejects.toThrow(/^Git 安装失败。国内镜像：下载超时；Git 官方源：下载超时$/)
 
     // Each source gets its own full window: the second one starts when the first gives up.
     const elapsed = Date.now() - startedAt

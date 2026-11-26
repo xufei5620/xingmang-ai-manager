@@ -9,6 +9,11 @@ export interface AccountBalanceSnapshot {
   updatedAt: number | null
   error: string | null
   /**
+   * 这个 store 一共读到过几次余额，只增不减，换账号也不归零。「又读到一次」只能认它：快机器上
+   * 前后两次读能落在同一毫秒，updatedAt 一模一样，按时间戳认会漏掉一次。
+   */
+  reads: number
+  /**
    * 连着几次读余额都是本机网络的问题（没网、代理挂了、门户认证没做完）；读成功或
    * 换成别的失败就归零。余额是唯一定时去服务端拉数据的地方，顶部的断网横幅靠它
    * 认出 navigator.onLine 看不出来的那几种断网。
@@ -41,6 +46,31 @@ const activityDelay = 2_000
 
 function alwaysFocused() { return true }
 
+/**
+ * 两份平铺的记录（余额、用量）字段一样多、每个字段都一样。读回来的跟手上的一样时留着手上那一份，
+ * 只订阅余额数字的地方就不会因为每分钟一次的刷新白白重画（R8）。
+ */
+export function sameFlatRecord<T extends object>(a: T | null, b: T | null): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  const keys = Object.keys(a) as Array<keyof T>
+  return keys.length === Object.keys(b).length && keys.every((key) => Object.hasOwn(b, key) && Object.is(a[key], b[key]))
+}
+
+/**
+ * 余额每读到一次（reads 加了一，换账号清空的那一下不算）就调一次 onRead。只关心「读到了」，
+ * 不关心转圈、出错：跟着余额顺带去读别的（用量、订阅）的地方用它，不用为此订阅整份余额（R8）。
+ */
+export function subscribeBalanceReads(store: AccountBalanceStore, onRead: () => void): () => void {
+  let seen = store.getSnapshot().reads
+  return store.subscribe(() => {
+    const { reads } = store.getSnapshot()
+    if (reads === seen) return
+    seen = reads
+    onRead()
+  })
+}
+
 /** One renderer owns the account balance; views subscribe instead of polling independently. */
 export function createAccountBalanceStore({ read, now = Date.now, focused = alwaysFocused }: {
   read: () => Promise<AccountBalance>
@@ -48,7 +78,7 @@ export function createAccountBalanceStore({ read, now = Date.now, focused = alwa
   /** Whether the user is looking at the window; decides the refresh pace. */
   focused?: () => boolean
 }): AccountBalanceStore {
-  let snapshot: AccountBalanceSnapshot = { scope: null, balance: null, loading: false, updatedAt: null, error: null, networkFailures: 0 }
+  let snapshot: AccountBalanceSnapshot = { scope: null, balance: null, loading: false, updatedAt: null, error: null, reads: 0, networkFailures: 0 }
   const listeners = new Set<() => void>()
   let visible = true
   let disposed = false
@@ -134,7 +164,8 @@ export function createAccountBalanceStore({ read, now = Date.now, focused = alwa
           try {
             const balance = await read()
             if (!current()) return
-            publish({ balance, updatedAt: now(), error: null, networkFailures: 0, networkFailureReason: undefined })
+            // 跟上次一样就留着上次那一份，只认余额数字的地方（根组件挑的几样、首页）不用跟着重画（R8）。
+            publish({ balance: sameFlatRecord(snapshot.balance, balance) ? snapshot.balance : balance, updatedAt: now(), error: null, reads: snapshot.reads + 1, networkFailures: 0, networkFailureReason: undefined })
           } catch (cause) {
             if (!current()) return
             const reason = localNetworkFailureReason(cause) ?? undefined
@@ -201,7 +232,7 @@ export function createAccountBalanceStore({ read, now = Date.now, focused = alwa
       activityDueAt = null
       inFlight = null
       listeners.clear()
-      snapshot = { scope: null, balance: null, loading: false, updatedAt: null, error: null, networkFailures: 0 }
+      snapshot = { scope: null, balance: null, loading: false, updatedAt: null, error: null, reads: 0, networkFailures: 0 }
     },
   }
 }

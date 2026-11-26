@@ -38,6 +38,29 @@ export function isRemoteIdleCloseHours(value: unknown): value is RemoteIdleClose
   return typeof value === 'number' && (remoteIdleCloseHours as readonly number[]).includes(value)
 }
 
+/**
+ * 「手机端使用的模型」单独选的型号（yoyo 2026-11-19「改」）。主进程只认长得像型号名的字串，免得渲染层塞进来的东西
+ * 原样交给 Codex；能不能用由渲染层只列首页 Codex「默认模型」那张单来保证。不存 = 跟电脑上的 Codex 一样。
+ */
+export const remoteModelMaxLength = 128
+
+export function isRemoteModel(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= remoteModelMaxLength && /^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/.test(value)
+}
+
+/**
+ * 手机遥控的权限两档（yoyo 2026-11-22 亲手打字同意：「默认在干活的文件夹里看、改、跑命令都不问我，连网和改文件夹外面的才问」）。
+ * 照 Codex 自己的两档：default = on-request + 工作区可写（跟电脑上的 Codex 一样），readOnly = on-request + 只读。
+ * 没有「完全访问」：yoyo 同意的范围就到 default。设置里只在选了 readOnly 时才存，缺省是 default。
+ */
+export const remotePermissions = ['default', 'readOnly'] as const
+
+export type RemotePermission = typeof remotePermissions[number]
+
+export function isRemotePermission(value: unknown): value is RemotePermission {
+  return typeof value === 'string' && (remotePermissions as readonly string[]).includes(value)
+}
+
 /** 平台给的发送人。userId 是平台里稳定的那个编号（飞书 open_id、微信 iLink 的用户编号）。 */
 export interface RemotePeer {
   channel: RemoteChannelId
@@ -235,6 +258,11 @@ export interface RemoteChannelAdapter {
   start(handlers: RemoteChannelHandlers): Promise<void>
   /** 停掉连接和所有定时器；可以重复调用。 */
   stop(): Promise<void>
+  /**
+   * 关遥控时先调（M14）：这一刻之前交给 send 的、还没发出去或者正等着重发的普通消息不再发，失败交回；
+   * 这之后交给它的照常发（道别那句）。已经发出去、还在等平台回应的那一次收不回来。没有自动重发的渠道可以不实现。
+   */
+  cancelPendingSends?(): void
   /** 发一条消息给这个人；replyContext 是这个人最近一条入站消息带来的那个。失败就抛，底座记日志。 */
   send(peer: RemotePeer, message: RemoteOutbound, replyContext?: string): Promise<void>
   /**
@@ -329,6 +357,11 @@ export interface CodexRemoteSnapshot {
   /** 这台电脑现在能不能开遥控；不能时 unavailableReason 是上屏的原因（比如星芒以管理员身份运行）。 */
   available: boolean
   unavailableReason?: string
+  /**
+   * 能开遥控，而且这台 Windows 电脑登录的账号本身就带管理员权限（自带 Administrator、关了授权弹窗）：
+   * Codex 在这里做的事也带管理员权限，卡片上提醒一句。不能开、不是这种账号时不带。
+   */
+  alwaysElevated?: boolean
   /** 凭据能不能存到下次打开（Linux 没有密钥环时只到这次关掉）。 */
   credentialPersistence: 'durable' | 'session-only' | 'unavailable'
   /** 主目录已换成 ~ 的工作文件夹（正在用的那个）；没选是 null。 */
@@ -356,5 +389,57 @@ export interface CodexRemoteSnapshot {
   codexStartFailed?: boolean
   /** 手机上最近一条（YF-13）；这次打开遥控以后还没发来过、或者遥控全关了就不带。 */
   lastRequest?: CodexRemoteLastRequestSnapshot
+  /** 「手机端使用的模型」单独选的型号；缺省 = 跟电脑上的 Codex 一样。 */
+  model?: string
+  /** 「权限」选了「只读」才带；缺省 = 「默认」。 */
+  permission?: 'readOnly'
+  /** 「手机端的对话」接着电脑上已有的哪一段；缺省 = 新对话，在正在用的文件夹里开。 */
+  conversation?: CodexRemoteConversationItem
   channels: Record<RemoteChannelId, CodexRemoteChannelSnapshot>
+}
+
+/**
+ * 本机 Codex 的一段对话（「选择对话」列表里的一项）。folder 的主目录已换成 ~；updatedAt 是毫秒。
+ * id 只是 Codex 的对话编号，选哪段由主进程按上一次列出来的那份认，渲染层给不了文件夹路径（I5）。
+ */
+export interface CodexRemoteConversationItem {
+  id: string
+  title: string
+  folder: string
+  updatedAt: number
+}
+
+/**
+ * 「选择对话」读出来的列表。supported = false：本机的 Codex 早于 0.169，或者这次接对话时核出它套不上遥控的规矩，
+ * 接不了已有对话，只能选新对话。
+ * 读不出来时通道直接报错，不在这里。
+ */
+export type CodexRemoteConversationList =
+  | { supported: true; items: CodexRemoteConversationItem[] }
+  | { supported: false }
+
+/**
+ * 电脑页「选择对话」碰到的几种情况，主进程拒绝时原样上屏，页面上那几处也用同一句（yoyo 2026-11-22 北京 13:15
+ * 「接对话字改」，原文第 5、13、15、16 句）。
+ */
+export const remoteConversationErrors = {
+  busy: 'Codex 正在处理消息，请待其完成后再切换对话。',
+  unreadable: '无法读取对话列表，请稍后重试。',
+  folderNotAllowed: '该对话所在的文件夹不允许用于遥控，请选择其他对话。',
+  unsupported: '当前 Codex 版本暂不支持继续已有对话，请选择新对话。',
+} as const
+
+/** 对话列表、电脑页那行小字、手机上「对话」回复里的时间：本机时间的「11-21 18:30」。 */
+export function remoteConversationTime(ms: number): string {
+  const date = new Date(ms)
+  return `${twoDigits(date.getMonth() + 1)}-${twoDigits(date.getDate())} ${twoDigits(date.getHours())}:${twoDigits(date.getMinutes())}`
+}
+
+function twoDigits(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+/** Codex 的对话编号（UUID，Codex 0.169 起是 UUIDv7）。 */
+export function isCodexThreadId(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
 }

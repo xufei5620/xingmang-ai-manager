@@ -7,6 +7,7 @@ import {
   mergeAppSettings,
   normalizeAppSettings,
   offeredModelUpgradeKey,
+  onAppSettingsWritten,
   readAppSettings,
   setOfficialProvider,
   updateAppSettings,
@@ -466,6 +467,21 @@ describe('relay endpoint selections', () => {
     expect(mergeAppSettings(settings(), { version: 2, relayEndpointIds: {} })).not.toHaveProperty('relayEndpointIds')
   })
 
+  it('keeps the standing instructions across saves of other settings and clears them with an empty update', async () => {
+    const filePath = temporarySettingsPath()
+    await updateAppSettings(filePath, { version: 2, standingInstructions: '回答简短一点' })
+    await updateAppSettings(filePath, { version: 2, theme: 'dark' })
+    expect(readAppSettings(filePath).standingInstructions).toBe('回答简短一点')
+    await updateAppSettings(filePath, { version: 2, standingInstructions: '' })
+    expect(readAppSettings(filePath)).not.toHaveProperty('standingInstructions')
+
+    // A hand-edited value that is not text, or longer than the settings page allows, reads back as never written.
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), standingInstructions: 42 }))
+    expect(readAppSettings(filePath)).not.toHaveProperty('standingInstructions')
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), standingInstructions: '字'.repeat(2001) }))
+    expect(readAppSettings(filePath)).not.toHaveProperty('standingInstructions')
+  })
+
   it('preserves concurrent endpoint updates to different sites', async () => {
     const filePath = temporarySettingsPath()
     await Promise.all([
@@ -553,6 +569,39 @@ describe('field-wise settings updates (①栏11)', () => {
     expect(mergeAppSettings(base, { version: 2, relaySiteId: 'solov-api' }).relaySiteId).toBe('solov-api')
     expect(mergeAppSettings(base, { version: 2, mirrorPolicy: 'auto' })).not.toHaveProperty('mirrorPolicy')
     expect(mergeAppSettings(base, { version: 2, workspace: 'D:\\Elsewhere' }).workspace).toBe('D:\\Elsewhere')
+  })
+
+  // 0.2.25 总单 Q1：设置页「更换」那一刻跟着那个文件夹走，首页「打开」拿它跟各工具最近一条对话比。
+  it('keeps the settings-page folder choice time only while the stored folder is that folder', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ workspace: 'D:\\Old' }))
+
+    const chosen = await updateAppSettings(filePath, { version: 2, workspace: 'D:\\Chosen', workspaceChosenAt: 1_700_000_000_000 })
+    expect(chosen).toMatchObject({ workspace: 'D:\\Chosen', workspaceChosenAt: 1_700_000_000_000 })
+    expect(readAppSettings(filePath)).toMatchObject({ workspace: 'D:\\Chosen', workspaceChosenAt: 1_700_000_000_000 })
+    // The renderer-side marker never reaches the file.
+    expect(readAppSettings(filePath)).not.toHaveProperty('workspaceChosen')
+
+    // Unrelated writes and a rewrite of the same folder keep it.
+    await updateAppSettings(filePath, { version: 2, theme: 'dark' })
+    await updateAppSettings(filePath, { version: 2, workspace: 'D:\\Chosen' })
+    expect(readAppSettings(filePath).workspaceChosenAt).toBe(1_700_000_000_000)
+
+    // Another path (the home folder picker) switching to a different folder drops it.
+    const elsewhere = await updateAppSettings(filePath, { version: 2, workspace: 'D:\\Picked' })
+    expect(elsewhere).not.toHaveProperty('workspaceChosenAt')
+    expect(readAppSettings(filePath)).not.toHaveProperty('workspaceChosenAt')
+  })
+
+  it('reads back only a sane folder choice time', () => {
+    const filePath = temporarySettingsPath()
+    for (const workspaceChosenAt of [0, -5, 1.5, Number.MAX_VALUE, '1700000000000', null, true]) {
+      fs.writeFileSync(filePath, JSON.stringify({ ...settings(), workspaceChosenAt }), 'utf8')
+      expect(readAppSettings(filePath)).not.toHaveProperty('workspaceChosenAt')
+    }
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), workspaceChosenAt: 1_700_000_000_000 }), 'utf8')
+    expect(readAppSettings(filePath).workspaceChosenAt).toBe(1_700_000_000_000)
+    expect(mergeAppSettings(settings(), { version: 2, workspace: 'D:\\X', workspaceChosenAt: Number.NaN })).not.toHaveProperty('workspaceChosenAt')
   })
 
   it('keeps the CLI version preference absent until the user asks for latest, and clears it again', async () => {
@@ -922,6 +971,92 @@ describe('startup settings normalization', () => {
     expect(result.written).toBe(true)
     expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).toMatchObject({ version: 2, workspace: 'D:\\Legacy' })
     expect((await normalizeAppSettings(filePath)).written).toBe(false)
+  })
+})
+
+describe('unchanged settings updates (0.2.24 性能深查 R4)', () => {
+  const windowState = { bounds: { x: 120, y: 80, width: 1280, height: 820 }, maximized: false }
+
+  // 开机界面把当前深浅色发一遍、关窗存一遍窗口位置，多数时候什么都没变。
+  it('leaves the file, its backup and the replace hook alone when an update changes nothing on disk', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ theme: 'dark', windowState }))
+    const content = fs.readFileSync(filePath, 'utf8')
+    const before = fs.statSync(filePath)
+    let hookCalls = 0
+    const hooks = { beforeReplace: () => { hookCalls += 1 } }
+
+    const unchanged = await updateAppSettings(filePath, { version: 2, theme: 'dark' }, hooks)
+    await updateAppSettings(filePath, { version: 2, windowState }, hooks)
+
+    expect(unchanged).toEqual(settings({ theme: 'dark', windowState }))
+    expect(hookCalls).toBe(0)
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(content)
+    expect(fs.statSync(filePath).ino).toBe(before.ino)
+    expect(fs.statSync(filePath).mtimeMs).toBe(before.mtimeMs)
+    expect(fs.existsSync(`${filePath}.bak`)).toBe(false)
+
+    await updateAppSettings(filePath, { version: 2, theme: 'light' }, hooks)
+    expect(hookCalls).toBe(1)
+    expect(readAppSettings(filePath).theme).toBe('light')
+    expect(readAppSettings(`${filePath}.bak`).theme).toBe('dark')
+  })
+
+  // C 盘满、杀毒锁住文件：没变的那次不碰盘，也就不会因为写不进去而失败。
+  it('does not fail an unchanged update when the settings file could not be replaced', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ theme: 'dark' }))
+    const locked = { beforeReplace: () => { throw new Error('disk full') } }
+
+    await expect(updateAppSettings(filePath, { version: 2, theme: 'dark' }, locked)).resolves.toMatchObject({ theme: 'dark' })
+    await expect(updateAppSettings(filePath, { version: 2, theme: 'light' }, locked)).rejects.toThrow('disk full')
+    expect(readAppSettings(filePath).theme).toBe('dark')
+  })
+
+  it('still rewrites a primary it cannot parse even when the backup already holds the same record', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ theme: 'dark' }))
+    await writeAppSettings(filePath, settings({ theme: 'light' }))
+    fs.writeFileSync(filePath, '{ broken', 'utf8')
+
+    const merged = await updateAppSettings(filePath, { version: 2, theme: 'dark' })
+    expect(merged.theme).toBe('dark')
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).toMatchObject({ theme: 'dark' })
+  })
+})
+
+describe('settings write notifications (0.2.24 性能深查 R5)', () => {
+  it('notifies after the file is replaced, skips unchanged and failed writes, and stops after unsubscribing', async () => {
+    const filePath = temporarySettingsPath()
+    const seen: string[] = []
+    const stop = onAppSettingsWritten(filePath, () => { seen.push(readAppSettings(filePath).theme) })
+
+    await writeAppSettings(filePath, settings({ theme: 'dark' }))
+    await updateAppSettings(filePath, { version: 2, theme: 'dark' })
+    await expect(updateAppSettings(filePath, { version: 2, theme: 'light' }, {
+      beforeReplace: () => { throw new Error('disk full') },
+    })).rejects.toThrow('disk full')
+    await setOfficialProvider(filePath, 'codex', true)
+    expect(seen).toEqual(['dark', 'dark'])
+
+    stop()
+    await updateAppSettings(filePath, { version: 2, theme: 'light' })
+    expect(seen).toEqual(['dark', 'dark'])
+  })
+
+  it('keeps a completed write successful when a listener throws, and still tells the other listeners', async () => {
+    const filePath = temporarySettingsPath()
+    const other = vi.fn()
+    const stopBroken = onAppSettingsWritten(filePath, () => { throw new Error('listener broke') })
+    const stopOther = onAppSettingsWritten(path.join(path.dirname(filePath), '.', 'settings.json'), other)
+    try {
+      await expect(updateAppSettings(filePath, { version: 2, theme: 'dark' })).resolves.toMatchObject({ theme: 'dark' })
+      expect(other).toHaveBeenCalledTimes(1)
+      expect(readAppSettings(filePath).theme).toBe('dark')
+    } finally {
+      stopBroken()
+      stopOther()
+    }
   })
 })
 

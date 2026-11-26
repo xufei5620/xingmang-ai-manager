@@ -17,7 +17,13 @@ export interface GuideLaunchTarget {
  * 所以自己读一份；toolsApi 缓存一分钟，跟首页读的是同一份，不多读盘。只在引导开着时读，
  * revision 变了（主动重新检测、记录有变）再读一次。读不到当没读到：「打开」弹选择窗口，跟首页一样。
  */
-export function useGuideLaunch(toolsApi: Pick<ToolsApi, 'recent'>, open: boolean, revision: number, remembered: string | undefined): (provider: ProviderId) => GuideLaunchTarget {
+export function useGuideLaunch(
+  toolsApi: Pick<ToolsApi, 'recent'>,
+  open: boolean,
+  revision: number,
+  remembered: string | undefined,
+  rememberedChosenAt?: number,
+): (provider: ProviderId) => GuideLaunchTarget {
   const [recent, setRecent] = useState<MultiProviderSessionPage | null>(null)
   useEffect(() => {
     if (!open) return
@@ -25,11 +31,16 @@ export function useGuideLaunch(toolsApi: Pick<ToolsApi, 'recent'>, open: boolean
     void toolsApi.recent().then((page) => { if (current) setRecent(page) }).catch(() => { if (current) setRecent(null) })
     return () => { current = false }
   }, [toolsApi, open, revision])
-  return (provider) => guideLaunchTarget(recent, provider, remembered)
+  return (provider) => guideLaunchTarget(recent, provider, remembered, rememberedChosenAt)
 }
 
-export function guideLaunchTarget(recent: MultiProviderSessionPage | null, provider: ProviderId, remembered: string | undefined): GuideLaunchTarget {
-  const workspaces = launchWorkspaces(recent?.items ?? [], provider, remembered)
+export function guideLaunchTarget(
+  recent: MultiProviderSessionPage | null,
+  provider: ProviderId,
+  remembered: string | undefined,
+  rememberedChosenAt?: number,
+): GuideLaunchTarget {
+  const workspaces = launchWorkspaces(recent?.items ?? [], provider, remembered, rememberedChosenAt)
   return { ...(workspaces[0] ? { workspace: workspaces[0].path } : {}), startsFresh: startsInNewFolder(recent, provider, workspaces) }
 }
 

@@ -141,17 +141,17 @@ describe('update install prompt copy', () => {
     // The Mac keychain sentence was approved on 2026-10-28.
     expect(buildInstallPrompt('0.2.22', 'darwin', { unattended: true })).toEqual({
       title: '星芒AI管理工具',
-      message: '新版 0.2.22 已经下好，现在装上吗？',
-      detail: '装的时候星芒会先关掉，装好自动打开。重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。现在不装也行：你不用电脑时星芒会自己装好，装完照旧待在菜单栏。',
+      message: '新版 0.2.22 已下载，是否立即安装？',
+      detail: '安装时星芒将先关闭，完成后自动打开。重启后 Mac 可能弹出钥匙串密码框，请输入本机开机密码并点击「始终允许」。如暂不安装，电脑空闲时星芒将自动安装，安装完成后仍保留在菜单栏。',
       buttons: ['稍后再说', '现在安装'],
     })
     expect(buildInstallPrompt('0.2.22', 'darwin', { unattended: false }).detail)
-      .toBe('装的时候星芒会先关掉，装好自动打开。重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。现在不装也行：退出星芒或下次打开时自动装上。')
+      .toBe('安装时星芒将先关闭，完成后自动打开。重启后 Mac 可能弹出钥匙串密码框，请输入本机开机密码并点击「始终允许」。如暂不安装，将在退出星芒或下次启动时自动安装。')
     expect(buildInstallPrompt('0.2.22', 'win32', { unattended: false }).detail)
-      .toBe('装的时候星芒会先关掉，装好自动打开。Windows 弹出授权窗口时请点「是」。现在不装也行：关掉软件或下次打开时自动装上。')
+      .toBe('安装时星芒将先关闭，完成后自动打开。Windows 弹出授权窗口时，请点击「是」。如暂不安装，将在关闭软件或下次启动时自动安装。')
     // Running elevated already, so no consent window appears.
     expect(buildInstallPrompt('0.2.22', 'win32', { unattended: false, elevated: true }).detail)
-      .toBe('装的时候星芒会先关掉，装好自动打开。现在不装也行：关掉软件或下次打开时自动装上。')
+      .toBe('安装时星芒将先关闭，完成后自动打开。如暂不安装，将在关闭软件或下次启动时自动安装。')
   })
 
   it('mentions the keychain prompt only on a Mac', () => {
@@ -169,7 +169,7 @@ describe('update install prompt copy', () => {
     for (const platform of ['win32', 'darwin'] as const) {
       expect(buildInstallPrompt('0.2.21', platform, { unattended: false, rollback: true })).toEqual({
         ...buildInstallPrompt('0.2.21', platform, { unattended: false }),
-        message: '建议退回的 0.2.21 版已经下好，现在装上吗？',
+        message: '建议回退的 0.2.21 版已下载，是否立即安装？',
       })
     }
     expect(buildInstallPrompt('0.2.22', 'win32', { unattended: false, rollback: false }))
@@ -199,7 +199,7 @@ describe('resolveInstallPromptVersion', () => {
   })
 
   it('does not ask while the launch install notice is counting down or nothing is ready', () => {
-    const notice = { version: '0.2.22', title: '星芒AI马上更新', body: '…', installAt: 5_000 }
+    const notice = { version: '0.2.22', title: '星芒AI即将更新', body: '…', installAt: 5_000 }
     expect(resolveInstallPromptVersion({ ...base, snapshot: snapshot({ launchInstallNotice: notice }) })).toBeNull()
     expect(resolveInstallPromptVersion({ ...base, snapshot: snapshot({ phase: 'downloading' }) })).toBeNull()
     expect(resolveInstallPromptVersion({ ...base, snapshot: snapshot({ error: { code: 'X', message: '装失败了' } }) })).toBeNull()
@@ -262,7 +262,7 @@ describe('createUpdateInstallPrompter', () => {
     test.state.idleMs = PROMPT_QUIET_INPUT_MS
     await test.runTimers()
     expect(test.asks).toHaveLength(1)
-    expect(test.asks[0].prompt.message).toBe('建议退回的 0.2.21 版已经下好，现在装上吗？')
+    expect(test.asks[0].prompt.message).toBe('建议回退的 0.2.21 版已下载，是否立即安装？')
     prompter.dispose()
   })
 
@@ -277,7 +277,7 @@ describe('createUpdateInstallPrompter', () => {
     test.state.idleMs = PROMPT_QUIET_INPUT_MS
     await test.runTimers()
     expect(test.asks).toHaveLength(1)
-    expect(test.asks[0].prompt.message).toBe('新版 0.2.22 已经下好，现在装上吗？')
+    expect(test.asks[0].prompt.message).toBe('新版 0.2.22 已下载，是否立即安装？')
 
     test.asks[0].answer('later')
     await settle()
@@ -475,7 +475,7 @@ describe('createUpdateInstallPrompter', () => {
     test.state.idleMs = PROMPT_QUIET_INPUT_MS
     await test.runTimers()
     expect(test.asks).toHaveLength(1)
-    expect(test.asks[0].prompt.message).toBe('新版 0.2.22 已经下好，现在装上吗？')
+    expect(test.asks[0].prompt.message).toBe('新版 0.2.22 已下载，是否立即安装？')
     prompter.dispose()
   })
 
@@ -587,7 +587,7 @@ describe('createUpdateInstallPrompter', () => {
     expect(test.asks).toHaveLength(1)
     // An idle install cannot come while the remote stays on, so the question does not promise one.
     expect(test.asks[0].prompt.detail).toBe(buildInstallPrompt('0.2.22', 'darwin', { unattended: false }).detail)
-    expect(test.asks[0].prompt.detail).toContain('退出星芒或下次打开时自动装上。')
+    expect(test.asks[0].prompt.detail).toContain('将在退出星芒或下次启动时自动安装。')
 
     // Away again, still unanswered: the question stays for when the customer comes back.
     test.state.idleMs = IDLE_INSTALL_IDLE_MS * 6
@@ -745,7 +745,7 @@ describe('createUpdateInstallPrompter', () => {
     prompter.observe(test.state.snapshot)
     await test.runTimers()
     expect(test.asks).toHaveLength(1)
-    expect(test.asks[0].prompt.detail).toContain('Windows 弹出授权窗口时请点「是」。')
+    expect(test.asks[0].prompt.detail).toContain('Windows 弹出授权窗口时，请点击「是」。')
     // No poll while the question waits: nothing on Windows would close it.
     expect(test.timers).toEqual([])
     test.asks[0].answer('later')
@@ -895,7 +895,7 @@ describe('createUpdateInstallPrompter', () => {
     prompter.observe(test.state.snapshot)
     await test.runTimers()
     expect(test.asks).toHaveLength(1)
-    expect(test.asks[0].prompt.message).toBe('新版 0.2.22 已经下好，现在装上吗？')
+    expect(test.asks[0].prompt.message).toBe('新版 0.2.22 已下载，是否立即安装？')
     test.asks[0].answer('install')
     await settle()
     expect(test.installedNow).toEqual(['0.2.22'])

@@ -69,11 +69,11 @@ describe('Codex other-model dialog', () => {
   it('treats a key whose only other-vendor model is grok-4.6 as having none', () => {
     const models = ['gpt-6-astra', 'grok-4.6']
     expect(otherModelChoices(models, 'gpt-6-astra')).toEqual(['gpt-6-astra'])
-    expect(otherModelSaveIssue({ models, defaultModel: 'gpt-6-astra', selectedModel: 'gpt-6-astra', detected: true })).toContain('更换有相应模型权限的密钥')
+    expect(otherModelSaveIssue({ models, defaultModel: 'gpt-6-astra', selectedModel: 'gpt-6-astra', detected: true })).toContain('更换具备相应模型权限的密钥')
   })
 
   it('blocks GPT-only and empty results with a useful key-permission explanation', () => {
-    expect(otherModelSaveIssue({ ...ready, models: ['gpt-6-astra'], selectedModel: 'gpt-6-astra' })).toContain('更换有相应模型权限的密钥')
-    expect(otherModelSaveIssue({ ...ready, models: [] })).toContain('更换有相应模型权限的密钥')
+    expect(otherModelSaveIssue({ ...ready, models: ['gpt-6-astra'], selectedModel: 'gpt-6-astra' })).toContain('更换具备相应模型权限的密钥')
+    expect(otherModelSaveIssue({ ...ready, models: [] })).toContain('更换具备相应模型权限的密钥')
   })
 })

@@ -1,21 +1,18 @@
-// 扩展三页（外接工具、技能、插件）和「星芒精选」页共用的那一份（#1070 第 11 步，从 pages-management.tsx 原样搬来）：
-// 列表按页签和安装位置怎么分、官方市场要不要提醒、Codex 插件目录、每一行能点什么、添加连接时的检查和解析、要 Python
-// 或 uv 时那句提示、精选条目的卡片和详情。pages-management.tsx 照旧转出这里原来导出的名字；扩展页还要用的三样
-// （RowAction、activeTools、mcpAuthorized）原来不导出，搬过来只加了 export。
-import type { ReactNode } from 'react'
-import { Check, Globe, Package, Plus, Server } from 'lucide-react'
-import { Button, Pill } from '../../ui'
+// 「插件」页（PluginsHub、它的几个对话框和 ExtensionAddDialog）共用的那一份。#1070 第 11 步从 pages-management.tsx
+// 原样搬来；0.2.25 精选、外接工具、技能、插件合成一页以后旧四页删掉，这里只留合并页还在用的：官方市场要不要提醒、
+// Codex 插件目录、每一行能点什么、添加连接时的检查和解析、要 Python 或 uv 时那句提示、精选条目的详情。
+import { Check, Globe, Package, Server } from 'lucide-react'
+import { Pill } from '../../ui'
 import { scopeOptions } from '../../registry/business'
 import {
   curatedCommandLines,
   curatedDisclaimer,
-  curatedInstallTarget,
   curatedNetworkLabels,
   curatedRiskLabels,
   curatedRuntimeLabels,
   type CuratedExtension,
+  type CuratedRisk,
 } from '../../registry/curated-extensions'
-import type { ExtensionScopeGroup } from '../../registry/extensions'
 import { tools } from '../../registry/tools'
 import { runtimeHomebrewCommand } from '../tools/runtime-install-guide'
 import type { OperationTarget } from '../../operation-error'
@@ -42,32 +39,11 @@ type CodexExtensionApi = Pick<
   V2Bridge,
   'listMcpServers' | 'listSkills' | 'listPlugins'
 >
-type ExtensionMarket = Awaited<
-  ReturnType<V2Bridge['listPlugins']>
->['marketplaces'][number]
 export type CodexExtensionMetadata = {
   mcp: Awaited<ReturnType<V2Bridge['listMcpServers']>>
   skills: Awaited<ReturnType<V2Bridge['listSkills']>>
   plugins: Awaited<ReturnType<V2Bridge['listPlugins']>>
 }
-type ExtensionView = 'installed' | 'market'
-
-/**
- * Provider CLIs return installed and available plugins together when queried
- * with `--available`. Keep the installed tab restricted to actual installs.
- */
-export function extensionItemsForView(
-  items: readonly ExtensionItem[],
-  kind: ExtensionKind,
-  view: ExtensionView,
-): ExtensionItem[] {
-  return items.filter(
-    (item) =>
-      item.kind === kind &&
-      (kind !== 'plugin' || view !== 'installed' || item.installed),
-  )
-}
-
 /** Codex 用 Key（接当前账号）登录时，官方插件目录的市场名。与主进程同名常量一致。 */
 const codexOfficialCatalogName = 'openai-api-curated'
 
@@ -94,16 +70,16 @@ export function officialMarketplaceNotice(
       ? {
           tone: 'neutral',
           title: '官方插件目录已就绪',
-          body: '下面是 Codex 可以安装的插件，安装前确认插件来源。要登录 ChatGPT 账号才能用的插件不在其中。',
+          body: '以下为 Codex 可安装的插件，安装前请确认插件来源。需登录 ChatGPT 账号才能使用的插件未列出。',
           needsAction: false,
           actionLabel: '下载插件目录',
         }
       : {
           tone: 'warn',
-          title: '官方插件目录还没下载',
+          title: '官方插件目录尚未下载',
           body:
             marketplace.reason ||
-            '下载之后这里才会出现可以安装的插件，网络慢时要等一会儿。',
+            '下载完成后此处将显示可安装的插件，网络较慢时请稍候。',
           needsAction: true,
           actionLabel: '下载插件目录',
         }
@@ -112,31 +88,20 @@ export function officialMarketplaceNotice(
     return {
       tone: 'neutral',
       title: '官方插件市场已添加',
-      body: '下面是可以安装的插件，安装前确认插件来源。',
+      body: '以下为可安装的插件，安装前请确认插件来源。',
       needsAction: false,
       actionLabel: '添加官方市场',
     }
   }
   return {
     tone: 'warn',
-    title: '还没有添加官方插件市场',
+    title: '尚未添加官方插件市场',
     body:
       marketplace.reason ||
-      '添加之后这里才会出现可以安装的插件。添加需要这台电脑上装有 Git。',
+      '添加后将在此显示可安装的插件。添加需要本机已安装 Git。',
     needsAction: true,
     actionLabel: '添加官方市场',
   }
-}
-
-export function filterExtensionMarkets(
-  markets: readonly ExtensionMarket[],
-  query: string,
-): ExtensionMarket[] {
-  const normalized = query.trim().toLowerCase()
-  if (!normalized) return [...markets]
-  return markets.filter((market) =>
-    `${market.name} ${market.root}`.toLowerCase().includes(normalized),
-  )
 }
 
 /**
@@ -244,23 +209,15 @@ export function extensionRowState(
   }
 }
 
-/**
- * 外接工具没有「更新」这一步：精选里的版本是星芒核过才固定下来的，自己加的要换版本只能移除再加。
- * 行上挂着「可更新」却找不到按钮，所以外接工具只在详情里说清楚，技能、插件有「更新」按钮照旧挂。
- */
-export function extensionShowsUpdatePill(item: ExtensionItem): boolean {
-  return item.kind !== 'mcp' && item.update.state === 'update-available'
-}
-
 /** 详情里的「更新状态」。Git 来源的「版本」是一串提交号，不往句子里放。 */
 export function extensionUpdateStatus(item: ExtensionItem): string {
   if (item.kind !== 'mcp' || item.update.state !== 'update-available') return item.update.reason || '尚未检查'
   const latest = item.source.kind === 'git' ? null : item.latestVersion
-  return `有新版本${latest ? ` ${latest}` : ''}。外接工具不在这里更新：精选里加的用的是星芒核过的版本，不用管它；自己加的想换新版本，先移除，再按新版本号加一次。`
+  return `有新版本${latest ? ` ${latest}` : ''}。此项不在此处更新：推荐项使用经星芒核验的版本，无需处理；自行添加的如需更新，请先移除，再按新版本号重新添加。`
 }
 
 /**
- * scope 是 CLI 自己的英文叫法，「范围」筛选和详情按同一套归类：local 是只在这个项目里用的那一份，
+ * scope 是 CLI 自己的英文叫法，「范围」筛选和详情按同一套归类：local 是仅在当前项目中使用的那一份，
  * 归「当前项目」；扩展自带的技能装在用户目录里，哪个文件夹打开都能用，归「我的（全局）」。
  */
 function extensionShownScope(scope: ExtensionItem['scope'] | undefined) {
@@ -271,43 +228,6 @@ function extensionShownScope(scope: ExtensionItem['scope'] | undefined) {
 export function extensionScopeLabel(scope: ExtensionItem['scope'] | undefined): string {
   const shown = extensionShownScope(scope)
   return scopeOptions.find((option) => option.value === shown)?.label ?? '未提供'
-}
-
-export interface ExtensionGroup {
-  key: string
-  title: string
-  description: string
-  items: ExtensionItem[]
-}
-
-/**
- * 已装的按范围分组（registry/extensions.ts 那张表，分组标题替代了以前的「范围」筛选）。表里只有一组 all 的
- * 工具全放进那一组；builtin 判为真的（Codex 自带、只读的技能）进「系统内置」；其余按 scope 对上那一组。
- * 对不上的层（表里没有的、没带 scope 的）不丢，各自另起一组，标题用详情里那套范围叫法、不带说明。空组不画。
- */
-export function groupExtensionItems(
-  items: readonly ExtensionItem[],
-  groups: readonly ExtensionScopeGroup[],
-  builtin: (item: ExtensionItem) => boolean = () => false,
-): ExtensionGroup[] {
-  const single = groups.some((group) => group.scope === 'all')
-  const hasBuiltin = groups.some((group) => group.scope === 'builtin')
-  const result: ExtensionGroup[] = groups.map((group) => ({
-    key: group.scope,
-    title: group.title,
-    description: group.description,
-    items: [],
-  }))
-  for (const item of items) {
-    const key = single ? 'all' : hasBuiltin && builtin(item) ? 'builtin' : item.scope ?? ''
-    let group = result.find((candidate) => candidate.key === key)
-    if (!group) {
-      group = { key, title: extensionScopeLabel(item.scope), description: '', items: [] }
-      result.push(group)
-    }
-    group.items.push(item)
-  }
-  return result.filter((group) => group.items.length > 0)
 }
 
 /** 列表里带回来的 scope 原样交回去；内置、扩展自带或不知道的不带，由主进程按缺省处理。 */
@@ -379,12 +299,12 @@ export async function runExtensionAction(
   }
   if (item.provider === 'codex' && item.kind === 'skill') {
     const matched = nativeSkill && findNativeSkill([nativeSkill], item)
-    if (!matched) throw new Error('这个技能的文件位置已经变化，请刷新列表后再操作。')
-    if (!matched.managed || matched.scope === 'system') throw new Error('这个技能是只读的，不能在这里修改。')
+    if (!matched) throw new Error('该技能的文件位置已变更，请刷新列表后再操作。')
+    if (!matched.managed || matched.scope === 'system') throw new Error('该技能为只读，无法在此修改。')
     if (action === 'enable' || action === 'disable')
       await api.toggleSkill(matched.path, action === 'enable')
     else if (action === 'uninstall') await api.uninstallSkill(matched.path)
-    else throw new Error('Codex 技能不支持这个操作。')
+    else throw new Error('Codex 技能不支持此操作。')
     return
   }
   const scope = extensionMutationScope(item.scope)
@@ -472,16 +392,6 @@ export function extensionToolChoices(
   }))
 }
 
-/**
- * 添加框里能装它的工具一个都没装（勾选框全是「未安装」）时，那几个工具的名字，用「、」连起来；
- * 有一个能勾、或者已经加过的，回 null，不出那条提示。
- */
-export function extensionNoToolInstalled(choices: readonly ExtensionToolChoice[]): string | null {
-  const supported = choices.filter((choice) => choice.note !== '不支持')
-  if (!supported.length || supported.some((choice) => choice.note !== '未安装')) return null
-  return supported.map((choice) => choice.name).join('、')
-}
-
 export function ExtensionToolPicker({
   choices,
   selected,
@@ -536,12 +446,12 @@ export function customMcpProblem(input: {
   existing?: readonly string[]
 }): string | null {
   const name = input.name.trim()
-  if (!name) return '请给这个连接起个名字'
+  if (!name) return '请为此连接命名'
   if (!/^[A-Za-z0-9_-]{1,40}$/.test(name)) return '名称只能用字母、数字和 - _，最多 40 位'
-  if (input.existing?.includes(name)) return `已经有叫「${name}」的连接了，换个名字`
+  if (input.existing?.includes(name)) return `已存在名为「${name}」的连接，请更换名称`
   const source = input.source.trim()
   if (input.transport === 'stdio') return source ? null : '请填写启动命令'
-  return /^https?:\/\/\S/i.test(source) ? null : '服务地址要以 http:// 或 https:// 开头'
+  return /^https?:\/\/\S/i.test(source) ? null : '服务地址需以 http:// 或 https:// 开头'
 }
 // Codex 的 `mcp list --json` 只报 unknown、unsupported、not_logged_in、bearer_token、o_auth 这几个词（0.46.0 到
 // 0.163.0 都一样）。以前认的是 authenticated、logged_in，Codex 从来不报，登录过的、带令牌的也一直挂着「需要登录授权」。
@@ -554,7 +464,7 @@ export function mcpNeedsLogin(status: string) {
   return status.toLowerCase() === 'not_logged_in'
 }
 /**
- * 「能连上 / 连不上 / 未检测」这一行小标。没有报告 = 这一轮还没检测过，
+ * 「连接正常 / 无法连接 / 未检测」这一行小标。没有报告 = 这一轮还没检测过，
  * 这时一颗小标都不画，免得旧结果看起来像刚测的。
  */
 export function mcpHealthView(
@@ -565,8 +475,8 @@ export function mcpHealthView(
   if (checking) return { tone: 'neutral', label: '检测中', detail: null }
   if (!report) return null
   const entry = report.entries.find((candidate) => candidate.id === id)
-  if (entry?.state === 'connected') return { tone: 'ok', label: '能连上', detail: entry.detail }
-  if (entry?.state === 'failed') return { tone: 'warn', label: '连不上', detail: entry.detail }
+  if (entry?.state === 'connected') return { tone: 'ok', label: '连接正常', detail: entry.detail }
+  if (entry?.state === 'failed') return { tone: 'warn', label: '无法连接', detail: entry.detail }
   // 报告里没有这一条时，原因用整份报告那一句（工具不支持、或这次没测完），
   // 而不是留空让用户猜。工具给不出原因就什么都不写，不替它编。
   return { tone: 'neutral', label: '未检测', detail: entry?.detail ?? report.reason }
@@ -597,7 +507,7 @@ export interface McpRuntimeNotice {
   body: string
   /** 只有真的缺 Python 才给按钮：装 Python 解决不了缺 uv。 */
   installPython: boolean
-  /** 缺 uv 时给「找客服」：星芒装不了它，客服教客户装（D20）。 */
+  /** 缺 uv 时给「联系客服」：星芒装不了它，客服教客户装（D20）。 */
   support: boolean
 }
 
@@ -619,19 +529,19 @@ export function mcpRuntimeNotice(
   if (needs === 'python' && runtimes.python) return null
   const sentences = [
     needs === 'uv'
-      ? `这条连接要用 uv 启动，这台电脑上没有找到 uv${runtimes.python ? '' : '，也没有找到 Python'}。`
-      : '这条连接要靠 Python 运行，这台电脑上还没有装。',
+      ? `此连接需使用 uv 启动，本机未找到 uv${runtimes.python ? '' : '，也未找到 Python'}。`
+      : '此连接需 Python 运行，本机尚未安装。',
   ]
   if (!runtimes.python) {
     sentences.push(management === 'managed'
-      ? '可以先装好 Python 再回来添加。'
-      : `可以在终端里执行 ${runtimeHomebrewCommand('python')} 装好 Python，再回来添加。`)
+      ? '请先安装 Python 后再添加。'
+      : `可在终端中执行 ${runtimeHomebrewCommand('python')} 安装 Python 后再添加。`)
   }
-  // uv 星芒装不了，客户多半也不会开命令行敲 pip，所以缺它的时候交给客服教（D20），配一颗「找客服」。
-  if (needs === 'uv') sentences.push('这个工具还要一个叫 uv 的小组件，点「找客服」，客服教你装。')
-  sentences.push('仍然可以直接添加，但工具用到它的时候会连不上。')
+  // uv 星芒装不了，客户多半也不会开命令行敲 pip，所以缺它的时候交给客服教（D20），配一颗「联系客服」。
+  if (needs === 'uv') sentences.push('该工具还需安装 uv 组件，请点击「联系客服」获取安装指导。')
+  sentences.push('仍可直接添加，但工具调用时将无法连接。')
   return {
-    title: '这条连接还差一样东西',
+    title: '该连接缺少必要组件',
     body: sentences.join(''),
     installPython: !runtimes.python && management === 'managed',
     support: needs === 'uv',
@@ -645,7 +555,7 @@ function parseJsonField(value: string, fallback: string, label: string): unknown
   try {
     return JSON.parse(value || fallback)
   } catch {
-    throw new Error(`${label}的格式不对。填文件夹时请用上面的「选择文件夹」，软件会替你填好；手填路径时每个 \\ 要写成两个。`)
+    throw new Error(`${label}格式不正确。填写文件夹请使用上方「选择文件夹」自动填写；手动填写路径时，每个 \\ 需写成两个。`)
   }
 }
 export function parseCommandArguments(value: string): string[] {
@@ -654,7 +564,7 @@ export function parseCommandArguments(value: string): string[] {
     !Array.isArray(result) ||
     !result.every((item): item is string => typeof item === 'string')
   )
-    throw new Error('附加参数照提供方说明原样粘贴，例如 ["-y", "工具包名称"]。')
+    throw new Error('附加参数请按提供方说明原样粘贴，例如 ["-y", "工具包名称"]。')
   return result
 }
 export function parseEnvironmentVariables(
@@ -670,10 +580,10 @@ export function parseEnvironmentVariables(
         /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && typeof entry === 'string',
     )
   )
-    throw new Error('附加设置照提供方说明原样粘贴，例如 {"名称": "值"}。')
+    throw new Error('附加设置请按提供方说明原样粘贴，例如 {"名称": "值"}。')
   return result as Record<string, string>
 }
-const headerFormatError = '请求头每行写一个，格式是「名称: 值」，比如 Authorization: Bearer 你的密钥。'
+const headerFormatError = '请求头每行一个，格式为「名称: 值」，例如 Authorization: Bearer 您的密钥。'
 /**
  * 网络服务的请求头：一行一个「名称: 值」，和提供方说明、Claude Code 的 --header 一个写法；照「附加设置」那样
  * 贴一个 JSON 对象进来也认。主进程收到以后还要用同一份规矩（mcp-http-headers.ts）再过一遍。
@@ -738,17 +648,6 @@ export function mcpCopyOffered(provider: Provider, item: ExtensionItem): boolean
     && item.installed
     && item.scope === 'user'
     && item.operations.uninstall
-}
-
-/** 「也装到别的工具」框里能勾的工具：不含来源那个；已经有同名连接的标「已添加」、不给勾。 */
-export function mcpCopyChoices(
-  provider: Provider,
-  usable: readonly string[] | undefined,
-  taken: readonly string[],
-  codexViaDesktop = false,
-): ExtensionToolChoice[] {
-  return extensionToolChoices(activeTools.map((tool) => tool.id), usable, taken, codexViaDesktop)
-    .filter((choice) => choice.id !== provider)
 }
 
 /**
@@ -822,10 +721,10 @@ export function fillCuratedPlaceholders(
  */
 export function curatedVersionText(item: CuratedExtension): string {
   if (item.install.type !== 'plugin')
-    return item.pinnedVersion ? `固定在 ${item.pinnedVersion}` : '由对方在线提供，没有本地版本'
-  const commit = item.marketplaceCommit ? `，我们复核过的是 ${item.marketplaceCommit.slice(0, 12)} 那一版` : ''
-  const declared = item.pinnedVersion ? `插件自己声明的版本是 ${item.pinnedVersion}。` : ''
-  return `${declared}安装的是官方市场当前的版本${commit}。`
+    return item.pinnedVersion ? `固定在 ${item.pinnedVersion}` : '由服务方在线提供，无本地版本'
+  const commit = item.marketplaceCommit ? `，星芒已复核的版本为 ${item.marketplaceCommit.slice(0, 12)}` : ''
+  const declared = item.pinnedVersion ? `插件声明的版本为 ${item.pinnedVersion}。` : ''
+  return `${declared}将安装官方市场的当前版本${commit}。`
 }
 
 /** hideScope：精选页的确认框下面另有「给这些工具用」，那里不再写「当前这个工具」装在哪一层。 */
@@ -835,17 +734,10 @@ export function CuratedDetails({ item, hideScope }: { item: CuratedExtension; hi
     <div data-testid={`curated-details-${item.id}`}>
       <p>{item.summary}</p>
       <div className="v2-curated-tags">
-        {item.requiresAccount && <Pill tone="accent">需要先登录</Pill>}
-        {item.risks.length === 0 ? (
-          <Pill tone="ok">没有特别的风险</Pill>
-        ) : (
-          item.risks.map((risk) => (
-            <Pill key={risk} tone="warn">
-              {curatedRiskLabels[risk].label}
-            </Pill>
-          ))
-        )}
+        {item.requiresAccount && <Pill tone="accent">需先登录</Pill>}
+        {item.risks.length === 0 ? <Pill tone="ok">无特殊风险</Pill> : item.risks.map(curatedRiskPill)}
       </div>
+      <CuratedRiskDetails item={item} />
       <dl className="v2-business-kv">
         <dt>提供方</dt>
         <dd>{item.publisher}</dd>
@@ -856,10 +748,10 @@ export function CuratedDetails({ item, hideScope }: { item: CuratedExtension; hi
         </dd>
         <dt>
           {item.install.type === 'http'
-            ? '将写进配置的服务地址'
+            ? '将写入配置的服务地址'
             : item.install.type === 'plugin'
               ? '将要执行的命令'
-              : '将写进配置、由工具启动时执行的命令'}
+              : '将写入配置、由工具启动时执行的命令'}
         </dt>
         <dd className="v2-business-path">
           {curatedCommandLines(item).map((line) => (
@@ -871,7 +763,7 @@ export function CuratedDetails({ item, hideScope }: { item: CuratedExtension; hi
         {!hideScope && (
           <>
             <dt>装到哪里</dt>
-            <dd>我的（全局），当前这个工具在任何文件夹里打开都能用</dd>
+            <dd>我的（全局），该工具在任意文件夹中打开均可使用</dd>
           </>
         )}
       </dl>
@@ -886,121 +778,33 @@ export function curatedIcon(item: CuratedExtension) {
   return item.install.type === 'plugin' ? Package : item.install.type === 'http' ? Globe : Server
 }
 
-/** 精选和官方目录里的一张卡：图标、名字和提供方一行，说明，小标，底下一行放状态或按钮。 */
-export function ExtensionCard({
-  icon: Icon,
-  name,
-  byline,
-  badge,
-  summary,
-  tags,
-  footer,
-  testId,
-}: {
-  icon: typeof Package
-  name: string
-  byline?: string
-  badge?: ReactNode
-  summary: ReactNode
-  tags?: ReactNode
-  footer?: ReactNode
-  testId: string
-}) {
-  return (
-    <article className="v2-ext-card" data-testid={testId}>
-      <div className="v2-ext-card-head">
-        <span className="v2-ext-tile">
-          <Icon size={16} aria-hidden="true" />
-        </span>
-        <div className="v2-ext-card-name">
-          <div>
-            <strong>{name}</strong>
-            {badge}
-          </div>
-          {byline && <small>{byline}</small>}
-        </div>
-      </div>
-      <p className="v2-ext-card-summary">{summary}</p>
-      {tags && <div className="v2-ext-card-tags">{tags}</div>}
-      {footer && <div className="v2-ext-card-foot">{footer}</div>}
-    </article>
-  )
-}
-
 export function curatedTags(item: CuratedExtension) {
   if (!item.requiresAccount && item.risks.length === 0) return undefined
   return (
     <>
-      {item.requiresAccount && <Pill tone="accent">需要先登录</Pill>}
-      {item.risks.map((risk) => (
-        <Pill key={risk} tone="warn">
-          {curatedRiskLabels[risk].label}
-        </Pill>
-      ))}
+      {item.requiresAccount && <Pill tone="accent">需先登录</Pill>}
+      {item.risks.map(curatedRiskPill)}
     </>
   )
 }
 
-/**
- * 外接工具页和 Claude Code 插件页底下的「星芒精选」，一张条目一张卡。工具还没装时只摆出来看，
- * 不给按钮（装好工具再来添加）。
- */
-export function CuratedShelf({
-  items,
-  toolName,
-  disabled,
-  toolMissing,
-  installedIds,
-  onPick,
-}: {
-  items: readonly CuratedExtension[]
-  /** 已经装上的那张写「已装到 {工具名}」。 */
-  toolName: string
-  disabled?: boolean
-  toolMissing?: boolean
-  installedIds?: readonly string[]
-  onPick: (item: CuratedExtension) => void
-}) {
-  if (items.length === 0) return null
+// 风险标签只有几个字，光看「第三方维护」不知道具体指什么。registry 里每个标签配的那句说明（11-10 已批）鼠标停上去
+// 能看到，标签下面也由 CuratedRiskDetails 原样写出来（Mac 验收 R10）。
+function curatedRiskPill(risk: CuratedRisk) {
+  const { label, detail } = curatedRiskLabels[risk]
   return (
-    <section className="v2-ext-section" data-testid="curated-shelf">
-      <div className="v2-ext-section-head">
-        <h2>星芒精选</h2>
-        <span>我们挑过的，装之前会先给你看它要什么权限</span>
-      </div>
-      <div className="v2-ext-grid">
-        {items.map((item) => {
-          // 已经装上的还给一个「添加」按钮，点下去只会换来一句 CLI 的英文报错。
-          const installed = (installedIds ?? []).includes(curatedInstallTarget(item))
-          return (
-            <ExtensionCard
-              key={item.id}
-              icon={curatedIcon(item)}
-              name={item.name}
-              byline={item.publisher}
-              summary={item.summary}
-              tags={curatedTags(item)}
-              // 要不要联网只在点「添加」后的确认框里说：每张卡都写一遍会把说明挤长。
-              footer={
-                installed ? (
-                  <Pill tone="ok">{`已装到 ${toolName}`}</Pill>
-                ) : toolMissing ? undefined : (
-                  <Button
-                    size="sm"
-                    icon={Plus}
-                    disabled={disabled}
-                    onClick={() => onPick(item)}
-                    testId={`curated-install-${item.id}`}
-                  >
-                    {item.install.type === 'plugin' ? '安装' : '添加'}
-                  </Button>
-                )
-              }
-              testId={`curated-row-${item.id}`}
-            />
-          )
-        })}
-      </div>
-    </section>
+    <Pill key={risk} tone="warn">
+      <span title={detail}>{label}</span>
+    </Pill>
+  )
+}
+
+/** 标签下面那一段：每个风险标签的说明各一句，按标签的先后接在一起；没有风险标签就什么都不出。 */
+export function CuratedRiskDetails({ item }: { item: CuratedExtension }) {
+  if (item.risks.length === 0) return null
+  return (
+    <p className="v2-curated-risk-details" data-testid={`curated-risk-details-${item.id}`}>
+      {item.risks.map((risk) => curatedRiskLabels[risk].detail).join('')}
+    </p>
   )
 }

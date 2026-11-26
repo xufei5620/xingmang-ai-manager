@@ -1,6 +1,7 @@
 import {
   providerIds,
   type AccountSourceTarget,
+  type AntigravityTarget,
   type AppConfigSummary,
   type ChooseWorkspaceOptions,
   type ClaudeCommandConfirmationChoice,
@@ -153,9 +154,9 @@ export function createToolsApi(bridge: XingmangApi) {
         bridge.getConfig(), bridge.getPlatformCapabilities(),
       ])
       const failures: ToolboxPartitionFailure[] = []
-      if (system.status === 'rejected') failures.push({ partition: 'system', message: errorMessage(system.reason, '工具检测没有完成，请重试。') })
-      if (config.status === 'rejected') failures.push({ partition: 'config', message: errorMessage(config.reason, '工具配置没有读到，请重试。') })
-      if (platform.status === 'rejected') failures.push({ partition: 'platform', message: errorMessage(platform.reason, '当前系统支持的操作没有读到，请重试。') })
+      if (system.status === 'rejected') failures.push({ partition: 'system', message: errorMessage(system.reason, '工具检测未完成，请重试。') })
+      if (config.status === 'rejected') failures.push({ partition: 'config', message: errorMessage(config.reason, '工具配置获取失败，请重试。') })
+      if (platform.status === 'rejected') failures.push({ partition: 'platform', message: errorMessage(platform.reason, '当前系统支持的操作获取失败，请重试。') })
       if (system.status !== 'fulfilled' || platform.status !== 'fulfilled') return { snapshot: null, failures }
       return {
         snapshot: {
@@ -176,7 +177,7 @@ export function createToolsApi(bridge: XingmangApi) {
       try {
         return { config: await bridge.getConfig(), failure: null }
       } catch (cause) {
-        return { config: null, failure: { partition: 'config', message: errorMessage(cause, '工具配置没有读到，请重试。') } }
+        return { config: null, failure: { partition: 'config', message: errorMessage(cause, '工具配置获取失败，请重试。') } }
       }
     },
     readExternal: (force = false) => bridge.scanExternalClients(force),
@@ -218,13 +219,13 @@ export function createToolsApi(bridge: XingmangApi) {
     cancelInstall: (id: ToolId): Promise<InstallCancelResult> => id === 'codexDesktop'
       ? bridge.cancelCodexDesktopInstall()
       : bridge.cancelCliInstall(id),
-    // options 只有「换成星芒装的」会带（reinstall），见 CliUninstallOptions。
+    // options 只有「改用星芒安装」会带（reinstall），见 CliUninstallOptions。
     uninstall: async (id: ToolId, options?: CliUninstallOptions) => {
       const result = await (id === 'codexDesktop' ? bridge.uninstallCodexDesktop() : bridge.uninstallCli(id, options))
       recentSessions.invalidate()
       return result
     },
-    /** 卸载框里的「帮我清理」（已知48）：只说是哪个工具，删哪几个文件由主进程按那次卸载记下的定。 */
+    /** 卸载框里的「一键清理」（已知48）：只说是哪个工具，删哪几个文件由主进程按那次卸载记下的定。 */
     cleanUninstallLeftovers: (id: ActiveProviderId) => bridge.cleanUninstallLeftovers(id),
     /** 只有 Codex 桌面端有这一步，见错误框里的「重置 Codex」。 */
     resetCodexDesktop: () => bridge.resetCodexDesktop(),
@@ -247,7 +248,13 @@ export function createToolsApi(bridge: XingmangApi) {
     // 客户确认过要换：电脑上的 Node.js 够装工具、却认不了公司证书时照样装新版（第十八批 4）。
     replaceNode: () => bridge.installNodeRuntime({ reason: 'certificate' }),
     installGit: () => bridge.installGitRuntime(),
-    restartWindows: () => bridge.restartWindows(),
+    // 带上 askIfWorking：「创作」里还有对话在回复、视频在合成、画布在出图时，主进程先问一句再重启（D10 那一问）。
+    restartWindows: () => bridge.restartWindows({ askIfWorking: true }),
+    // Antigravity 命令行和桌面端：渲染层只说装哪个、开哪个，密钥由主进程现签现写，不经过这里（I3）。
+    inspectAntigravity: () => bridge.inspectAntigravity(),
+    installAntigravity: (target: AntigravityTarget) => bridge.installAntigravity(target),
+    openAntigravityDesktop: () => bridge.openAntigravityDesktop(),
+    openAntigravityCli: (workspace: string) => bridge.openAntigravityCli(workspace),
     chooseWorkspace: (options?: ChooseWorkspaceOptions) => options === undefined ? bridge.chooseWorkspace() : bridge.chooseWorkspace(options),
     // 首页「最近」卡只显示 3 条,但同一份记录还要推出每个工具最近用过的目录(N7),
     // 一页 3 条不够铺开几个工具。主进程本来就把全部会话读出来再切片,页大一点不多花钱。
@@ -272,7 +279,7 @@ export function createToolsApi(bridge: XingmangApi) {
     openSessionDirectory: (sessionId: string) => bridge.openProviderSessionDirectory(sessionId),
     saveManual: (input: Parameters<XingmangApi['saveConfig']>[0]) => bridge.saveConfig(input),
     saveAccountKey: (input: Parameters<XingmangApi['saveConfigWithAccountKey']>[0]) => bridge.saveConfigWithAccountKey(input),
-    // repair = 首页「修好它」：读不了的那份重建，读得懂的那份只改账号几处（主进程 NativeConfigWriteMode）。
+    // repair = 首页「立即修复」：读不了的那份重建，读得懂的那份只改账号几处（主进程 NativeConfigWriteMode）。
     configureManaged: (tool: ToolId, model?: string, mode: 'merge' | 'reset' | 'repair' = 'merge') => bridge.configureManagedCliKeys({
       providers: [providerFor(tool)], preferredModels: model ? { [providerFor(tool)]: model } : {}, mode, intent: 'explicit',
     }),
@@ -281,7 +288,7 @@ export function createToolsApi(bridge: XingmangApi) {
     answerCommandConfirmation: (choice: ClaudeCommandConfirmationChoice) => bridge.answerClaudeCommandConfirmation(choice),
     // 首页的一键切换：备份、写入、自检、失败回滚都在主进程一次做完。
     switchSource: (tool: ToolId, target: AccountSourceTarget) => bridge.switchAccountSource(providerFor(tool), target),
-    // 提醒设置指向旧位置时的「修好它」：备份、只改那几行、再查一遍都在主进程。
+    // 提醒设置指向旧位置时的「立即修复」：备份、只改那几行、再查一遍都在主进程。
     repairHooks: (tool: ToolId) => bridge.repairCliHooks(providerFor(tool)),
     /** 打开前的模型核对（第十二批候选 5）。核对本身出错也绝不挡住打开，一律当没核。 */
     async checkModels(tool: ToolId): Promise<ToolModelCheck> {
@@ -308,7 +315,7 @@ export function createToolsApi(bridge: XingmangApi) {
       if (scope === undefined || owned.scope === scope) return owned.usage
       usageCache.invalidate()
       const reread = await usageCache.read()
-      if (reread.scope !== scope) throw new Error('账号刚切换过，请再试一次')
+      if (reread.scope !== scope) throw new Error('账号刚刚切换，请重试')
       return reread.usage
     },
     /** 上一次查到的用量，过期了也给；不是 scope 这个账号的就当没有。 */

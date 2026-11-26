@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { XingmangApi } from '../../../../electron/ipc-contract'
-import { createWeekSpendLoader, readSettledWeekSpend, weekSpendDays, weekSpendHint, weekSpendKey, weekSpendLabel, type WeekSpendStorage } from './week-spend'
+import { createWeekSpendLoader, readSettledWeekSpend, sameWeekSpend, weekSpendDays, weekSpendHint, weekSpendKey, weekSpendLabel, type WeekSpend, type WeekSpendStorage } from './week-spend'
 
 type Range = { startTimestamp: number; endTimestamp: number }
 
@@ -170,7 +170,7 @@ describe('home week spend', () => {
       getAccountSession: async () => ({ siteId: 'solov', authenticated: true, account: { userId: current } }),
       getAccountDashboard: (range: Range, expected?: string) => {
         if (asked.length >= switchAfterDashboardCalls) current = 8
-        if (expected !== undefined && expected !== `xm-account:${current}`) return Promise.reject(new Error('账号刚切换过，请再试一次'))
+        if (expected !== undefined && expected !== `xm-account:${current}`) return Promise.reject(new Error('账号刚刚切换，请重试'))
         asked.push({ day: new Date(range.startTimestamp * 1000).getDate(), userId: current })
         // A（7）每天花 100，B（8）每天花 900，一眼看得出是谁的。
         return Promise.resolve({ quota: current === 7 ? 100 : 900, coverage: 'range' })
@@ -195,7 +195,7 @@ describe('home week spend', () => {
       switchTo(8)
       return session
     }
-    await expect(createWeekSpendLoader(bridge, clock, storage).read()).rejects.toThrow('账号刚切换过')
+    await expect(createWeekSpendLoader(bridge, clock, storage).read()).rejects.toThrow('账号刚刚切换')
     expect(readSettledWeekSpend(storage, 'xm-account:7').size).toBe(0)
     // 换回 A、重开软件：A 的柱子是 A 自己的数。
     bridge.getAccountSession = original
@@ -212,7 +212,7 @@ describe('home week spend', () => {
     const loader = createWeekSpendLoader(bridge, () => clock, storage)
     // 问到第三天时换成 B：前三天是 A 的、照记；后面四次带着 A 去问，全被拒。
     switchAfter(3)
-    await expect(loader.read()).rejects.toThrow('账号刚切换过')
+    await expect(loader.read()).rejects.toThrow('账号刚刚切换')
     expect([...readSettledWeekSpend(storage, 'xm-account:7').values()]).toEqual([100, 100, 100])
     expect(readSettledWeekSpend(storage, 'xm-account:8').size).toBe(0)
 
@@ -238,6 +238,28 @@ describe('home week spend', () => {
 
   it('refuses an account whose backend only reports an all-time total', async () => {
     const { bridge } = fixture([{ userId: 7 }], 'all-time-summary')
-    await expect(createWeekSpendLoader(bridge, () => new Date(2026, 9, 15)).read()).rejects.toThrow('这个账号读不出每天的花费')
+    await expect(createWeekSpendLoader(bridge, () => new Date(2026, 9, 15)).read()).rejects.toThrow('该账号无法获取每日花费')
+  })
+})
+
+describe('home week spend comparison', () => {
+  const day = (start: number, quota: number, end = start + 1) => ({ start, end, quota })
+  const spend = (scope: string, days: WeekSpend['days']): WeekSpend => ({ scope, days })
+
+  // R8: the home page keeps what it already shows when a re-read draws the same bars.
+  it('treats a re-read with the same bars as unchanged even though today ends later', () => {
+    const before = spend('xm-account:7', [day(1, 10), day(2, 20, 50)])
+    expect(sameWeekSpend(before, spend('xm-account:7', [day(1, 10), day(2, 20, 90)]))).toBe(true)
+    expect(sameWeekSpend(before, before)).toBe(true)
+    expect(sameWeekSpend(null, null)).toBe(true)
+  })
+
+  it('sees another account, another day or a new spend as a change', () => {
+    const before = spend('xm-account:7', [day(1, 10), day(2, 20)])
+    expect(sameWeekSpend(before, spend('xm-account:8', [day(1, 10), day(2, 20)]))).toBe(false)
+    expect(sameWeekSpend(before, spend('xm-account:7', [day(2, 20), day(3, 0)]))).toBe(false)
+    expect(sameWeekSpend(before, spend('xm-account:7', [day(1, 10), day(2, 25)]))).toBe(false)
+    expect(sameWeekSpend(before, spend('xm-account:7', [day(1, 10)]))).toBe(false)
+    expect(sameWeekSpend(before, null)).toBe(false)
   })
 })

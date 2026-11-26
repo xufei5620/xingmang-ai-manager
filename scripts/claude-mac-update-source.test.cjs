@@ -296,7 +296,7 @@ test('performs real fresh requests within the factory using one private installa
     assert.equal(url.origin, 'https://api.anthropic.com')
     assert.equal(url.pathname, '/api/desktop/darwin/arm64/squirrel/update')
     assert.deepEqual([...url.searchParams], [['device_id', INSTALL_ID], ['version', VERSION], ['os_version', '26.6.2']])
-    assert.deepEqual(options.headers, { accept: 'application/json', 'accept-encoding': 'identity', 'user-agent': 'xingmang-official-offline-sync/1' })
+    assert.deepEqual(options.headers, { accept: 'application/json', 'accept-encoding': 'identity', 'user-agent': 'offline-package-sync/1' })
     assert.equal(options.method, 'GET')
   }
   assert.doesNotMatch(JSON.stringify([first, second]), new RegExp(`${INSTALL_ID}|device_id|os_version`))

@@ -6,7 +6,7 @@ describe('diagnostic detail rows', () => {
   it('translates field names and yes/no values instead of showing raw keys', () => {
     expect(diagnosticDetailRows({ elevated: false, required: false, canElevate: true })).toEqual([
       { key: 'elevated', label: '以管理员身份运行', value: '否' },
-      { key: 'canElevate', label: '这个账号能临时获得管理员权限', value: '是' },
+      { key: 'canElevate', label: '该系统账号可临时获取管理员权限', value: '是' },
     ])
     expect(diagnosticDetailRows({ relocated: 1, folder1: '用户文件夹', to1: 'D 盘' })).toEqual([
       { key: 'relocated', label: '被搬走的文件夹数', value: '1' },
@@ -30,7 +30,7 @@ describe('diagnostic detail rows', () => {
     expect(rows).toEqual([])
   })
 
-  // 「电脑里另外设过的工具地址或密钥」正常时，那几个英文名只进导出报告（yoyo 11-06「体检改」）；
+  // 「电脑中另行设置的工具地址或密钥」正常时，那几个英文名只进导出报告（yoyo 11-06「体检改」）；
   // 代理那一行按变量名记的端口同样不上屏。
   it('keeps the environment variable names off the screen when there is nothing to do about them', () => {
     expect(diagnosticDetailRows({ reportOnlyVariables: 'OPENAI_API_KEY（Codex CLI）' })).toEqual([])

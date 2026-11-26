@@ -11,7 +11,7 @@ import type { ExternalToolId } from './external-tool-config'
  *
  * 零依赖：渲染层照这里的说法认出「这个功能暂时停用了」（operation-error.ts），主进程照这里拼话。
  */
-export const remoteFeatureTools = ['claude', 'codex', 'grok', 'codexDesktop', 'claudeDesktop', 'workbuddy', 'opencode'] as const satisfies readonly (ActiveProviderId | 'codexDesktop' | ExternalToolId)[]
+export const remoteFeatureTools = ['claude', 'codex', 'grok', 'codexDesktop', 'claudeDesktop', 'workbuddy', 'opencode', 'antigravityCli', 'antigravityDesktop'] as const satisfies readonly (ActiveProviderId | 'codexDesktop' | ExternalToolId | 'antigravityCli' | 'antigravityDesktop')[]
 export type RemoteFeatureTool = typeof remoteFeatureTools[number]
 
 /**
@@ -21,9 +21,12 @@ export type RemoteFeatureTool = typeof remoteFeatureTools[number]
  * - tray-release：缩到托盘久了关掉界面省内存（renderer-release.ts）。
  * - acceleration：网络加速的新连接（加速页、托盘、打开桌面端时替他连的那次）。连着的照常用、照常能断。
  * - codex-desktop-chinese：打开 Codex 桌面端时的中文补丁（Windows 上经调试端口打的那个）。
- * - claude-desktop-code-seed：Windows 上打开 Claude Desktop 前替它放好 Claude Code 程序。关掉就照常打开，
- *   让它自己去官网下（客户看不到任何话）。
- * - install:工具 / launch:工具：某个工具的安装和更新、从星芒打开它。
+ * - claude-desktop-code-seed：打开 Claude Desktop 前替它放好 Claude Code 程序（Windows 从 npm 镜像，Mac 从星芒的
+ *   下载站）。关掉就照常打开，让它自己去官网下（客户看不到任何话）。
+ * - claude-desktop-workspace-seed：装好 Claude Desktop、开机、从星芒打开它时，从下载站替它放好 Cowork 工作区
+ *   （约 1.3 GB）和工作区里那份 Linux 版 Claude Code。关掉就不放，让它自己去官网下（客户看不到任何话）。
+ * - install:工具 / launch:工具：某个工具的安装和更新、从星芒打开它。Antigravity 的命令行和桌面端各算一个工具
+ *   （antigravityCli、antigravityDesktop）：谷歌那边自动更新快，哪一样被它改坏了可以单独关。
  */
 export const remoteFeatureIds = [
   'video-studio',
@@ -33,6 +36,7 @@ export const remoteFeatureIds = [
   'acceleration',
   'codex-desktop-chinese',
   'claude-desktop-code-seed',
+  'claude-desktop-workspace-seed',
   ...remoteFeatureTools.map((tool) => `install:${tool}` as const),
   ...remoteFeatureTools.map((tool) => `launch:${tool}` as const),
 ] as const
@@ -46,7 +50,7 @@ export function resolveRemoteFeatureId(value: unknown): RemoteFeatureId | null {
 }
 
 /** 每句停用的话都带着这半句：渲染层靠它认出是开关关的，不是真出了错（operation-error.ts）。 */
-export const remoteFeatureOffMarker = '修好以后会自动恢复'
+export const remoteFeatureOffMarker = '修复后将自动恢复'
 
 // Electron 只把 `${name}: ${message}` 交过 IPC，名字是唯一原样过去的字段（external-url-blocked.ts 同理）；
 // 渲染层的 rawErrorMessage 会把它剥掉，上屏的只有那句话。
@@ -68,16 +72,16 @@ function possessive(name: string): string {
   return /[A-Za-z0-9]$/.test(name) ? `${name} 的` : `${name}的`
 }
 
-// 客户看得到的这几句是 yoyo 2026-10-28 回「停用改」批的，改字要先问他。
-export const videoStudioOffMessage = `视频剪辑暂时停用了，${remoteFeatureOffMarker}。`
-export const codexRemoteOffMessage = `手机遥控暂时停用了，${remoteFeatureOffMarker}。`
-export const accelerationOffMessage = `网络加速暂时停用了，${remoteFeatureOffMarker}。`
-export const codexDesktopChineseOffMessage = `Codex 已经打开，中文界面暂时停用了，这次先用英文界面，${remoteFeatureOffMarker}。`
+// 客户看得到的这几句是 yoyo 2026-10-28 回「停用改」批的，正式口吻那版 11-23 随正式化补漏 2 一起请他确认；改字要先问他。
+export const videoStudioOffMessage = `视频剪辑已暂时停用，${remoteFeatureOffMarker}。`
+export const codexRemoteOffMessage = `遥控已暂时停用，${remoteFeatureOffMarker}。`
+export const accelerationOffMessage = `网络加速已暂时停用，${remoteFeatureOffMarker}。`
+export const codexDesktopChineseOffMessage = `Codex 已打开，中文界面已暂时停用，本次使用英文界面，${remoteFeatureOffMarker}。`
 
 export function toolInstallOffMessage(toolName: string): string {
-  return `${possessive(toolName)}安装和更新暂时停用了，${remoteFeatureOffMarker}。`
+  return `${possessive(toolName)}安装和更新已暂时停用，${remoteFeatureOffMarker}。`
 }
 
 export function toolLaunchOffMessage(toolName: string): string {
-  return `暂时不能从星芒打开 ${toolName}，${remoteFeatureOffMarker}。`
+  return `暂时无法从星芒打开 ${toolName}，${remoteFeatureOffMarker}。`
 }

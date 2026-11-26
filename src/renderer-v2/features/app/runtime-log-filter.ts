@@ -98,7 +98,7 @@ export function runtimeLogAreaLabel(entry: Pick<RuntimeLogEntry, 'source' | 'eve
 
 /**
  * 网络类失败的文案是「一句大白话（排查用的现场）」，比如
- * 「连接账号服务超时，请检查网络后再试。（账号余额查询请求超时）」。括号里那半句
+ * 「连接账号服务超时，请检查网络后重试。（账号余额查询请求超时）」。括号里那半句
  * 跟前面说的是同一件事，列表上去掉，原文仍在「详情」里。
  */
 export function runtimeLogDisplayMessage(message: string): string {
@@ -206,9 +206,9 @@ export function runtimeLogWriteNotice(
 ): RuntimeLogWriteNotice | null {
   if (!failure || failure.lostEntries <= 0) return null
   return {
-    title: '日志没能保存下来',
-    body: `这次打开软件后有 ${failure.lostEntries} 条日志没写进日志文件（${failure.reason}）。`
-      + '它们暂时留在软件里，下面照样能看，导出反馈报告时也会带上，但关掉软件就没了。'
-      + '可以去「检查」页看看是不是有文件夹被搬到了别的位置。',
+    title: '日志保存失败',
+    body: `本次运行有 ${failure.lostEntries} 条日志未能写入日志文件（${failure.reason}）。`
+      + '这些日志暂存于软件中，可在下方查看，导出反馈报告时将一并包含，关闭软件后将丢失。'
+      + '请前往「检查」页确认是否有文件夹被移动。',
   }
 }

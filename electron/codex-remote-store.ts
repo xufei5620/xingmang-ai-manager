@@ -8,7 +8,7 @@ import {
 import type { SafeStorageLike } from './account-session-store'
 import { inspectSafeStorageBackend, resolveCredentialPersistence } from './safe-storage-backend'
 import { isRecord } from './input-guards'
-import { isRemoteChannelId, isRemoteIdleCloseHours, type RemoteChannelId, type RemoteIdleCloseHours } from './codex-remote-channel'
+import { isCodexThreadId, isRemoteChannelId, isRemoteIdleCloseHours, isRemoteModel, type RemoteChannelId, type RemoteIdleCloseHours } from './codex-remote-channel'
 
 // 手机遥控的两份本地数据：设置（开没开、绑定了谁、工作文件夹，不含密钥）和每个渠道的凭据
 // （飞书 App Secret、微信机器人令牌，safeStorage 加密）。凭据是本程序自己连平台用的登录凭据，
@@ -17,8 +17,8 @@ import { isRemoteChannelId, isRemoteIdleCloseHours, type RemoteChannelId, type R
 const settingsFileName = 'settings.json'
 const maxSettingsBytes = 64 * 1024
 const maxCredentialBytes = 64 * 1024
-const settingsLabel = '手机遥控设置'
-const credentialLabel = '手机遥控凭据'
+const settingsLabel = '遥控设置'
+const credentialLabel = '遥控凭据'
 const maxDisplayNameLength = 64
 const maxUserIdLength = 256
 const maxAccountLabelLength = 128
@@ -35,10 +35,10 @@ export const maxRemoteWorkspaces = 5
  * 设置文件在、这会儿却读不出来（比如 Windows 上杀毒软件正占着它）时，改设置那一下上屏这句，文件不动（M09）。
  * 以前读不出来就当没设过，下一次改开关拿空设置整份写回，加过的文件夹、绑定的人、自动关的时长全没了。
  */
-export const settingsUnreadableMessage = '这次没改成：电脑上保存的手机遥控设置这会儿读不出来，为了不弄丢原来的设置，先没动。请过一会儿再试一次。'
+export const settingsUnreadableMessage = '本次修改未生效：暂时无法读取本机保存的遥控设置，为避免原有设置丢失，未做任何改动。请稍后重试。'
 
 /** 「退出登录」删不掉凭据文件时上屏那句（#1407 P3-6）。比如 Windows 上文件正被杀毒软件占着，重启后再删一般就行。 */
-export const credentialRemoveFailedMessage = '没能删掉保存的登录信息，请重启星芒后再点一次退出登录。'
+export const credentialRemoveFailedMessage = '未能删除已保存的登录信息，请重启星芒后再次点击「退出登录」。'
 
 export interface CodexRemoteBoundPeer {
   userId: string
@@ -89,7 +89,34 @@ export interface CodexRemoteSettings {
    * （yoyo 同日亲手回「老客户也不关」，知道遥控开着电脑不自动睡）。
    */
   idleCloseHours?: RemoteIdleCloseHours
+  /**
+   * 「手机端使用的模型」单独选的型号（yoyo 2026-11-19「改」）。缺省 = 跟电脑上的 Codex 一样：只有客户在电脑上选了
+   * 别的才存，读回来也只认长得像型号名的（isRemoteModel）。
+   */
+  model?: string
+  /**
+   * 「权限」选了「只读」才存（yoyo 2026-11-22 同意两档）。缺省 = 「默认」：跟电脑上的 Codex 一样，文件夹里改东西、
+   * 跑命令不问，连网和改文件夹外面的才问。读回来只认 readOnly，别的一律当缺省。
+   */
+  permission?: 'readOnly'
+  /**
+   * 「手机端的对话」选的电脑上已有的那段（yoyo 2026-11-22「接对话接原的」）；缺省 = 新对话。folder 是那段对话所在的
+   * 文件夹，选的时候已经核过能给遥控用、并换成了正在用的文件夹；换了文件夹就不再算数（见 resolveChosenConversation）。
+   * title、updatedAt 只为电脑页上那行小字，跟着 Codex 那边变了也不要紧。
+   */
+  conversation?: CodexRemoteChosenConversation
 }
+
+export interface CodexRemoteChosenConversation {
+  threadId: string
+  title: string
+  folder: string
+  /** 毫秒。 */
+  updatedAt: number
+}
+
+/** 对话标题最多这么长（截短后带「…」），手机上一行放得下。 */
+export const maxConversationTitleLength = 40
 
 export function emptyCodexRemoteSettings(): CodexRemoteSettings {
   return { version: 1, workspaceDirectory: null, channels: {}, lastApprovalNumber: 0 }
@@ -128,6 +155,16 @@ function parseRecentMessageIds(value: unknown): string[] {
   return list
 }
 
+function parseChosenConversation(value: unknown): CodexRemoteChosenConversation | null {
+  if (!isRecord(value) || !isCodexThreadId(value.threadId)) return null
+  const title = boundedString(value.title, maxConversationTitleLength)
+  const folder = boundedString(value.folder, 4096)
+  const updatedAt = value.updatedAt
+  if (!title || !folder || !path.isAbsolute(folder)) return null
+  if (typeof updatedAt !== 'number' || !Number.isSafeInteger(updatedAt) || updatedAt < 0) return null
+  return { threadId: value.threadId, title, folder, updatedAt }
+}
+
 /** 读回来的设置当外来输入：认不出的字段丢掉，坏了就当没设过（同 I5 的口径）。 */
 export function parseCodexRemoteSettings(value: unknown): CodexRemoteSettings {
   const settings = emptyCodexRemoteSettings()
@@ -152,6 +189,10 @@ export function parseCodexRemoteSettings(value: unknown): CodexRemoteSettings {
   }
   if (value.autoStart === true) settings.autoStart = true
   if (isRemoteIdleCloseHours(value.idleCloseHours)) settings.idleCloseHours = value.idleCloseHours
+  if (isRemoteModel(value.model)) settings.model = value.model
+  if (value.permission === 'readOnly') settings.permission = 'readOnly'
+  const conversation = parseChosenConversation(value.conversation)
+  if (conversation) settings.conversation = conversation
   if (isRecord(value.channels)) {
     for (const [id, raw] of Object.entries(value.channels)) {
       if (!isRemoteChannelId(id) || !isRecord(raw)) continue
@@ -175,6 +216,8 @@ export function remoteWorkspaceList(settings: Pick<CodexRemoteSettings, 'workspa
 export class CodexRemoteStore {
   private writeQueue: Promise<void> = Promise.resolve()
   private settings: CodexRemoteSettings | null = null
+  /** 第一次读盘还没回来时，后来的读和改都等这一次，不各读各的（M15）。 */
+  private loading: Promise<CodexRemoteSettings> | null = null
   /** Linux 没有密钥环时凭据只留在这次运行的内存里。 */
   private readonly memoryCredentials = new Map<RemoteChannelId, string>()
 
@@ -213,8 +256,18 @@ export class CodexRemoteStore {
    * 后者抛 settingsUnreadableMessage、什么都不记，免得把读失败当成空设置存着，下一次改开关整份写回去。
    * 文件读出来了但内容坏了，照旧当没设过（parseCodexRemoteSettings 的口径），不然这份设置永远改不了。
    */
-  private async loadSettings(): Promise<CodexRemoteSettings> {
-    if (this.settings) return this.settings
+  private loadSettings(): Promise<CodexRemoteSettings> {
+    if (this.settings) return Promise.resolve(this.settings)
+    // 各读各的时，先开始、后读完的那次会把中间刚写好的设置盖回盘上的旧样子（M15）：同一时间只读一次盘。
+    if (!this.loading) {
+      this.loading = this.readSettingsFile().finally(() => {
+        this.loading = null
+      })
+    }
+    return this.loading
+  }
+
+  private async readSettingsFile(): Promise<CodexRemoteSettings> {
     let content: string | null
     try {
       content = await readSafeUtf8File(this.settingsPath(), settingsLabel, maxSettingsBytes)
@@ -270,7 +323,7 @@ export class CodexRemoteStore {
         }
         return
       }
-      if (persistence === 'unavailable') throw new Error('这台电脑没法安全保存密码，凭据没有保存。')
+      if (persistence === 'unavailable') throw new Error('本机不支持安全保存密码，凭据未保存。')
       if (persistence === 'session-only') {
         this.memoryCredentials.set(channel, value)
         return

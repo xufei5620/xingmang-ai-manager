@@ -28,6 +28,7 @@ import { createAccelerationPreferenceStore } from './acceleration-preference-sto
 import { hasAccelerationProxyRecoveryRecords, readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
 import { createAiChatHistoryStore } from './ai-chat-history-store'
+import { createVideoStudioProjectStore } from './video-studio-project-store'
 import { chatTextFileExtensions, createChatTextFileService } from './ai-chat-text-files'
 import { readBoundedFilePrefix } from './bounded-file'
 import { createChatHistoryFlush } from './chat-history-flush'
@@ -37,6 +38,7 @@ import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings
 import { calculateUiZoom, resolveWindowPlacement, shouldDefaultToLargeText, shouldFollowSystemTextSize } from './window-preferences'
 import { attachEditContextMenu } from './context-menu'
 import { createSensitiveClipboard } from './sensitive-clipboard'
+import { discardSkillArchiveExtractions } from './skill-archive'
 import { fitOversizedWindow, recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
 import { createAccelerationHostLoader, createAccelerationRouting, createAccelerationServices, type AccelerationHostOptions } from './bootstrap/acceleration'
@@ -51,10 +53,11 @@ import { createUpdateFeed } from './bootstrap/updates'
 import { installLeftoverStartupDelayMs, measureInstallLeftovers, sweepInstallLeftovers } from './install-leftovers'
 import { resolveRealmDataRoots } from './realm-data-roots'
 import { listCanvasProjectAssetDirectories } from './canvas-project-store'
+import { createCanvasProjectImageIntake } from './canvas-project-image-intake'
 import { createStorageUsageService } from './storage-usage-service'
 import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
-import { buildChatReplyQuitPrompt, buildUnfinishedRestartWorkPrompt, confirmQuitInterruptions, confirmUpdateRestart, isRollbackInstall, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type ChatReplyQuitPrompt, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
+import { buildChatReplyQuitPrompt, buildUnfinishedRestartWorkPrompt, confirmQuitInterruptions, confirmUpdateRestart, confirmWindowsRestartWork, isRollbackInstall, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, waitForWindowsUpdateHandoff, type ChatReplyQuitPrompt, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
 import { createUpdateInstallPrompter } from './update-install-prompt'
 import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, memoizeUnattendedInstall, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoLaunchInstallAttempt, undoQuitInstallAttempt, type LaunchInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
@@ -96,12 +99,14 @@ import {
   type UsageUpdateView,
 } from './usage-stats'
 import { createMainStallMonitor, createUsageStatsReporter } from './usage-stats-reporter'
+import { buildClientVersionReport, shouldSendClientVersionReport } from './client-version-report'
+import { createClientVersionReporter } from './client-version-reporter'
 import { activeProviderIds, cliCatalog, isProviderId } from './catalog'
 import { externalClientOfficialDownloadUrls } from './external-client-contract'
 import { gitWindowsDownloadUrl } from './git-runtime'
 import { applicationResponseHeaders, rendererCallStackFeature } from './app-protocol'
 import { canvasProtocolScheme, canvasSecurityResponseHeaders } from './canvas-protocol'
-import { createCanvasAccountSummaryReader } from './canvas-account-summary'
+import { createCanvasAccountSummaryReader, freshCanvasBalanceUsd } from './canvas-account-summary'
 import { createCanvasPriceSnapshotReader } from './canvas-price-snapshot'
 import { createCanvasWindowController } from './canvas-window'
 import { resolveCodexHomeContext } from './codex-home'
@@ -109,7 +114,7 @@ import { runCodexContextLimitsMigration } from './codex-config-migration'
 import { runClaudeDesktopModelRepair } from './claude-desktop-model-repair'
 import { claudeDesktopModelTopUpStartupDelayMs } from './claude-desktop-model-topup'
 import { findExecutable, isTrustedHighIntegrityExecutable, trustedCommandEnvironment } from './command-runner'
-import { CodexExtensionService, isCodexCliInstalled } from './codex-extensions'
+import { CodexExtensionService, isCodexCliInstalled, sumSkillImportLeftoverSweeps } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
 import type { NewApiCodexStartupTicket } from './new-api-client'
 import { buildAccountIdentity, createAccountIdentityTracker } from './account-identity-tracker'
@@ -125,6 +130,8 @@ import { createAccountRestoreRetry } from './account-restore-retry'
 import { ProviderExtensionService } from './provider-extensions'
 import { ProviderSessionsService } from './provider-sessions'
 import { guardProcessOutputStreams } from './process-stream-errors'
+import { ensureCiUserAgentMarker } from './ci-user-agent'
+import { installThirdPartyUserAgentPolicy } from './third-party-user-agent'
 import { configureRelocatedFolderAccess } from './relocated-folders'
 import { createRemoteFeatureGate } from './remote-feature-gate'
 import { RuntimeLogStore } from './runtime-log'
@@ -140,6 +147,7 @@ import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure, redactHomeDirectory } from './startup-log'
 import { syncXingmangImageMcpConfigs } from './config-files'
 import { attachNotUtf8ConfigRewriteLog } from './config-files-context'
+import { configReadCacheMaxAgeMs } from './config-read-cache'
 import { rootedMainServiceOptions } from './main-service-options'
 import {
   buildMacosInstallLocationNotice, buildMacosMoveFailureNotice, inspectMacosInstallLocation,
@@ -217,6 +225,12 @@ import { remoteChannelsReadyToEnable, type CodexRemoteReleaseAction } from './co
 import { feishuDeveloperConsoleUrl, type CodexRemoteSnapshot } from './codex-remote-channel'
 
 guardProcessOutputStreams()
+// GitHub Actions 里起的星芒，请求的 UA 末尾带「 ci」，服务端数装机量时剔掉（ci-user-agent.ts）。
+// 要赶在任何会话、任何请求之前，所以放在这里。
+ensureCiUserAgentMarker(app, process.env)
+// 发给自家站点以外的请求，UA 里不带「xingmang-ai-manager/版本」，外人从访问记录查不到仓库；自家站点照旧
+// （third-party-user-agent.ts）。改的是默认 UA，同样要赶在任何会话之前，并且在 CI 记号之后。
+const applyThirdPartyUserAgentPolicy = installThirdPartyUserAgentPolicy(app)
 
 const applicationPackage = require('../package.json') as {
   xingmangAccelerationBundle?: unknown
@@ -233,7 +247,7 @@ const nonSiteExternalUrlAllowlist = [
   // 首页 WorkBuddy 一行，以及缺少系统 winget 时 Claude Desktop、OpenCode 两行的「去官网下载」（逐条全等）。
   ...Object.values(externalClientOfficialDownloadUrls),
   'https://chatgpt.com/download/',
-  // Codex 桌面端装不上时错误框里的「去微软商店装」（第十九批 5）。
+  // Codex 桌面端装不上时错误框里的「前往微软商店安装」（第十九批 5）。
   codexDesktopStoreUrl,
   // Claude Desktop 装不上时错误框里的「下载离线安装包」：教程站「备用安装包」那一节（D64）。
   claudeDesktopOfflinePackagesUrl,
@@ -490,9 +504,9 @@ function createWindow(
     reload: reloadPage,
     prompt: async () => {
       const result = await dialog.showMessageBox(window, {
-        type: 'warning', title: '界面出了问题', message: '星芒AI管理工具的界面接连出错，自动重新加载也没能恢复。',
+        type: 'warning', title: '界面异常', message: '星芒AI管理工具的界面多次出错，自动重新加载未能恢复。',
         detail: rendererCrashRecoveryDetail(process.platform),
-        buttons: ['重新加载', '先不管'], defaultId: 0, cancelId: 1,
+        buttons: ['重新加载', '暂不处理'], defaultId: 0, cancelId: 1,
       })
       return result.response === 0 ? 'reload' : 'dismiss'
     },
@@ -543,8 +557,8 @@ function createWindow(
   const responsiveness = createWindowResponsivenessGuard({
     prompt: async (signal) => {
       const result = await dialog.showMessageBox(window, {
-        type: 'warning', title: '界面没有响应', message: '星芒AI管理工具的界面暂时没有响应。',
-        detail: '可以再等一会儿，界面通常会自己恢复。重新加载只会重启界面，正在进行的安装、下载和已保存的设置都不受影响，但界面上还没保存的输入会丢失。',
+        type: 'warning', title: '界面无响应', message: '星芒AI管理工具的界面暂时无响应。',
+        detail: '可稍候片刻，界面通常会自动恢复。重新加载仅会重启界面，正在进行的安装、下载和已保存的设置均不受影响，但界面上尚未保存的输入将丢失。',
         buttons: ['继续等待', '重新加载'], defaultId: 0, cancelId: 0, signal,
       })
       return result.response === 1 ? 'reload' : 'wait'
@@ -737,6 +751,8 @@ function reportRendererHang(window: BrowserWindow, runtimeLog: RuntimeLogStore):
 }
 // 匿名使用统计（usage-stats.ts）建得比主窗口晚一点；在那之前、和退出以后，窗口没响应就不数。
 let noteUsageEvent: ((event: UsageStatsEvent) => void) | null = null
+// 客户端版本上报（client-version-report.ts）也建得比账号服务晚；在那之前、和退出以后，登录态变了不用管。
+let noteAccountChangedForVersionReport: (() => void) | null = null
 
 /**
  * 一个 Chromium 会话的 fetch。net.fetch 碰到 redirect: 'manual' 不交回跳转，直接报「Redirect was
@@ -983,6 +999,8 @@ if (!hasSingleInstanceLock) {
       allowedPermissions.has(permission),
     )
     session.defaultSession.setDevicePermissionHandler(() => false)
+    // 默认会话建出来时 session-created 已经挂过了，这里只是保底，同一个会话不会挂两遍。
+    applyThirdPartyUserAgentPolicy(session.defaultSession)
     session.defaultSession.webRequest.onHeadersReceived(
       { urls: [`${canvasProtocolScheme}://*/*`] },
       (details, callback) => callback({
@@ -993,6 +1011,8 @@ if (!hasSingleInstanceLock) {
     // Windows 要等下面的管理员探测有了结论再定（relocated-folders.ts）。
     if (process.platform !== 'win32') configureRelocatedFolderAccess('same-user')
     const managerDataDirectory = app.getPath('userData')
+    // 技能「从压缩包导入」解开放在这里，导入框关掉、开机时都清（skill-archive.ts）。
+    const skillArchiveDirectory = path.join(managerDataDirectory, 'skill-archives')
     // 内置加速内核三十多兆，校验要整读一遍。它以前排在建窗口前面单独等，后来改成开机就读、建窗口不等（0.2.22
     // 性能体检第 4 条）；网络加速 2026-10-30 下线以后开机干脆不读（0.2.24 启动速度深查 S-3）：只有上次加速时崩了、
     // 系统代理没改回去（开机看一眼恢复记录就知道），或者真用到加速、检查页要报它坏没坏时才读，见下面
@@ -1305,6 +1325,13 @@ if (!hasSingleInstanceLock) {
         runtimeLog.exception('network', 'codex-payload.notify-failed', cause)
       }
     }
+    // 替 Antigravity 跟上了账号、线路：界面只重读那两张卡。主窗口建得比这里晚，用到时才读；没有窗口时不用叫，
+    // 首屏读那两张卡时读到的就是新设置。
+    function notifyAntigravitySettingsFollowed(): void {
+      const main = managedMainWindow
+      if (!main || main.isDestroyed() || main.webContents.isDestroyed()) return
+      main.webContents.send(ipcEventChannels.onAntigravitySettingsFollowed, undefined)
+    }
     let readCurrentManagedCliKeys: () => Promise<readonly StoredManagedCliKey[]> = async () => []
     let readOtherManagedCliKeyAccounts: () => Promise<readonly { owner: string; keys: readonly StoredManagedCliKey[] }[]> = async () => []
     let readBillingAccountScope: () => string = () => 'xm-account:guest'
@@ -1339,6 +1366,8 @@ if (!hasSingleInstanceLock) {
     const systemService = createSystemService(settingsStore, {
       managerDataDirectory,
       systemSnapshotCacheFile: path.join(managerDataDirectory, 'system-snapshot.json'),
+      // 开机那两秒里首页、开机补密钥、线路跟随接连读五遍工具配置，读下的几秒内接着用（0.2.24 深查 R3）。
+      configReadCacheMs: configReadCacheMaxAgeMs,
       externalClientSnapshotCacheFile: path.join(managerDataDirectory, 'external-client-snapshot.json'),
       appVersion: app.getVersion(),
       getRelaySiteId: () => readAccountSiteId(),
@@ -1357,6 +1386,7 @@ if (!hasSingleInstanceLock) {
       cliModelHints: readCliModelHints,
       // 改完界面重读设置和配置：首页的线路标签、重开提示都在那里面。
       onToolRouteFollowed: () => notifyRelayRouteChanged(),
+      onAntigravityFollowed: () => notifyAntigravitySettingsFollowed(),
       onCodexPayloadRestart: () => notifyCodexPayload('codexPayloadSwitched', String(Date.now())),
       codexPayloadNotice: () => codexPayloadNotices.current(),
       windowsExecutionMode: windowsCliExecutionMode,
@@ -1555,6 +1585,8 @@ if (!hasSingleInstanceLock) {
     let requestRelaunch: (() => Promise<boolean>) | null = null
     // 更新页「确认重启安装」、托盘「重启并安装」前问那一句（主窗口建好后接上）；true = 照常装。
     let confirmUpdateInstall: (() => Promise<boolean>) | null = null
+    // 「立即重启」电脑前问「创作」里还有没有在做的事（D10 那一问，主窗口建好后接上）；true = 照常重启。
+    let confirmWindowsRestart: (() => Promise<boolean>) | null = null
     let requestMacUninstall: NonNullable<IpcRegistrationOptions['uninstallApp']> | null = null
     // 自动更新的落盘记录（见 auto-update-install.ts）。要在更新服务之前读好：下载完成
     // 那一刻就要用它认出「上次自动装过却没装上」的版本。
@@ -1656,7 +1688,7 @@ if (!hasSingleInstanceLock) {
     let accelerationInterruption: AccelerationInterruptionNotice | null = null
     let latestTraySystem: SystemSnapshot | null = null
     let latestTrayBalance: AccountBalance | null = null
-    // 什么时候读到的，画布余额条拿它写「几分钟前读的」，也拿它决定要不要再读一次（canvas-account-summary.ts）。
+    // 什么时候读到的，画布余额条拿它写「几分钟前读的」，也拿它决定要不要再读一次（canvas-account-summary.ts）；托盘余额读到太久没再读到时也拿它写多久以前（F8-3）。
     let latestTrayBalanceAt: number | null = null
     // 画布最近一次运行结束的时间：这之前读到的余额不算新，画布余额条要再读一次（canvas-account-summary.ts）。
     let canvasRunEndedAt: number | null = null
@@ -1978,6 +2010,7 @@ if (!hasSingleInstanceLock) {
         if (state.restoring) relayRouteController.ensureWatching(state.restoring.account.siteId)
         const identity = buildAccountIdentity(siteId, state.account?.userId, accounts.client.getSessionRevision!())
         sendToMainWindow('onAccountSessionChanged', state)
+        noteAccountChangedForVersionReport?.()
         // 换了人或退出：开票窗口关掉，上一个人的开票登录清掉；续期这类同一个人的变化它自己会略过。
         invoicePortalWindow.setAccount(invoicePortalIdentity(siteId, state))
         if (!accountIdentity.advance(identity)) return
@@ -2018,6 +2051,10 @@ if (!hasSingleInstanceLock) {
           }
           // 没登录时双击的画布项目文件，登录好了接着打开。
           openPendingCanvasProjectFile()
+          // Antigravity 的设置写在用户环境变量（Mac 是终端启动文件读的那份）里，客户从开始菜单打开它也用：星芒替
+          // 上一个账号写的那份换成这个账号的（复查 A 第 1 轮第 3 条）。开机恢复登录那一次等安静期过了再看。
+          void startupQuiet.whenOver().then(() => systemService.antigravity?.follow('account-changed'))
+            .catch((error) => runtimeLog.exception('config', 'antigravity.follow.failed', error))
         }
       },
     })
@@ -2118,6 +2155,41 @@ if (!hasSingleInstanceLock) {
     noteUsageEvent = (event) => { usageStats.record(event) }
     if (unexpectedExit) usageStats.record({ kind: 'hang', hang: 'unexpectedExit' })
     usageStats.start()
+    // 客户端版本上报（client-version-report.ts，yoyo 11-20 选的「软件主动报给控制台」）：登录着才报，每天最多一次
+    // 站点、这个站的用户编号、版本、系统、芯片，给 console.solov.cc 的用户详情用。跟上面的匿名统计是两路，不受那个开关管。
+    const clientVersionReporter = shouldSendClientVersionReport({
+      packaged: app.isPackaged,
+      localBuild: applicationPackage.xingmangLocalBuild === true,
+      env: process.env,
+    }) ? createClientVersionReporter({
+        filePath: path.join(managerDataDirectory, 'client-version-report.json'),
+        collect: () => {
+          const accountState = accountService.getSessionState()
+          return buildClientVersionReport({
+            siteId: accounts.getSiteId(),
+            authenticated: accountState.authenticated,
+            userId: accountState.account?.userId,
+            appVersion: app.getVersion(),
+            platform: process.platform,
+            arch: process.arch,
+          })
+        },
+        fetchImpl: (url, init) => chromiumSessionFetch(session.defaultSession)(url, init),
+        // 日志里只写结果，不写用户编号（I13）。
+        onSendFailure: (error) => {
+          const reason = classifyNetworkFailure(error)
+          runtimeLog.log('info', 'client-version', 'send.failed', '客户端版本这次没报上去，过一会儿再试', reason ? { networkFailure: reason } : undefined)
+        },
+        onRejected: (status) => {
+          runtimeLog.log('info', 'client-version', 'send.rejected', '控制台这次没收下客户端版本，过一会儿再试', { status })
+        },
+        onLocalFailure: (error) => { runtimeLog.exception('client-version', 'local.failed', error) },
+      })
+      : null
+    if (clientVersionReporter) {
+      noteAccountChangedForVersionReport = () => { clientVersionReporter.accountChanged() }
+      clientVersionReporter.start()
+    }
     // 设置里一关就删掉本机攒的计数（方案第 5 节「关掉后立刻停，计数文件一起删掉」），不等最多 6 小时后的那次定时检查。
     const detachPrivacyListener = attachPrivacyChangeListener((kind, enabled) => {
       if (kind === 'anonymousUsage' && !enabled) void usageStats.discard()
@@ -2159,9 +2231,13 @@ if (!hasSingleInstanceLock) {
       detachPrivacyListener()
       usageStats.stop()
       noteUsageEvent = null
+      clientVersionReporter?.stop()
+      noteAccountChangedForVersionReport = null
     })
     let lastUpdateForUsage: UsageUpdateView | null = null
     const accountWork = createAccountWorkGate({ assertReady: accounts.assertReady, revision: () => accountService.getSessionRevision!() })
+    // 新建画布项目默认放这里（Mac 的访达里叫「文稿」）；读到 Documents 要的系统授权说明在 electron-builder 的 NSDocumentsFolderUsageDescription。
+    const defaultCanvasProjectsDirectory = () => path.join(app.getPath('documents'), '星芒画布')
     const { businesses, ensureBusiness, subscribeCanvasRuns } = createRealmBusinesses({
       managerDataDirectory,
       projectRoot: path.join(__dirname, '..'),
@@ -2171,6 +2247,7 @@ if (!hasSingleInstanceLock) {
       systemService,
       readAccountGroupHints,
       readDocumentsDirectory,
+      canvasProjectsDirectory: defaultCanvasProjectsDirectory,
       runtimeLog,
       sessionFetch,
       routedRelayFetch,
@@ -2215,6 +2292,7 @@ if (!hasSingleInstanceLock) {
     const videoAssets = createRealmServiceDispatch(() => currentBusiness().videoAssets)
     const audioAssets = createRealmServiceDispatch(() => currentBusiness().audioAssets)
     const mediaAssets = createRealmServiceDispatch(() => currentBusiness().mediaAssets)
+    const worksTransfer = createRealmServiceDispatch(() => currentBusiness().worksTransfer)
     const canvasPromptPresets = createRealmServiceDispatch(() => currentBusiness().canvasPromptPresets)
     const canvasProjects = createRealmServiceDispatch(() => currentBusiness().canvasProjects)
     const canvasProjectAssets = createRealmServiceDispatch(() => currentBusiness().canvasProjectAssets)
@@ -2282,8 +2360,7 @@ if (!hasSingleInstanceLock) {
       canvasRuns,
       projects: canvasProjects,
       projectAssets: canvasProjectAssets,
-      // 新建画布项目默认放这里（Mac 的访达里叫「文稿」）；读到 Documents 要的系统授权说明在 electron-builder 的 NSDocumentsFolderUsageDescription。
-      defaultProjectsDirectory: () => path.join(app.getPath('documents'), '星芒画布'),
+      defaultProjectsDirectory: defaultCanvasProjectsDirectory,
       trashProjectFolder: (directory) => shell.trashItem(directory),
       readAccountSummary: readCanvasAccountSummary,
       readPriceSnapshot: readCanvasPriceSnapshot,
@@ -2438,6 +2515,23 @@ if (!hasSingleInstanceLock) {
     void startupQuiet.whenOver().then(() => new Promise<void>((resolve) => {
       setTimeout(resolve, installLeftoverStartupDelayMs).unref()
     })).then(() => systemService.cleanupInstallLeftovers()).catch(() => undefined)
+    // 技能压缩包解开的临时文件夹，导入框关掉时就删；星芒在导入框开着时被关掉或崩了，留下的那份开机后在后台删。
+    void startupQuiet.whenOver()
+      .then(() => discardSkillArchiveExtractions(skillArchiveDirectory))
+      .catch((error: unknown) => runtimeLog.exception('main', 'skill-archives.cleanup.failed', error))
+    // 技能导入到一半星芒被关掉或崩了，或者导入出错时临时文件夹没删掉，留在各家技能文件夹里的那份开机后在后台删。
+    void startupQuiet.whenOver()
+      .then(() => Promise.all([
+        extensionService.discardSkillImportLeftovers(),
+        providerExtensionService.discardSkillImportLeftovers(),
+      ]))
+      .then((sweeps) => {
+        const { removed, remaining } = sumSkillImportLeftoverSweeps(sweeps)
+        if (removed || remaining) {
+          runtimeLog.log(remaining ? 'warn' : 'info', 'main', 'skill-import-leftovers.cleanup', '已清理技能导入留下的临时文件夹', { removed, remaining })
+        }
+      })
+      .catch((error: unknown) => runtimeLog.exception('main', 'skill-import-leftovers.cleanup.failed', error))
     // 本软件写给 Codex 的型号名单读不进时 Codex 整个起不来（星芒关着的时候命令行或桌面端
     // 换成了旧版）：开机在本机看一眼，没登录的也看；登录状态下开机那轮按账号同步共用这一次。
     void startupQuiet.whenOver().then(() => systemService.guardCodexModelCatalogAtStartup?.()).catch(() => undefined)
@@ -2451,6 +2545,11 @@ if (!hasSingleInstanceLock) {
     void startupQuiet.whenOver().then(() => accountSessionReady).then(() => new Promise<void>((resolve) => {
       setTimeout(resolve, claudeDesktopModelTopUpStartupDelayMs).unref()
     })).then(() => systemService.topUpClaudeDesktopModels?.()).catch(() => undefined)
+    // Claude Desktop 的 Cowork 工作区（约 1.3 GB）国内从它官网下不动：开机检测跑完再等一会儿，替已经装着的从星芒
+    // 下载站放好（external-client-route-service.ts 的 seedClaudeDesktopWorkspace）。不看登录，放过的、盘不够的不下。
+    void startupQuiet.whenOver().then(() => new Promise<void>((resolve) => {
+      setTimeout(resolve, claudeDesktopModelTopUpStartupDelayMs).unref()
+    })).then(() => systemService.seedClaudeDesktopWorkspace?.()).catch(() => undefined)
     // 启动画面最多为账号恢复等 3 秒，明确断网就不等（yoyo 2026-09-22 拍板）。
     const accountStartupGate = createAccountStartupGate({
       settled: accountSessionReady,
@@ -2530,6 +2629,8 @@ if (!hasSingleInstanceLock) {
     })
     attachProxyBypassState(() => proxyBypass.active(), () => proxyBypass.siteDirect())
     const chatHistoryStore = createAiChatHistoryStore({ root: path.join(managerDataDirectory, 'chat-history') })
+    // 视频的分镜一条一个文件（总单 #79）：以前在界面的 localStorage 里，升级后第一次打开「创作」时抄过来，原来那份不删。
+    const videoStudioProjectStore = createVideoStudioProjectStore({ root: path.join(managerDataDirectory, 'video-projects') })
     // 回复出字时聊天页最多隔两秒才存一次，退出时最后这一截还在界面里：退出前先问它要一次（0.2.24 深查聊天页 C1）。
     // 只问这一页报告过手上有没有事的界面（mainRendererAnswering）：正在重新加载、关掉省内存、崩了的，还有旧回滚界面，
     // 都没人接这一声，问了只会白等到时限。
@@ -2590,7 +2691,8 @@ if (!hasSingleInstanceLock) {
       },
       suspended: () => remoteFeatures.isOff('codex-remote'),
       // 手机上「状态」里的余额（YF-18）：跟画布余额条同一份，用托盘、余额提醒读过的，太旧了才读一次，读回来时换了账号就不要。
-      readBalanceUsd: async () => (await readCanvasAccountSummary())?.balanceUsd ?? null,
+      // 那一次读失败交回的是旧数，手机上不带时间，旧数就不给（M19）。
+      readBalanceUsd: async () => freshCanvasBalanceUsd(await readCanvasAccountSummary(), Date.now()),
     })
     // 开机时遥控一个都没开、也还没推过快照：先读一份，托盘才知道该不该出「打开手机遥控」。
     void codexRemote.snapshot().then(followRemoteForTray).catch((cause: unknown) => runtimeLog.exception('codex-remote', 'remote.tray-state.failed', cause))
@@ -2605,7 +2707,7 @@ if (!hasSingleInstanceLock) {
     })
     // 复制密钥、新密码用：60 秒自动清，退出前（prepareToQuit）再清一次。
     const sensitiveClipboard = createSensitiveClipboard({ clipboard })
-    // 「设置 › 备份迁移 › 星芒占用的空间」（决定单 D100）：只在客户打开那一组时问，不在后台算。
+    // 「设置 › 备份迁移 › 星芒占用空间」（决定单 D100）：只在客户打开那一组时问，不在后台算。
     const storageUsage = createStorageUsageService({
       worksDirectory: () => currentBusiness().aiOutputSharedRoot(),
       canvasProjectAssetDirectories: async () => (await Promise.all((['xm-account', 'api-account'] as const)
@@ -2636,7 +2738,7 @@ if (!hasSingleInstanceLock) {
       documentsDirectory: () => app.getPath('documents'),
       aiOutputDirectory: () => currentBusiness().aiOutputPlacement.root,
       downloadsDirectory: () => app.getPath('downloads'),
-      // 设置页那个开关同一份文件、同一种读法（没碰过 = 开）；读不出来交 null，「搬到新电脑」就不带也不碰它（X-3）。
+      // 设置页那个开关同一份文件、同一种读法（没碰过 = 开）；读不出来交 null，「迁移到新电脑」就不带也不碰它（X-3）。
       readAnonymousUsagePreference: () => {
         try {
           return new PlatformSettingsStore(platformPreferencesPath).read().privacy?.anonymousUsage !== false
@@ -2650,6 +2752,7 @@ if (!hasSingleInstanceLock) {
       accountSessionReady,
       accountStartupGate,
       announcementReads: new AnnouncementReadStore(path.join(managerDataDirectory, 'announcement-reads')),
+      skillArchiveDirectory,
       announcementImages: createAnnouncementImageReader({ fetch: networkRoutes.announcementImageFetch }),
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
@@ -2669,7 +2772,11 @@ if (!hasSingleInstanceLock) {
       videoService: chatVideoService,
       videoAssets,
       audioAssets,
+      mediaAssets,
+      worksTransfer,
+      accountAssets: canvasProjectAssets,
       chatHistory: chatHistoryStore,
+      videoStudioProjects: videoStudioProjectStore,
       chatHistoryFlush,
       sessionsService,
       providerSessionsService,
@@ -2714,10 +2821,11 @@ if (!hasSingleInstanceLock) {
       onAccountNotice: (notice) => { lastRendererNotice = noticeFingerprint(notice) },
       relaunchApp: () => requestRelaunch?.() ?? Promise.resolve(false),
       confirmUpdateInstall: () => confirmUpdateInstall?.() ?? Promise.resolve(true),
+      confirmWindowsRestart: () => confirmWindowsRestart?.() ?? Promise.resolve(true),
       ...(process.platform === 'darwin'
         ? {
             uninstallApp: (request: AppUninstallRequest, backupCliConfigs: () => Promise<void>) => (
-              requestMacUninstall?.(request, backupCliConfigs) ?? Promise.reject(new Error('星芒还没准备好，稍后再试'))
+              requestMacUninstall?.(request, backupCliConfigs) ?? Promise.reject(new Error('星芒尚未准备就绪，请稍后重试'))
             ),
           }
         : {}),
@@ -2784,7 +2892,19 @@ if (!hasSingleInstanceLock) {
         canvasController.setAppearance({ theme, reducedMotion: appearance.reducedMotion })
       },
       openCanvasWindow: () => canvasController.open(),
-      openCanvasAssetLibrary: () => canvasController.openAssetLibrary(),
+      listCanvasProjects: () => canvasController.listProjects(),
+      openCanvasProject: (projectId) => canvasController.openProject(projectId),
+      // 「添加到画布」：主窗口点的那一张图抄进他选的画布项目。项目表、各项目的素材库跟画布窗口用的是同一份，
+      // 画布窗口自己没有这个入口（canvas-project-image-intake.ts）。
+      addImageToCanvasProject: createCanvasProjectImageIntake({
+        projects: canvasProjects,
+        assets: canvasProjectAssets,
+        defaultProjectsDirectory: defaultCanvasProjectsDirectory,
+        onSourceError: (error, context) => runtimeLog.log('warn', 'canvas', 'asset.source.persist.failed', '图片已添加到画布项目，但来源信息保存失败', {
+          assetId: context.assetId,
+          reason: error instanceof Error ? error.message : String(error),
+        }),
+      }),
       xingmangAiSkill: {
         bundledRoot: bundledXingmangAiSkillRoot,
         userHome: os.homedir(),
@@ -2969,10 +3089,10 @@ if (!hasSingleInstanceLock) {
       // 托盘「退出」「重启并安装」时主窗口通常是隐藏的，挂在隐藏窗口上的模态框用户看不见。
       if (!mainWindow.isVisible()) showMainWindow()
       const result = await dialog.showMessageBox(mainWindow, {
-        type: 'question', title: '关闭星芒AI管理工具', message: '还在安装，现在退出会中断，确定退出？',
+        type: 'question', title: '关闭星芒AI管理工具', message: '安装仍在进行，现在退出将中断安装，确定退出？',
         detail: task.count > 1
-          ? `${task.description}，另外还有 ${task.count - 1} 项安装排在后面。现在退出会中断它们，已经下载的部分下次要重新来过。`
-          : `${task.description}。现在退出会中断它，已经下载的部分下次要重新来过。`,
+          ? `${task.description}，另有 ${task.count - 1} 项安装正在排队。现在退出将中断这些任务，已下载的部分下次需重新下载。`
+          : `${task.description}。现在退出将中断该任务，已下载的部分下次需重新下载。`,
         buttons: ['继续安装', '仍然退出'],
         defaultId: 0, cancelId: 0,
       })
@@ -2993,7 +3113,7 @@ if (!hasSingleInstanceLock) {
       const result = await dialog.showMessageBox(mainWindow, {
         type: 'question', title: '星芒AI管理工具', message: prompt.message, detail: prompt.detail,
         buttons: prompt.buttons,
-        // 回车、Esc 都落在「等它做完」上：手滑不会把正在出的图停掉。
+        // 回车、Esc 都落在「等待完成」上：手滑不会把正在出的图停掉。
         defaultId: 0, cancelId: 0, noLink: true,
       })
       return result.response === 1
@@ -3005,13 +3125,13 @@ if (!hasSingleInstanceLock) {
       const result = await dialog.showMessageBox(mainWindow, {
         type: 'question', title: '关闭星芒AI管理工具', message: prompt.message,
         buttons: prompt.buttons,
-        // 回车、Esc 都落在「等它说完」上：手滑不会把已经扣了费的回复停在半截。
+        // 回车、Esc 都落在「等待完成」上：手滑不会把已经扣了费的回复停在半截。
         defaultId: 0, cancelId: 0, noLink: true,
       })
       return result.response === 1
     }
     // 更新页「确认重启安装」、托盘「重启并安装」：重启会打断正在装、排着队的工具，先问退出时那一句；
-    // 聊天、视频剪辑、画布还在做的再问一句（D10）。点「继续安装」「等它做完」这次就不装，新版本留着，
+    // 聊天、视频剪辑、画布还在做的再问一句（D10）。点「继续安装」「等待完成」这次就不装，新版本留着，
     // 以后再点或下次退出时照常装（已知31）。
     confirmUpdateInstall = async () => {
       if (mainWindow.isDestroyed()) return true
@@ -3022,6 +3142,20 @@ if (!hasSingleInstanceLock) {
         // 头一问问着的时候主窗口没了（正在退出），跟上面一样照常装。
         confirmWork: async (prompt) => mainWindow.isDestroyed() || await confirmUnfinishedRestartWork(prompt),
         log: (event, message) => runtimeLog.log('info', 'updater', event, message),
+      })
+    }
+    // Node.js 装完、Codex 桌面端打不开那两个重启框的「立即重启」：重启电脑同样会停下聊天、视频剪辑、画布在做的事，
+    // 问的是同一句（D10）。点「等待完成」这次就不发重启，框留着，做完再点。
+    confirmWindowsRestart = async () => {
+      if (mainWindow.isDestroyed()) return true
+      return await confirmWindowsRestartWork({
+        queueBusy: () => {
+          const queue = systemService.inspectInstallationQueue()
+          return queue.activeKey !== null || queue.pendingKeys.length > 0
+        },
+        unfinishedWork: unfinishedRestartWork,
+        confirmWork: async (prompt) => mainWindow.isDestroyed() || await confirmUnfinishedRestartWork(prompt),
+        log: (event, message) => runtimeLog.log('info', 'maintenance', event, message),
       })
     }
     // 新版本在后台下好以后先跳框问要不要现在装，没装的 Mac 等电脑闲着时自己装（update-install-prompt.ts，#1380）。
@@ -3150,7 +3284,7 @@ if (!hasSingleInstanceLock) {
           detail, buttons,
           defaultId: trayReady ? 0 : 1, cancelId: trayReady ? 2 : 1,
           // 默认不勾：不勾就和以前一样每次都问。选「返回」时勾了也不记。
-          checkboxLabel: '记住我的选择，以后不再询问（可以在「设置 › 启动关闭」里改）',
+          checkboxLabel: '记住我的选择，以后不再询问（可在「设置 › 启动关闭」中修改）',
           checkboxChecked: false,
         })
         const decision = trayReady ? result.response === 0 ? 'hide' : result.response === 1 ? 'quit' : 'cancel' : result.response === 0 ? 'quit' : 'cancel'
@@ -3259,7 +3393,10 @@ if (!hasSingleInstanceLock) {
         // 安装器装完会自己打开新版本，再拉起一次旧进程会和安装器抢同一个目录。
         relaunchRequested = false
         updaterService.install()
-        if (process.platform !== 'darwin') return
+        // Windows 正式版交给提权脚本（S01，bootstrap/updates.ts 同一个判断）：授权、核对都在退出之前，
+        // 核对完由更新器自己发起退出，安装程序等星芒退出了才开始装。
+        const windowsHandoff = process.platform === 'win32' && app.isPackaged
+        if (process.platform !== 'darwin' && !windowsHandoff) return
         // Mac 的安装器在本进程里取包、校验，准备好了才自己退出重开；马上退出等于
         // 把它一起关掉，什么也装不上。等它给结果，期间窗口都收起来。和更新页那条
         // 一样先放掉画布、支付窗口，不然安装器发起的退出会被它们拦住。
@@ -3268,6 +3405,10 @@ if (!hasSingleInstanceLock) {
         try { invoicePortalWindow.destroy() } catch (cause) { runtimeLog.exception('invoice', 'shutdown.failed', cause) }
         for (const window of BrowserWindow.getAllWindows()) {
           if (!window.isDestroyed()) window.webContents.on('will-prevent-unload', (event) => event.preventDefault())
+        }
+        if (windowsHandoff) {
+          runtimeLog.log('info', 'updater', 'install.quit-wait', '退出前等安装程序授权和核对，最多 20 秒')
+          return waitForWindowsUpdateHandoff(updaterService)
         }
         app.hide()
         runtimeLog.log('info', 'updater', 'install.quit-wait', '退出前等 Mac 安装器准备好新版本，最多 20 秒')
@@ -3286,9 +3427,10 @@ if (!hasSingleInstanceLock) {
         if (acceleration?.hasPossibleSession()) runtimeLog.log('info', 'network', 'acceleration.quit.stop', '退出前断开加速、改回网络设置')
         // 聊天记录最后一次保存可能还在写盘，写完再退，别让刚聊的那几句丢在半路。聊天页手上还没交出来的
         // （正在出字的回复、刚打的字）先让它交出来，再等写盘。
+        // 视频的分镜同理：界面听到同一声「要退出了」就把还没发出去的那一次保存发出来（useVideoStudioLibrary.ts），这里等它写完。
         // 开着手机遥控的跟手机说一句「星芒关了」，最多等 1.5 秒（打磨 B8，比 prepareToQuit 那 2 秒的清理预算短）；will-quit 里的 dispose 来不及等网络。
         // 刚复制的密钥还没到 60 秒也现在清掉：剪贴板要异步读回来比对，will-quit 里来不及。
-        await Promise.all([acceleration?.stopAll(), chatHistoryFlush.request().then(() => chatHistoryStore.idle()), codexRemote.farewell(), sensitiveClipboard.flush()])
+        await Promise.all([acceleration?.stopAll(), chatHistoryFlush.request().then(() => Promise.all([chatHistoryStore.idle(), videoStudioProjectStore.idle()])), codexRemote.farewell(), sensitiveClipboard.flush()])
       },
       flushWindowState: () => windowPreferenceFlushers.get(mainWindow.webContents)?.() ?? Promise.resolve(),
       show: showMainWindow,
@@ -3430,6 +3572,7 @@ if (!hasSingleInstanceLock) {
         Promise.resolve().then(() => crashReporter.flush()),
         Promise.resolve().then(() => acceleration?.stopAll()),
         Promise.resolve().then(() => chatHistoryStore.idle()),
+        Promise.resolve().then(() => videoStudioProjectStore.idle()),
         // 视频剪辑的分镜（含刚交出去那一单的请求号）在网页存储里，正常退出才会补写；这里退得急，先让它落盘（KR-4）。
         Promise.resolve().then(() => { if (!mainWindow.isDestroyed()) mainWindow.webContents.session.flushStorageData() }),
       ]).then(() => runtimeLog.idle())
@@ -3516,7 +3659,9 @@ if (!hasSingleInstanceLock) {
         })
       },
       abort: () => {
-        lifecycle.abortUpdateQuit()
+        // 关窗时选了「安装更新并退出」的，退出是客户自己选的：安装器没起来也照样退完，退出前跟手机说的「星芒关了」
+        // 是对的，这里不放回什么，也不补「未退出」。只有更新页「重启并安装」这类由安装发起的退出才真撤回。
+        if (!lifecycle.abortUpdateQuit()) return
         canvasController.resumeAfterAbortedQuit()
         // 安装器没启动起来（Windows 提权框点了「否」、包不在了）：星芒还开着，退出前跟手机说的「星芒关了」要补一句（打磨 B8）。
         void codexRemote.quitAborted().catch(() => undefined)
@@ -3536,6 +3681,9 @@ if (!hasSingleInstanceLock) {
         return {
           accountLabel: state.account?.username ?? null,
           balanceUsd: latestTrayBalance && latestTrayBalance.quotaPerUnit > 0 ? latestTrayBalance.quota / latestTrayBalance.quotaPerUnit : null,
+          // 读到太久还没再读到时，余额后面写多久以前；登录了一个都没读到写「暂未读到」（F8-3）。
+          balanceReadAt: latestTrayBalanceAt,
+          signedIn: state.authenticated && Boolean(state.account),
           subscriptionLabel: traySubscriptionLabel(latestTraySubscription, latestTrayBalance?.quotaPerUnit ?? 0, Date.now()),
           installedTools: [
             ...(latestTraySystem?.desktopApps.codex.installed ? [{ id: 'codexDesktop', label: 'Codex 桌面端' }] : []),

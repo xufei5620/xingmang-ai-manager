@@ -875,17 +875,49 @@ describe('window close coordination', () => {
     const { lifecycle } = fixture()
     lifecycle.attach(window, application)
     await lifecycle.prepareUpdateQuit()
-    lifecycle.abortUpdateQuit()
+    expect(lifecycle.abortUpdateQuit()).toBe(true)
     expect(lifecycle.isQuitting).toBe(false)
     const close = { preventDefault: vi.fn() }
     window.emit('close', close)
     expect(close.preventDefault).toHaveBeenCalledOnce()
+    // A second report of the same failed install has nothing left to undo.
+    expect(lifecycle.abortUpdateQuit()).toBe(false)
   })
 
   it('does not undo a quit the user chose when an aborted install is reported late', async () => {
     const { lifecycle } = fixture({ readPreference: () => 'quit' })
     expect(await lifecycle.requestClose()).toBe('quit-requested')
-    lifecycle.abortUpdateQuit()
+    expect(lifecycle.abortUpdateQuit()).toBe(false)
+    expect(lifecycle.isQuitting).toBe(true)
+  })
+
+  // The host tells the phone "still running" only when the abort really took
+  // the app back. Choosing "install update and quit" on close and then
+  // declining the installer still ends in a quit, so the earlier "quit"
+  // message stays true and nothing follows it.
+  it('reports nothing undone when the installer is declined during a quit the user chose', async () => {
+    const quitAborted = vi.fn()
+    let declineInstaller = () => {}
+    const { options, lifecycle } = fixture({
+      readPreference: () => 'quit',
+      confirmQuit: async () => 'install-update' as const,
+      installDownloadedUpdate: () => {
+        expect(lifecycle.prepareUpdateQuit()).toBeUndefined()
+        return new Promise<void>((settle) => {
+          declineInstaller = () => {
+            if (lifecycle.abortUpdateQuit()) quitAborted()
+            settle()
+          }
+        })
+      },
+    })
+    const close = lifecycle.requestClose()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(options.quit).not.toHaveBeenCalled()
+    declineInstaller()
+    expect(await close).toBe('quit-requested')
+    expect(quitAborted).not.toHaveBeenCalled()
+    expect(options.quit).toHaveBeenCalledOnce()
     expect(lifecycle.isQuitting).toBe(true)
   })
 })

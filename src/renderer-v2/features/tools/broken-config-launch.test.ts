@@ -14,7 +14,7 @@ describe('broken config launch messages', () => {
   it('is recognised only word for word, so the error dialog offers 修好它 for exactly these', () => {
     for (const message of Object.values(brokenConfigLaunchMessages)) {
       expect(isBrokenConfigLaunchMessage(message)).toBe(true)
-      expect(presentOperationFailure({ message })).toMatchObject({ key: 'configBroken', title: '配置文件坏了', actions: [{ id: 'repairConfig', label: '修好它' }, { id: 'support', label: '找客服' }] })
+      expect(presentOperationFailure({ message })).toMatchObject({ key: 'configBroken', title: '配置文件已损坏', actions: [{ id: 'repairConfig', label: '立即修复' }, { id: 'support', label: '联系客服' }] })
     }
     expect(isBrokenConfigLaunchMessage('请先确认账号连接，再打开工具。')).toBe(false)
     expect(isBrokenConfigLaunchMessage(`前面还有话。${brokenConfigLaunchMessages.codexConfig}`)).toBe(false)

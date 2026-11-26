@@ -215,6 +215,17 @@ const ANSWERED_HOOK_LOG = [
   '2026-11-17T01:22:47.308Z [DEBUG] [API REQUEST] /v1/messages source=hook_prompt',
   '2026-11-17T01:22:47.316Z [DEBUG] Hooks: Model response: {"ok":true}',
 ].join('\n')
+// Claude Code 2.1.330 against the same kind of fake gateway (2026-11-23): the
+// debug log no longer quotes the hook's answer, only what the hook decided.
+const ANSWERED_HOOK_LOG_2_1_330 = [
+  '2026-11-23T02:32:48.597Z [DEBUG] Hooks: Querying model with 1 messages',
+  '2026-11-23T02:32:48.610Z [DEBUG] [API REQUEST] /v1/messages source=hook_prompt',
+  '2026-11-23T02:32:48.623Z [DEBUG] Hooks: Prompt hook condition was met',
+].join('\n')
+const UNPARSED_HOOK_LOG_2_1_330 = [
+  '2026-11-23T02:32:04.759Z [DEBUG] Hooks: Querying model with 1 messages',
+  '2026-11-23T02:32:04.792Z [DEBUG] Hooks: error parsing response as JSON (1 chars)',
+].join('\n')
 const REFUSED_HOOK_LOG = [
   '2026-11-17T01:22:39.638Z [DEBUG] [API REQUEST] /v1/messages source=hook_prompt',
   '2026-11-17T01:22:39.642Z [ERROR] API error (attempt 1/3): 400 400 {"type":"error","error":{"type":"invalid_request_error","message":"output_format: Extra inputs are not permitted"}}',
@@ -239,6 +250,9 @@ test('the structured-output check runs a prompt hook, the one -p request that us
 
 test('an answered hook means the relay takes structured outputs, and a 400 means it refuses them', () => {
   assert.equal(classifyStructuredOutputProbe(ANSWERED_HOOK_LOG).verdict, 'accepted')
+  // 2.1.330 only logs the verdict; an answer it could not parse still came back.
+  assert.equal(classifyStructuredOutputProbe(ANSWERED_HOOK_LOG_2_1_330).verdict, 'accepted')
+  assert.equal(classifyStructuredOutputProbe(UNPARSED_HOOK_LOG_2_1_330).verdict, 'accepted')
   const refused = classifyStructuredOutputProbe(REFUSED_HOOK_LOG)
   assert.equal(refused.verdict, 'rejected')
   // The relay's own words go into the summary, so a person can tell a refusal

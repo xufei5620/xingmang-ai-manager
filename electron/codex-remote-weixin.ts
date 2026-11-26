@@ -31,6 +31,8 @@ const maximumBackoffMs = 60_000
 const sendRetryDelayMs = 1_000
 const recentIdLimit = 512
 const defaultLongPollMs = 35_000
+// 连着这么多次本机等到超时都没回音，就当连不上（M10）。一次可能只是哪一下慢了，两次就是一分半钟没有任何回应。
+const timeoutsBeforeError = 2
 
 export interface WeixinChannelOptions {
   botAgent: string
@@ -113,7 +115,7 @@ function failureReason(error: unknown): string {
 }
 
 // 收消息失败后都会自己重试，界面上只说批过的那一句（微信-界面文字.md 第 20 条），原因进日志。
-const pollRetryMessage = '连不上微信，正在重试'
+const pollRetryMessage = '无法连接微信，正在重试'
 
 export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencies, options: WeixinChannelOptions): RemoteChannelAdapter {
   const sleep = options.sleep ?? abortableSleep
@@ -121,6 +123,8 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
   let loop: Promise<void> | null = null
   let credential: WeixinCredential | null = null
   let handlers: RemoteChannelHandlers | null = null
+  // 关遥控时换一个（M14）：等着重发的那一下当场醒来，醒来发现换过了就不再发。
+  let pendingSends = new AbortController()
   let lastStatus: RemoteChannelStatus | null = null
   const recentIds: string[] = []
   const recentIdSet = new Set<string>()
@@ -177,6 +181,7 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
     let cursor = ''
     let longPollMs = defaultLongPollMs
     let backoffMs = 0
+    let timeouts = 0
     // 电脑上的时间比微信快多少，每拉回一批就拿回应里的时间重估（RemoteInbound.clockAheadMs）。
     let clockAheadMs: number | undefined
     while (!signal.aborted) {
@@ -184,6 +189,15 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
         const fromStart = cursor === ''
         const updates = await fetchWeixinUpdates(context(signal, active.origin), active.token, cursor, longPollMs)
         if (signal.aborted) return
+        if (updates.timedOut) {
+          // 没等来回音不算连上，也不清掉已经报的错（M10）：不然从没收到过微信的回应，卡片照样变绿，
+          // 手机上还会收到「已打开」、补发没送到的回答。超时本身已经等了很久，不再另外退避。
+          timeouts += 1
+          dependencies.log('warn', 'weixin-poll-timeout', { count: timeouts })
+          if (timeouts >= timeoutsBeforeError) report({ state: 'error', message: pollRetryMessage })
+          continue
+        }
+        timeouts = 0
         cursor = updates.cursor
         longPollMs = updates.nextLongPollMs
         backoffMs = 0
@@ -194,7 +208,7 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
         if (signal.aborted) return
         if (error instanceof WeixinIlinkError && (error.reason === 'session-expired' || error.reason === 'refused')) {
           dependencies.log('warn', 'weixin-login-expired', { reason: error.reason, code: error.code ?? null })
-          report({ state: 'needs-login', message: '微信这边的登录已经过期，请在电脑上重新扫码' })
+          report({ state: 'needs-login', message: '微信登录已失效，请在电脑端重新扫码' })
           return
         }
         backoffMs = nextWeixinBackoffMs(backoffMs)
@@ -234,7 +248,7 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
       lastStatus = null
       const active = await loadCredential()
       if (!active) {
-        report({ state: 'needs-login', message: '还没用微信扫码登录' })
+        report({ state: 'needs-login', message: '尚未使用微信扫码登录' })
         return
       }
       const current = new AbortController()
@@ -270,22 +284,33 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
       return { ok: false, reason: result.reason }
     },
 
+    cancelPendingSends() {
+      pendingSends.abort()
+      pendingSends = new AbortController()
+    },
+
     async send(peer: RemotePeer, message: RemoteOutbound, replyContext?: string) {
+      const cancelled = pendingSends.signal
       const active = credential ?? await loadCredential()
-      if (!active) throw new Error('还没用微信扫码登录')
-      if (peer.channel !== 'weixin') throw new Error('不是微信渠道的联系人')
+      if (!active) throw new Error('尚未使用微信扫码登录')
+      if (peer.channel !== 'weixin') throw new Error('该联系人不属于微信渠道')
       // 底座只往绑定的人发；这里再挡一道，令牌只给扫码的那个人发消息。
-      if (active.ownerUserId && peer.userId !== active.ownerUserId) throw new Error('只能发给扫码登录的那个微信')
+      if (active.ownerUserId && peer.userId !== active.ownerUserId) throw new Error('仅可发送给扫码登录的微信账号')
       const contextToken = replyContext ?? null
       try {
         await sendOnce(active, peer, message.text, contextToken)
       } catch (error) {
         if (error instanceof WeixinIlinkError && (error.reason === 'session-expired' || error.reason === 'refused')) {
-          report({ state: 'needs-login', message: '微信这边的登录已经过期，请在电脑上重新扫码' })
+          report({ state: 'needs-login', message: '微信登录已失效，请在电脑端重新扫码' })
           throw error
         }
         if (!isTransientSendFailure(error)) throw error
-        await sleep(sendRetryDelayMs, new AbortController().signal)
+        await sleep(sendRetryDelayMs, cancelled)
+        // 电脑上关了遥控（M14）：手机已经收到「已关闭」，这条不再补发。
+        if (cancelled.aborted) {
+          dependencies.log('info', 'weixin-send-cancelled')
+          throw error
+        }
         await sendOnce(active, peer, message.text, contextToken)
       }
     },

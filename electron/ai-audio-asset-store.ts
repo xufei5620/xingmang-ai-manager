@@ -15,7 +15,7 @@ const MISSING_ASSET_MESSAGE = missingAiAssetMessages.audio
 // 另存出去的是用户自己的文件，不是本程序的私有数据：权限位照原来 writeFile 在常见 umask
 // 下的结果给 0o644，不用原子写默认的 0o600。
 const SAVED_COPY_FILE_MODE = 0o644
-const DEFAULT_MAXIMUM_AUDIO_BYTES = 128 * 1024 * 1024
+export const DEFAULT_MAXIMUM_AUDIO_BYTES = 128 * 1024 * 1024
 const ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
 const DATE_DIRECTORY_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 
@@ -187,7 +187,7 @@ export class AiAudioAssetStore {
         throw new Error('AI 音频内容摘要冲突')
       }
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('AI 音频资产标识冲突，请重试')
-      throw new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服', { cause: error })
+      throw new Error('作品未能存入保存位置，请稍后重试；如持续失败，请联系客服', { cause: error })
     }
     this.locator.remember(userId, assetId, filePath)
     return {

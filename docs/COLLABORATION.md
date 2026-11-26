@@ -31,6 +31,8 @@
 
 任务一律写进 Issue。Claude·win 查清楚的问题写成可直接动手的 Issue 交给云端；云端无法推送任务给本地 agent，派给本地的任务同样写进 Issue，**本地 agent 主动拉取**。
 
+**审查报告不进本仓**（yoyo 2026-11-24 同意收起）：本仓是公开的。全面审查、复查、红队这类报告，写明哪些问题还没修的，一律放云端项目的共享文件夹，不提交进仓库；代码注释、变更分片里提到审查编号（U03、R29-01 这类）只写编号，不写报告路径。原来的 `docs/audits/` 已于 2026-11-24 搬出。
+
 ### 标签体系
 
 > 2026-08-10 拍板：环境标签**以 `env:*` 为唯一标准**（与 `docs/AGENT-RUNBOOK.md` 一致）。
@@ -161,7 +163,7 @@ gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "...
 |---|---|
 | `electron/system-service.ts` / `system-service-context.ts` | 系统服务的门面和各簇共用的上下文；各簇已按 #1070 搬进各自的 `*-service.ts`（其中 `config-save-service.ts` 最大），Codex 桌面端早先按 #34 搬入 `codex-desktop-service.ts` |
 | `electron/config-files.ts` / `main.ts` / `new-api-client.ts` | 主进程里另外几个大文件，很多改动都会碰到 |
-| `src/renderer-v2/pages-account.tsx` / `features/extensions/ExtensionsPage.tsx` / `features/settings/SettingsPage.tsx` / `App.tsx` | v2 界面的大文件（`pages-maintenance.tsx`、`pages-management.tsx` 已按 #1070 一页一个文件拆开，只做转出） |
+| `src/renderer-v2/pages-account.tsx` / `features/extensions/PluginsHub.tsx` / `features/settings/SettingsPage.tsx` / `App.tsx` | v2 界面的大文件（`pages-maintenance.tsx`、`pages-management.tsx` 已按 #1070 一页一个文件拆开，只做转出） |
 | `src/styles.css` / `src/App.tsx` | legacy 的两个巨型文件，已冻结（§4.1 ③），只在安全修复时会碰 |
 
 **分配任务时，尽量不要让两个 agent 同时改同一个热点文件。**

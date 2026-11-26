@@ -173,6 +173,10 @@ function assertLinuxPackageMode(electronPlatformName) {
 }
 
 const signingPublisher = process.env.XINGMANG_SIGNING_PUBLISHER?.trim() || undefined
+// 给人看的公司名、版权都写简称「星芒文化」（package.json 的 author、scripts/release-copyright.cjs，
+// yoyo 2026-11-25 定），这一个不跟着改：它不显示，是签名发布时客户端拿来比对安装包证书上名字的
+// （update-signature.ts）。证书机构只写登记的全称，这里写成简称，从那一版起客户会拒收所有签名更新，
+// 只能手动重装。
 const updatePublisher = signingPublisher || '绍兴星芒文化传媒有限责任公司'
 // Library validation loads a library only when its team identifier matches the
 // signing process, and Apple issues that identifier: an ad-hoc signature has
@@ -456,6 +460,10 @@ module.exports = {
     // only reached while electron-updater performs its own signature check.
     verifyUpdateCodeSignature: true,
     target: [{ target: 'nsis', arch: ['x64'] }],
+    // 星芒自己的更新由这份脚本以管理员身份复制、核对、安装（S01，electron/windows-update-handoff.ts）。
+    // 放在安装目录的 resources 里，跟 elevate.exe 一样只有管理员能改；少了它更新装不上，
+    // electron-builder 不报错，靠出包后的 verify-packaged-hardening.cjs 拦。
+    extraResources: [{ from: 'build/update-handoff', to: 'update-handoff', filter: ['verified-install.ps1'] }],
     icon: 'assets/brand/v3/favicon.ico',
     legalTrademarks: '星芒AI',
     artifactName: 'XingMang-AI-Manager-${version}-Setup.${ext}',
@@ -511,8 +519,8 @@ module.exports = {
       description: canvasProjectTypeName,
       mimeType: 'application/x-xingcanvas',
     }],
-    maintainer: '绍兴星芒文化传媒有限责任公司 <xufei5620136@gmail.com>',
-    vendor: '绍兴星芒文化传媒有限责任公司',
+    maintainer: '星芒文化 <xufei5620136@gmail.com>',
+    vendor: '星芒文化',
     desktop: {
       entry: {
         Name: '星芒AI管理工具',

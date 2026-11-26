@@ -1090,6 +1090,32 @@ test('the Windows packaging job runs every smoke that has no other home', () => 
   }
 })
 
+// With the walk of the real client right in front of it, the probes' first
+// Appx checks stalled for a minute or two after that client exited and twice
+// ran out their 90 s budget (#2041); quality.yml says what the runs showed.
+test('the PowerShell probes run before the walk of the real client in the packaging job', () => {
+  const commands = runSteps('windows-package')
+  const probes = commands.indexOf('node e2e/windows-powershell-probes-smoke.mjs')
+  const walk = commands.indexOf('node e2e/verify-app.mjs --out output/verify-app')
+  assert.notEqual(probes, -1)
+  assert.notEqual(walk, -1)
+  assert.ok(probes < walk, 'the PowerShell probe smoke must not start right after the real client has exited')
+})
+
+// S01: the update handoff script runs elevated on customers' machines, so the
+// one place it is exercised for real is the Windows packaging job, after the
+// compile that builds the command it is started with.
+test('the update install handoff script runs for real in the Windows packaging job', () => {
+  const commands = runSteps('windows-package')
+  const smoke = 'node e2e/windows-update-handoff-smoke.mjs'
+  const index = commands.indexOf(smoke)
+  assert.notEqual(index, -1, `${smoke} must run somewhere in CI`)
+  assert.ok(index > commands.indexOf('npm run compile'), `${smoke} drives the compiled handoff module`)
+  const step = workflow.jobs['windows-package'].steps.find((entry) => entry.run === smoke)
+  assert.ok(step['timeout-minutes'] > 0, `${smoke} must carry its own step bound`)
+  assert.equal(step['continue-on-error'], undefined, `${smoke} must be able to fail the job`)
+})
+
 test('real PowerShell runs once in the packaging job, never in the unit test shards', () => {
   const commands = runSteps('windows-package')
   const packageSteps = workflow.jobs['windows-package'].steps
@@ -1590,6 +1616,8 @@ test('the installer smokes run inside quality on the pull requests that touch th
     'electron/update-signature.ts',
     'electron/update-install-prompt.ts',
     'electron/bootstrap/updates.ts',
+    'electron/windows-update-handoff.ts',
+    'build/update-handoff/verified-install.ps1',
     'electron/app-settings.ts',
     'electron-builder.config.cjs',
     'build/installer.nsh',
@@ -1668,6 +1696,44 @@ test('the installer smokes run inside quality on the pull requests that touch th
     assert.match(group, /smoke/, file)
     for (const calledJob of Object.values(called.jobs)) assert.equal(calledJob.environment, undefined, file)
   }
+})
+
+// S01: since the Windows install goes through the app's own handoff, an old
+// release installing this build proves nothing about that handoff; the old
+// release still installs the old way. The package under test has to install a
+// version above itself, built from the same commit, through its own updater.
+test('the upgrade smoke lets the Windows package under test install the next version itself', () => {
+  const upgrade = YAML.parse(fs.readFileSync(path.join(root, '.github', 'workflows', 'upgrade-smoke.yml'), 'utf8'))
+  const self = upgrade.jobs['windows-self-upgrade']
+  assert.ok(self, 'windows-self-upgrade must exist')
+  assert.deepEqual(self.needs, upgrade.jobs['windows-upgrade'].needs)
+  assert.equal(self.if, upgrade.jobs['windows-upgrade'].if, 'it must run whenever the old-to-new Windows upgrade runs')
+  assert.equal(self['runs-on'], 'windows-latest')
+  assert.equal(self.environment, undefined)
+  const steps = self.steps
+  const download = steps.find((step) => String(step.uses || '').startsWith('actions/download-artifact@'))
+  const expected = upgrade.jobs['windows-upgrade'].steps.find((step) => String(step.uses || '').startsWith('actions/download-artifact@'))
+  assert.equal(download.with.name, expected.with.name, 'it must test the very package the other legs test')
+  assert.equal(download.with.path, 'under-test')
+  const commands = steps.map((step) => step.run).filter((command) => typeof command === 'string')
+  const stamp = commands.findIndex((command) => command.includes('npm pkg set "version=$version"'))
+  const compile = commands.indexOf('npm run compile')
+  const build = commands.findIndex((command) => command.includes('electron-builder/cli.js') && command.includes('--publish never'))
+  const run = commands.findIndex((command) => command.includes('scripts/upgrade-smoke.cjs --old-installer'))
+  assert.ok(stamp >= 0 && stamp < compile && compile < build && build < run, 'stamp, compile, build, then upgrade')
+  // The handoff with the build's own copy of the script runs by itself first, so a
+  // red upgrade shows whether it stopped at the handoff.
+  const handoff = commands.indexOf('node e2e/windows-update-handoff-smoke.mjs --packaged release/win-unpacked/resources')
+  assert.ok(handoff > build && handoff < run, 'the packaged handoff runs once the package exists, before the upgrade')
+  const handoffStep = steps.find((step) => step.run === commands[handoff])
+  assert.ok(handoffStep['timeout-minutes'] > 0, 'the packaged handoff check must carry its own step bound')
+  assert.equal(handoffStep['continue-on-error'], undefined, 'the packaged handoff check must be able to fail the job')
+  assert.match(commands[stamp], /under-test\/latest\.yml/)
+  assert.match(commands[stamp], /test-version --package "\$current" --released "\$from"/)
+  assert.match(commands[run], /--old-version \$env:FROM_VERSION --new-release release\b/)
+  const buildStep = steps.find((step) => step.run === commands[build])
+  assert.equal(buildStep.env.XINGMANG_UNSIGNED_RELEASE, '1')
+  assert.equal(buildStep.env.CSC_IDENTITY_AUTO_DISCOVERY, 'false')
 })
 
 test('the main-chain smoke runs the pinned CLIs on every code change, without secrets', () => {

@@ -546,8 +546,8 @@ describe('macOS terminal launcher', () => {
   })
 
   it('says in plain Chinese what to do, ending with whom to ask', () => {
-    expect(macosTerminalNotStartedMessage).toBe('终端窗口打开了，但工具没有跟着起来。先看一眼终端窗口里是不是在问什么（比如要不要更新），'
-      + '处理完把这个窗口关掉，再点一次「打开」；还不行就点「找客服」，把这句话发给客服。')
+    expect(macosTerminalNotStartedMessage).toBe('终端窗口已打开，但工具未随之启动。请先查看终端窗口中是否有待确认的提示（例如是否更新），'
+      + '处理完成后关闭该窗口，再次点击「打开」；如仍失败，请点击「联系客服」并将此提示发送给客服。')
   })
 
   it('stops waiting as soon as the launcher has run', async () => {

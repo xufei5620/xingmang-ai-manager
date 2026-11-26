@@ -186,8 +186,8 @@ describe('syncManagedCliKeySummary', () => {
       ['codex', 'grok', 'claude'], {}, false, store,
     )
     expect(outcome.failed).toEqual([
-      { provider: 'codex', message: '服务暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。（HTTP 522）', serviceUnavailable: true },
-      { provider: 'grok', message: '服务暂时不可用（维护或线路繁忙），你这边不用做任何改动，稍后再试就行。', serviceUnavailable: true },
+      { provider: 'codex', message: '服务暂时不可用（维护或线路繁忙），您无需做任何改动，请稍后重试。（HTTP 522）', serviceUnavailable: true },
+      { provider: 'grok', message: '服务暂时不可用（维护或线路繁忙），您无需做任何改动，请稍后重试。', serviceUnavailable: true },
       { provider: 'claude', message: 'claude 分组暂不可用' },
     ])
     expect(saveConfig).not.toHaveBeenCalled()
@@ -195,7 +195,7 @@ describe('syncManagedCliKeySummary', () => {
 
   it('continues after a damaged local cache and rebuilds it without a false warning', async () => {
     const store: ManagedCliKeyStoreLike = {
-      read: vi.fn(async () => { throw new Error('本地托管 API Key 配置已损坏或无法解密') }),
+      read: vi.fn(async () => { throw new Error('本地托管密钥配置已损坏或无法解密') }),
       save: vi.fn(async () => undefined),
       remove: vi.fn(async () => undefined),
     }
@@ -975,7 +975,7 @@ describe('relay-site-specific managed CLI key groups', () => {
     )
 
     expect(result.configured).toEqual([])
-    expect(result.failed).toEqual([{ provider: 'claude', message: expect.stringContaining('这个工具的额度用完了') }])
+    expect(result.failed).toEqual([{ provider: 'claude', message: expect.stringContaining('该工具的额度已用完') }])
     expect(store.remove).not.toHaveBeenCalled()
     // The other three tools were never cached, so the sync signs those; the
     // capped one is the only key that must not be re-signed.
@@ -1073,8 +1073,8 @@ describe('relay-site-specific managed CLI key groups', () => {
   it('still writes the replacement key into the config when the local cache cannot be updated', async () => {
     const stale = { ...siteManagedKey('solov', 'codex'), id: 20, key: 'sk-solov-codex-revoked-123456' }
     const store = recordingKeyStore([siteManagedKey('solov', 'claude'), stale, siteManagedKey('solov', 'grok')])
-    vi.mocked(store.remove).mockRejectedValue(new Error('系统安全存储不可用，无法持久化托管 API Key'))
-    vi.mocked(store.save).mockRejectedValue(new Error('系统安全存储不可用，无法持久化托管 API Key'))
+    vi.mocked(store.remove).mockRejectedValue(new Error('系统安全存储不可用，无法保存托管密钥'))
+    vi.mocked(store.save).mockRejectedValue(new Error('系统安全存储不可用，无法保存托管密钥'))
     const provisionCliKey = siteAwareProvisioner('solov')
     const fetchAvailableModels = vi.fn(async (key: string) => {
       if (key === stale.key) throw new Error('模型查询失败，服务返回 401')

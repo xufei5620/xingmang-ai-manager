@@ -98,16 +98,40 @@ export function createVideoStudioPriceCache(options: VideoStudioPriceCacheOption
   }
 }
 
+interface SharedVideoStudioPriceCache {
+  cache: VideoStudioPriceCache
+  listeners: Set<() => void>
+}
+
+// 「创作」页的输入框、每一条视频的工作台各要一份价目：以前各存各的，每点开一条视频工作台重新挂上又读一遍
+// （创作页复查第 3 条）。同一个桥共用一份，按账号分开（cache 自己按 scope 认）。
+const sharedPriceCaches = new WeakMap<VideoStudioPriceBridge, SharedVideoStudioPriceCache>()
+
+function sharedVideoStudioPriceCache(bridge: VideoStudioPriceBridge): SharedVideoStudioPriceCache {
+  const existing = sharedPriceCaches.get(bridge)
+  if (existing) return existing
+  const listeners = new Set<() => void>()
+  const shared = { cache: createVideoStudioPriceCache({ onChange: () => { for (const listener of listeners) listener() } }), listeners }
+  sharedPriceCaches.set(bridge, shared)
+  return shared
+}
+
 /**
  * The price list for the confirmation dialogs. Read once when the page shows
  * for this account, so the dialog opens with the price already there, and
  * call refresh() when a paid confirmation opens to pick up a stale list.
+ * Every page on the same bridge shares one list: a read in flight is not
+ * dropped when one of them goes away, since the others still wait for it.
  */
 export function useVideoStudioPriceList(bridge: VideoStudioPriceBridge, accountScope: string, active: boolean): { list: AccountPriceList | null, refresh(): void } {
   const [, setVersion] = useState(0)
-  const [cache] = useState(() => createVideoStudioPriceCache({ onChange: () => setVersion((version) => version + 1) }))
-  const refresh = useCallback(() => cache.refresh(accountScope, () => bridge.getAccountPriceList()), [cache, accountScope, bridge])
+  const shared = sharedVideoStudioPriceCache(bridge)
+  useEffect(() => {
+    const listener = () => setVersion((version) => version + 1)
+    shared.listeners.add(listener)
+    return () => { shared.listeners.delete(listener) }
+  }, [shared])
+  const refresh = useCallback(() => shared.cache.refresh(accountScope, () => bridge.getAccountPriceList()), [shared, accountScope, bridge])
   useEffect(() => { if (active) refresh() }, [active, refresh])
-  useEffect(() => cache.cancel, [cache])
-  return { list: cache.current(accountScope), refresh }
+  return { list: shared.cache.current(accountScope), refresh }
 }

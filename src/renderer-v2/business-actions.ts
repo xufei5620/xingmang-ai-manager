@@ -1,5 +1,5 @@
 // 各业务页共用的参数类型 BusinessActions，连同它带着的几样：装工具的结果（ToolInstallOutcome）、反馈与客服页右边
-// 那张「找客服」卡（FeedbackSupport）和外面点名要落的页签（FeedbackRequest）。#1070 第 11 步从 pages-maintenance.tsx
+// 那张「联系客服」卡（FeedbackSupport）和外面点名要落的页签（FeedbackRequest）。#1070 第 11 步从 pages-maintenance.tsx
 // 原样搬来；只有类型，pages-maintenance.tsx 照旧转出，原来从那里 import 的地方不用改。
 import type { ReactNode } from 'react'
 import type { SettingsGroupId, FeedbackTabValue } from './registry/business'
@@ -7,7 +7,7 @@ import type { ActiveProviderId } from '../../electron/catalog'
 import type { ToolJob } from './features/tools/useToolbox'
 import type { ChatTransfer } from './features/chat/transfer'
 import type { V2Bridge, V2Page } from './types'
-import type { AppSettingsV2Update, InstallCancelResult } from '../../electron/ipc-contract'
+import type { AppSettingsV2Update, InstallCancelResult, LegalDocumentKind } from '../../electron/ipc-contract'
 import type { LoginTarget } from './features/auth/api'
 
 type AppSettings = Awaited<ReturnType<V2Bridge['getSettings']>>
@@ -15,10 +15,10 @@ type AppSettings = Awaited<ReturnType<V2Bridge['getSettings']>>
 type Provider = ActiveProviderId
 /**
  * installed：装好了；restart：运行环境要重启电脑才算装完；skipped：没有开始（取消、已在装或要自己下载）；
- * declined：客户在「换成星芒装的」确认框里点了取消，什么都没动，也不用说什么。
+ * declined：客户在「改用星芒安装」确认框里点了取消，什么都没动，也不用说什么。
  */
 export type ToolInstallOutcome = 'installed' | 'restart' | 'skipped' | 'declined'
-/** 「找客服」卡上的几样：二维码按当前账号换，身份行和最近一次出错由 App 算好（同帮助与客服弹窗）。 */
+/** 「联系客服」卡上的几样：二维码按当前账号换，身份行和最近一次出错由 App 算好（同帮助与客服弹窗）。 */
 export interface FeedbackSupport {
   qr?: string
   /** 二维码没生成出来时那一句；缺省 = 没出错。 */
@@ -42,6 +42,12 @@ export type BusinessActions = {
   /** 个人中心「当前登录」里的「切换账号」：弹出切换账号框；缺省 = 按钮点不了。 */
   switchAccount?: () => void
   openHelp?: () => void
+  /**
+   * 设置 › 隐私数据的「用户协议」「隐私政策」：打开欢迎页、登录框用的那个协议弹窗（固定读星芒账号那一份、
+   * 按排版显示）。设置页以前自己按当前账号去读，历史账号那边没有协议，点了报「当前账号暂不支持此功能」；
+   * 读到的也原样显示成 Markdown 源码。缺省 = 这两颗按钮不出现。
+   */
+  openLegal?: (kind: LegalDocumentKind) => void
   onAccountChanged?: () => void
   onSettingsChanged?: (settings: AppSettings) => void
   openConfig?: (provider: Provider) => void
@@ -81,9 +87,9 @@ export type BusinessActions = {
    * 装完要重启电脑时弹重启框、检测跟着重跑。缺省 = 那几行不给「安装」，「安装指南」照旧。
    */
   onInstallRuntime?: (runtime: 'node' | 'python' | 'git') => void
-  /** 检查页「换成新版」「换成新版 Node.js」：先弹确认框再换（同错误框里那一颗）。缺省 = 不给这颗按钮。 */
+  /** 检查页「换成新版」「更新 Node.js」：先弹确认框再换（同错误框里那一颗）。缺省 = 不给这颗按钮。 */
   onReplaceNode?: () => void
-  /** 反馈与客服页右边那张「找客服」卡，跟帮助与客服弹窗是同一份。缺省 = 没有这张卡。 */
+  /** 反馈与客服页右边那张「联系客服」卡，跟帮助与客服弹窗是同一份。缺省 = 没有这张卡。 */
   support?: FeedbackSupport
   /** 外面点名要落的反馈与客服页签（「查看日志」「运行日志」）。缺省 = 留言反馈。 */
   feedbackRequest?: FeedbackRequest
@@ -94,7 +100,7 @@ export type BusinessActions = {
    * 要跟着变；缺省 = 不同步，只用设置页自己读到的那份（旧行为）。
    */
   uiScale?: NonNullable<AppSettingsV2Update['uiScale']>
-  /** 设置页「搬到新电脑」里聊天记录那一半；没登录时没有（聊天记录按账号分开存）。 */
+  /** 设置页「迁移到新电脑」里聊天记录那一半；没登录时没有（聊天记录按账号分开存）。 */
   chatTransfer?: ChatTransfer
   /**
    * App 手里最新的设置。「启动时检查新版本」「自动更新」在设置页、版本更新卡（更新气泡里也有

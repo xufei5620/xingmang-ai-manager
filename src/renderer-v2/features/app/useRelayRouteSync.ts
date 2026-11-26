@@ -33,10 +33,13 @@ export function useRelayRouteSync({ native, app, boot, session, siteId, toolbox,
     void toolbox.refreshExternal(true).catch(() => undefined)
     // 星芒账号的工具配置由主进程定点改到新线路（xm 三线路 C9），改完也是叫这一声：首页的线路标签跟着重读。
     void toolbox.refreshConfig().catch(() => undefined)
+    // 两张卡的「待连接」看写下的设置是不是当前这条线路：换了线路先按现在的读一遍。主进程替它改完设置另叫
+    // antigravity:settings-followed，useToolbox 只重读这两张卡。
+    void toolbox.refreshAntigravity()
     if (session.authenticated && session.account && accountRoutesPending(config, next)) {
       await runAccountBootstrap(session.account.userId, 'restore', true, undefined, siteId, true)
     }
-  }, [app, native, runAccountBootstrap, session.account, session.authenticated, showRouteRestartHint, siteId, toolbox.refreshConfig, toolbox.refreshExternal, setSettings, mounted])
+  }, [app, native, runAccountBootstrap, session.account, session.authenticated, showRouteRestartHint, siteId, toolbox.refreshConfig, toolbox.refreshExternal, toolbox.refreshAntigravity, setSettings, mounted])
   useEffect(() => {
     if (boot !== 'ready') return
     return native.onRelayRouteChanged?.(() => { void followRelayRoute() })

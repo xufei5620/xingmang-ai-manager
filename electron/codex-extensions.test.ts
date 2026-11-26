@@ -14,6 +14,7 @@ import {
   type CodexInvoker,
 } from './codex-extensions'
 import { setRelocatedFolderPolicy } from './relocated-folders'
+import { createSkillImportStaging, discardSkillImportStaging, isSkillImportStagingName } from './skill-import-snapshot'
 
 const temporaryDirectories: string[] = []
 
@@ -582,7 +583,7 @@ describe('Codex MCP without the Codex CLI', () => {
       .rejects.toThrow('MCP 请求头格式错误')
     await expect(service.addMcpServer({
       type: 'http', name: 'oauth', url: 'https://docs.example.test/mcp', headers: { Authorization: 'Bearer x' }, oauthClientId: 'client',
-    })).rejects.toThrow('带请求头的连接不用填 OAuth Client ID 和 OAuth Resource')
+    })).rejects.toThrow('带请求头的连接无需填写 OAuth Client ID 和 OAuth Resource')
     expect(Object.keys(asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')).mcp_servers) ?? {})).toEqual(['docs'])
   })
 
@@ -607,7 +608,7 @@ describe('Codex MCP without the Codex CLI', () => {
     write(configPath, 'model = "m"\n')
 
     await expect(service.addMcpServer({ type: 'http', name: 'docs', url: 'https://docs.example.test/mcp', oauthClientId: 'client' }))
-      .rejects.toThrow('没装 Codex CLI 时，OAuth Client ID 和 OAuth Resource 填不了')
+      .rejects.toThrow('未安装 Codex CLI 时无法填写 OAuth Client ID 和 OAuth Resource')
     await expect(service.addMcpServer({ type: 'stdio', name: 'bad name', command: 'node' })).rejects.toThrow()
     expect(fs.readFileSync(configPath, 'utf8')).toBe('model = "m"\n')
   })
@@ -1239,6 +1240,72 @@ describe('Skill discovery and managed mutations', () => {
     expect(fs.statSync(path.join(target, 'empty')).isDirectory()).toBe(true)
   })
 
+  // O17: the copy must stay inside the tree the user approved. A folder that is
+  // swapped for a link to somewhere else after the check is refused instead of
+  // being followed, and nothing from outside reaches the skills folder.
+  it('refuses a subfolder swapped for a link to an outside folder during the copy', async () => {
+    const home = temporaryDirectory()
+    const sourceRoot = temporaryDirectory()
+    const outside = temporaryDirectory()
+    const source = path.join(sourceRoot, 'swapped-skill')
+    write(path.join(source, 'SKILL.md'), '---\nname: Swapped\n---\n')
+    write(path.join(source, 'sub', 'notes.txt'), 'inside')
+    write(path.join(outside, 'notes.txt'), 'OUTSIDE-MARKER')
+    write(path.join(outside, 'secret.txt'), 'OUTSIDE-SECRET')
+    const skillsRoot = path.join(home, '.agents', 'skills')
+    const originalMkdir = fs.mkdirSync.bind(fs)
+    let swapped = false
+    vi.spyOn(fs, 'mkdirSync').mockImplementation(((target: fs.PathLike, options?: fs.MakeDirectoryOptions | fs.Mode | null) => {
+      const created = originalMkdir(target, options as fs.MakeDirectoryOptions)
+      if (!swapped && path.basename(String(target)) === 'sub' && String(target).startsWith(skillsRoot)) {
+        swapped = true
+        fs.renameSync(path.join(source, 'sub'), path.join(sourceRoot, 'sub-away'))
+        fs.symlinkSync(outside, path.join(source, 'sub'), process.platform === 'win32' ? 'junction' : 'dir')
+      }
+      return created
+    }) as typeof fs.mkdirSync)
+    const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '' })
+
+    await expect(service.importSkill({ sourcePath: source })).rejects.toThrow('导入过程中文件夹内容发生变化')
+
+    expect(swapped).toBe(true)
+    expect(fs.existsSync(path.join(skillsRoot, 'swapped-skill'))).toBe(false)
+    // Nothing half-copied is left in the skills folder, staging included.
+    expect(fs.existsSync(skillsRoot) ? fs.readdirSync(skillsRoot) : []).toEqual([])
+    expect(fs.readFileSync(path.join(outside, 'secret.txt'), 'utf8')).toBe('OUTSIDE-SECRET')
+    expect(fs.readFileSync(path.join(sourceRoot, 'sub-away', 'notes.txt'), 'utf8')).toBe('inside')
+  })
+
+  it('refuses a skill folder swapped for a link to an outside folder during the copy', async () => {
+    const home = temporaryDirectory()
+    const sourceRoot = temporaryDirectory()
+    const outside = temporaryDirectory()
+    const source = path.join(sourceRoot, 'root-skill')
+    write(path.join(source, 'SKILL.md'), '---\nname: Root\n---\n')
+    write(path.join(outside, 'SKILL.md'), '---\nname: Root\n---\n')
+    write(path.join(outside, 'secret.txt'), 'OUTSIDE-SECRET')
+    const skillsRoot = path.join(home, '.agents', 'skills')
+    const originalMkdir = fs.mkdirSync.bind(fs)
+    let swapped = false
+    vi.spyOn(fs, 'mkdirSync').mockImplementation(((target: fs.PathLike, options?: fs.MakeDirectoryOptions | fs.Mode | null) => {
+      const created = originalMkdir(target, options as fs.MakeDirectoryOptions)
+      const name = path.basename(String(target))
+      if (!swapped && path.dirname(String(target)) === skillsRoot && name !== 'skills') {
+        swapped = true
+        fs.renameSync(source, path.join(sourceRoot, 'root-away'))
+        fs.symlinkSync(outside, source, process.platform === 'win32' ? 'junction' : 'dir')
+      }
+      return created
+    }) as typeof fs.mkdirSync)
+    const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '' })
+
+    await expect(service.importSkill({ sourcePath: source })).rejects.toThrow('导入过程中文件夹内容发生变化')
+
+    expect(swapped).toBe(true)
+    expect(fs.existsSync(skillsRoot) ? fs.readdirSync(skillsRoot) : []).toEqual([])
+    expect(fs.readFileSync(path.join(sourceRoot, 'root-away', 'SKILL.md'), 'utf8')).toContain('name: Root')
+  })
+
   it('renames a folder name the skills folder cannot hold to letters, digits and hyphens', () => {
     expect(buildRenamedSkillDirectoryName('写作助手', 'writing-helper')).toBe('writing-helper')
     expect(buildRenamedSkillDirectoryName('my-skill (1)', undefined)).toBe('my-skill-1')
@@ -1301,6 +1368,96 @@ describe('Skill discovery and managed mutations', () => {
     await expect(service.importSkill({ sourcePath: source })).rejects.toThrow('Skill 已存在：my-skill')
     expect(fs.readFileSync(existing, 'utf8')).toContain('mine')
     expect(fs.readdirSync(path.join(home, '.agents', 'skills'))).toEqual(['my-skill'])
+  })
+
+  // 0.2.25 复查第三轮第 3 条：临时文件夹删不掉（安全软件正扫着）时，客户该看到的还是原来那个原因；
+  // 留下的那份不当技能列出来，开机清理时删掉。
+  it('keeps the real reason when the staging folder cannot be removed, and does not list what was left', async () => {
+    const home = temporaryDirectory()
+    const source = path.join(temporaryDirectory(), 'my-skill')
+    const skillsRoot = path.join(home, '.agents', 'skills')
+    write(path.join(source, 'SKILL.md'), '---\nname: my-skill\ndescription: downloaded again\n---\n')
+    write(path.join(skillsRoot, 'my-skill', 'SKILL.md'), '---\nname: my-skill\ndescription: mine\n---\n')
+    const originalRm = fs.rmSync.bind(fs)
+    let refused = 0
+    const spy = vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
+      if (isSkillImportStagingName(path.basename(String(target)))) {
+        refused += 1
+        throw Object.assign(new Error('EBUSY: resource busy or locked, rmdir'), { code: 'EBUSY' })
+      }
+      originalRm(target, options)
+    })
+    const service = new CodexExtensionService({ homeDirectory: home, invoke: async () => '' })
+
+    await expect(service.importSkill({ sourcePath: source })).rejects.toThrow('Skill 已存在：my-skill')
+    spy.mockRestore()
+
+    expect(refused).toBe(1)
+    const leftovers = fs.readdirSync(skillsRoot).filter(isSkillImportStagingName)
+    expect(leftovers).toHaveLength(1)
+    expect(fs.existsSync(path.join(skillsRoot, leftovers[0], 'SKILL.md'))).toBe(true)
+    expect((await service.listSkills()).map((skill) => skill.path)).toEqual([path.resolve(skillsRoot, 'my-skill', 'SKILL.md')])
+
+    expect(await service.discardSkillImportLeftovers()).toEqual({ removed: 1, remaining: 0 })
+    expect(fs.readdirSync(skillsRoot)).toEqual(['my-skill'])
+    expect(fs.readFileSync(path.join(skillsRoot, 'my-skill', 'SKILL.md'), 'utf8')).toContain('mine')
+  })
+
+  it('sweeps only the import folders it names itself, never through a link', async () => {
+    const home = temporaryDirectory()
+    const repository = temporaryDirectory()
+    const outside = temporaryDirectory()
+    const skillsRoot = path.join(home, '.agents', 'skills')
+    const projectRoot = path.join(repository, '.agents', 'skills')
+    const leftover = path.join(skillsRoot, '.xingmang-import-0b6f3c2e-4a1d-4c8e-9f00-123456789abc')
+    const projectLeftover = path.join(projectRoot, '.xingmang-import-1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b')
+    const linked = path.join(skillsRoot, '.xingmang-import-11111111-2222-4333-8444-555555555555')
+    write(path.join(leftover, 'SKILL.md'), '---\nname: Copy\n---\n')
+    write(path.join(projectLeftover, 'SKILL.md'), '---\nname: Copy\n---\n')
+    write(path.join(skillsRoot, '.xingmang-import-notes', 'SKILL.md'), '---\nname: Notes\n---\n')
+    write(path.join(skillsRoot, 'kept', 'SKILL.md'), '---\nname: Kept\n---\n')
+    write(path.join(outside, 'keep.txt'), 'OUTSIDE')
+    fs.symlinkSync(outside, linked, process.platform === 'win32' ? 'junction' : 'dir')
+    // An import of this process still owns this one.
+    const live = createSkillImportStaging(skillsRoot)
+    write(path.join(live.directory, 'SKILL.md'), '---\nname: Live\n---\n')
+    const service = new CodexExtensionService({ homeDirectory: home, repositoryRoot: repository, invoke: async () => '' })
+
+    expect(await service.discardSkillImportLeftovers()).toEqual({ removed: 2, remaining: 0 })
+
+    expect(fs.existsSync(leftover)).toBe(false)
+    expect(fs.existsSync(projectLeftover)).toBe(false)
+    expect(fs.existsSync(path.join(skillsRoot, '.xingmang-import-notes', 'SKILL.md'))).toBe(true)
+    expect(fs.existsSync(path.join(skillsRoot, 'kept', 'SKILL.md'))).toBe(true)
+    expect(fs.lstatSync(linked).isSymbolicLink()).toBe(true)
+    expect(fs.readFileSync(path.join(outside, 'keep.txt'), 'utf8')).toBe('OUTSIDE')
+    expect(fs.existsSync(path.join(live.directory, 'SKILL.md'))).toBe(true)
+    discardSkillImportStaging(live)
+  })
+
+  it('leaves alone the staging folder of an import still waiting on its config write', async () => {
+    const home = temporaryDirectory()
+    const source = path.join(temporaryDirectory(), 'slow-skill')
+    const skillsRoot = path.join(home, '.agents', 'skills')
+    write(path.join(source, 'SKILL.md'), '---\nname: Slow\n---\n')
+    let openGate: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => { openGate = resolve })
+    const service = new CodexExtensionService({
+      homeDirectory: home,
+      invoke: async () => '',
+      serializeConfigWrite: async (operation) => {
+        await gate
+        return operation()
+      },
+    })
+
+    const importing = service.importSkill({ sourcePath: source })
+    expect(fs.readdirSync(skillsRoot).filter(isSkillImportStagingName)).toHaveLength(1)
+    expect(await service.discardSkillImportLeftovers()).toEqual({ removed: 0, remaining: 0 })
+    openGate()
+
+    expect((await importing).map((skill) => skill.name)).toEqual(['Slow'])
+    expect(fs.readdirSync(skillsRoot)).toEqual(['slow-skill'])
   })
 
   it('imports user skills and moves uninstall targets into application trash', async () => {
@@ -1424,7 +1581,7 @@ describe('Codex config.toml that no longer parses', () => {
     const invoke: CodexInvoker = async (argv) => argv[0] === 'plugin' ? pluginCatalog() : argv[1] === 'add' ? '' : mcpList([])
     const service = new CodexExtensionService({ homeDirectory: home, invoke })
     // 和保存配置那边同一句：只报行号，再指去「重置为初始状态」（第三十批 C）。
-    const expected = 'Codex 的配置文件里有写错的地方（第 4 行附近），星芒没有改动它。在首页 Codex 的卡片上点「…」里的「配置…」，选「当前账号」，再展开最下面的「高级」点「重置为初始状态」：会先备份原来的文件（在「设置 › 备份迁移」里能找回），再重新生成。'
+    const expected = 'Codex 的配置文件内容有误（第 4 行附近），星芒未改动该文件。请在首页 Codex 卡片的「…」中点击「配置…」，选择「当前账号」，展开最下方的「高级」并点击「重置为初始状态」：将先备份原文件（可在「设置 › 备份迁移」中找回），再重新生成。'
 
     expect(await failureMessage(service.listSkills())).toBe(expected)
     expect(await failureMessage(service.setSkillEnabled(skillPath, false))).toBe(expected)

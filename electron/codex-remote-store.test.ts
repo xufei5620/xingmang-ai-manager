@@ -16,6 +16,8 @@ import type { SafeStorageLike } from './account-session-store'
 
 // The next `remaining` reads fail with `code`, like a settings file that antivirus holds for a moment.
 const readFailures = vi.hoisted(() => ({ remaining: 0, code: 'EBUSY' }))
+// Holds the next read after it has taken the file's content, like a disk that answers late.
+const readHold = vi.hoisted(() => ({ next: null as null | { taken: () => void; release: Promise<void> }, reads: 0 }))
 vi.mock('./safe-local-data', async (importOriginal) => {
   const original = await importOriginal<typeof import('./safe-local-data')>()
   return {
@@ -25,7 +27,15 @@ vi.mock('./safe-local-data', async (importOriginal) => {
         readFailures.remaining -= 1
         throw Object.assign(new Error(`${readFailures.code}: simulated read failure`), { code: readFailures.code })
       }
-      return original.readSafeUtf8File(...args)
+      readHold.reads += 1
+      const content = await original.readSafeUtf8File(...args)
+      const hold = readHold.next
+      if (hold) {
+        readHold.next = null
+        hold.taken()
+        await hold.release
+      }
+      return content
     },
   }
 })
@@ -52,6 +62,8 @@ function fakeStorage(backend = 'gnome_libsecret', available = true): SafeStorage
 }
 
 afterEach(() => {
+  readHold.next = null
+  readHold.reads = 0
   readFailures.remaining = 0
   readFailures.code = 'EBUSY'
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
@@ -86,6 +98,39 @@ describe('codex-remote-store', () => {
     expect(parseCodexRemoteSettings({ version: 1, idleCloseHours: 12 }).idleCloseHours).toBe(12)
     for (const value of [0, 1, 24, '4', null, Number.NaN]) {
       expect(parseCodexRemoteSettings({ version: 1, idleCloseHours: value })).not.toHaveProperty('idleCloseHours')
+    }
+  })
+
+  it('reads back only a model name that looks like one, anything else meaning follow the computer', () => {
+    expect(parseCodexRemoteSettings({ version: 1, model: 'gpt-6.2' }).model).toBe('gpt-6.2')
+    expect(parseCodexRemoteSettings({ version: 1, model: 'claude/opus-5.5@2026:latest+1' }).model).toBe('claude/opus-5.5@2026:latest+1')
+    for (const value of ['', ' gpt', '-rf', 'gpt 6', 'gpt\n6', 'x'.repeat(129), 6, null, ['gpt-6.2']]) {
+      expect(parseCodexRemoteSettings({ version: 1, model: value })).not.toHaveProperty('model')
+    }
+  })
+
+  // 权限两档：盘上只认「只读」，别的（含有人手改成的完全访问）一律当缺省「默认」，不会读出比默认更宽的。
+  it('reads back the chosen conversation only when every field looks right', () => {
+    const folder = path.resolve('/w/demo')
+    const conversation = { threadId: '01a20102-19e8-7b23-968d-694964b4899f', title: '修复登录页报错', folder, updatedAt: 1_795_313_244_000 }
+    expect(parseCodexRemoteSettings({ version: 1, conversation }).conversation).toEqual(conversation)
+    for (const broken of [
+      { ...conversation, threadId: '../../etc/passwd' },
+      { ...conversation, title: '' },
+      { ...conversation, title: 'x'.repeat(41) },
+      { ...conversation, folder: 'relative/demo' },
+      { ...conversation, updatedAt: -1 },
+      { ...conversation, updatedAt: 1.5 },
+      'conversation',
+    ]) {
+      expect(parseCodexRemoteSettings({ version: 1, conversation: broken })).not.toHaveProperty('conversation')
+    }
+  })
+
+  it('reads back read-only permission and treats anything else as the default level', () => {
+    expect(parseCodexRemoteSettings({ version: 1, permission: 'readOnly' }).permission).toBe('readOnly')
+    for (const value of ['default', 'fullAccess', 'danger-full-access', 'never', '', null, 1, ['readOnly']]) {
+      expect(parseCodexRemoteSettings({ version: 1, permission: value })).not.toHaveProperty('permission')
     }
   })
 
@@ -186,6 +231,34 @@ describe('codex-remote-store', () => {
     expect(reread.channels.feishu).toEqual({ accountLabel: 'cli_x', boundPeer: { userId: 'ou_1', boundAt: 5 } })
   })
 
+  // M15：第一次读盘还没回来时改了设置，那次读回来不能把刚写好的盖回旧样子。
+  it('does not let a slow first read put back settings changed in the meantime', async () => {
+    const directory = tempDirectory()
+    await new CodexRemoteStore(directory, fakeStorage(), 'darwin').updateSettings((settings) => {
+      settings.idleCloseHours = 12
+    })
+    const store = new CodexRemoteStore(directory, fakeStorage(), 'darwin')
+    let taken!: () => void
+    const contentTaken = new Promise<void>((resolve) => { taken = resolve })
+    let release!: () => void
+    readHold.next = { taken, release: new Promise<void>((resolve) => { release = resolve }) }
+    readHold.reads = 0
+    const slowRead = store.readSettings()
+    await contentTaken
+    const change = store.updateSettings((settings) => {
+      settings.autoStart = true
+    })
+    // Let the change get as far as it can without the held read: one that reads the disk on its own has
+    // started that read by now and is written before the slow read comes back; one that waits for the read
+    // in flight is still waiting. Either way the slow read is let go only after that.
+    await new Promise((resolve) => setImmediate(resolve))
+    if (readHold.reads > 1) await change
+    release()
+    await Promise.all([slowRead, change])
+    expect(await store.readSettings()).toMatchObject({ idleCloseHours: 12, autoStart: true })
+    expect(await new CodexRemoteStore(directory, fakeStorage(), 'darwin').readSettings()).toMatchObject({ idleCloseHours: 12, autoStart: true })
+  })
+
   it('treats a settings file that vanished between the check and the read as never saved', async () => {
     const directory = tempDirectory()
     const store = new CodexRemoteStore(directory, fakeStorage(), 'darwin')
@@ -212,7 +285,7 @@ describe('codex-remote-store', () => {
   })
 
   it('words the refused change for the customer', () => {
-    expect(settingsUnreadableMessage).toBe('这次没改成：电脑上保存的手机遥控设置这会儿读不出来，为了不弄丢原来的设置，先没动。请过一会儿再试一次。')
+    expect(settingsUnreadableMessage).toBe('本次修改未生效：暂时无法读取本机保存的遥控设置，为避免原有设置丢失，未做任何改动。请稍后重试。')
   })
 
   it('encrypts credentials at rest and clears them', async () => {
@@ -238,7 +311,7 @@ describe('codex-remote-store', () => {
     await expect(clearing).rejects.toThrow(new Error(credentialRemoveFailedMessage))
     // The original failure rides along as the cause so the runtime log keeps it.
     await expect(clearing).rejects.toHaveProperty('cause', expect.any(Error))
-    expect(credentialRemoveFailedMessage).toBe('没能删掉保存的登录信息，请重启星芒后再点一次退出登录。')
+    expect(credentialRemoveFailedMessage).toBe('未能删除已保存的登录信息，请重启星芒后再次点击「退出登录」。')
     expect(fs.existsSync(credentialPath)).toBe(true)
     fs.rmSync(path.join(directory, 'credential-feishu.link'))
     await store.writeCredential('feishu', null)
@@ -261,7 +334,7 @@ describe('codex-remote-store', () => {
 
   it('refuses to store credentials where encryption is unavailable', async () => {
     const store = new CodexRemoteStore(tempDirectory(), fakeStorage('keychain', false), 'darwin')
-    await expect(store.writeCredential('feishu', 'value')).rejects.toThrow('没法安全保存')
+    await expect(store.writeCredential('feishu', 'value')).rejects.toThrow('不支持安全保存')
   })
 
   it('treats an undecryptable credential file as missing', async () => {

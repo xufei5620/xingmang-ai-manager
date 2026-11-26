@@ -20,9 +20,9 @@ const windowsFullPath = /^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/])/
  * 和记住的目录给的都是完整路径，正常用碰不到这一条。
  */
 export function requiredWorkspacePath(value: unknown, platform: NodeJS.Platform): string {
-  const workspace = requiredString(value, '工作目录', 32_767)
+  const workspace = requiredString(value, '项目文件夹路径', 32_767)
   const full = platform === 'win32' ? windowsFullPath.test(workspace) : path.posix.isAbsolute(workspace)
-  if (!full) throw new Error('工作目录格式错误')
+  if (!full) throw new Error('项目文件夹路径格式错误')
   return workspace
 }
 

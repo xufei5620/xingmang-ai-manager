@@ -277,6 +277,12 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
       // login after the OS storage service becomes available again.
       await active.persistence.catch(() => undefined)
       quiescing = false
+      // 等手头的活收尾和这一次账号请求各算各的期限（0.2.25 总单第 72 项，11-18 复核 D25）：以前
+      // 共用一段，收尾等了 27 秒，登录只剩 3 秒，服务器 5 秒后登上了，这边却先报了超时。账号请求
+      // 照样可能超出自己那一段：那时不掐断请求（掐断也证明不了服务器没登上，还丢了唯一能找到这次
+      // 登录的回话），候选句柄照常丢掉，回话来晚了由账号客户端当场注销（new-api-client.ts 的
+      // endAbandonedLogin），不写本机账号库。
+      prepareDeadline = Date.now() + prepareTimeoutMs
       return await operation()
     } finally {
       busy = false
@@ -455,7 +461,7 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   // 「暂时连不上，登录还在」之后的自动重试（全面检测 Q9）。以前每次重试都走一遍
   // transition：先推 revision、再占 busy，网络那一段（超时时十几秒）里读工具配置、
   // 打开工具、保存、一键切回官方全报「账号切换正在进行」，正在跑的保存做完了又报
-  // 「账号刚切换过」。可这时当前身份本来就是未登录，没有什么要保护的：续期只动
+  // 「账号刚刚切换」。可这时当前身份本来就是未登录，没有什么要保护的：续期只动
   // 一个还没接上的候选句柄。所以网络那段不占锁，只在真要换身份的那一下进 transition。
   //
   // The refresh may rotate the saved cookie on the server. When the candidate

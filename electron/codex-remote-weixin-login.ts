@@ -64,6 +64,8 @@ interface ActiveLogin {
   pinAccepted: boolean
   knownTokens: string[]
   poll: AbortController | null
+  /** 正在存这次的登录信息（微信那边已经确认了）；存完清掉。 */
+  saving: Promise<void> | null
 }
 
 /**
@@ -145,12 +147,16 @@ export function createWeixinLoginController(dependencies: WeixinLoginDependencie
       origin: status.origin ?? weixinIlinkDefaultOrigin,
       ownerUserId: status.ownerUserId,
     })
+    const saving = dependencies.saveCredential(value, buildWeixinAccountLabel(status.botId), verifiedOwner)
+    login.saving = saving
     try {
-      await dependencies.saveCredential(value, buildWeixinAccountLabel(status.botId), verifiedOwner)
+      await saving
     } catch (error) {
       // 存不下（比如这台电脑没法安全保存密码）：底座给的是能上屏的中文，原样交给界面。
       dependencies.log('warn', 'weixin-login-save-failed', {})
-      return finish(login, 'failed', error instanceof Error && error.message ? error.message : '微信登录信息没能保存，请重试')
+      return finish(login, 'failed', error instanceof Error && error.message ? error.message : '微信登录信息保存失败，请重试')
+    } finally {
+      login.saving = null
     }
     dependencies.log('info', 'weixin-login-confirmed', { hasOwner: status.ownerUserId !== null, pinVerified: login.pinAccepted, boundByScan: verifiedOwner !== null })
     const done = finish(login, 'confirmed')
@@ -164,7 +170,7 @@ export function createWeixinLoginController(dependencies: WeixinLoginDependencie
     } catch {
       dependencies.log('warn', 'weixin-login-reconnect-failed', {})
     }
-    return finish(login, 'confirmed', '这个微信已经连着这台电脑了')
+    return finish(login, 'confirmed', '该微信已连接本机')
   }
 
   async function pollOnce(login: ActiveLogin, signal: AbortSignal): Promise<WeixinLoginSnapshot> {
@@ -193,9 +199,9 @@ export function createWeixinLoginController(dependencies: WeixinLoginDependencie
         login.pinAccepted = false
         return snapshot(login)
       case 'verify-code-blocked':
-        return refreshOrFail(login, signal, '数字输错太多次，已换了一张二维码，请重新扫', '数字输错太多次，请过一会儿再试')
+        return refreshOrFail(login, signal, '数字输错次数过多，已更换二维码，请重新扫码', '数字输错次数过多，请稍后重试')
       case 'expired':
-        return refreshOrFail(login, signal, '二维码过期了，已换了一张，请重新扫', '二维码过期太多次，请重新开始')
+        return refreshOrFail(login, signal, '二维码已过期，已更换新的二维码，请重新扫码', '二维码多次过期，请重新开始')
       case 'already-bound':
         // 我们带去的就是本机已有的令牌：服务端说这个微信已经连着这台，原来的登录照旧能用。
         if (login.knownTokens.length > 0) return confirmAlreadyBound(login)
@@ -205,8 +211,19 @@ export function createWeixinLoginController(dependencies: WeixinLoginDependencie
     }
   }
 
+  /**
+   * 上一次还在存登录信息时先等它存完（M12）：存到一半停不下来，不等的话新的一次读到的「本机已有的登录」是存完以前的那份，
+   * 两次的保存还会抢着写，最后留下哪份看谁慢。
+   */
+  async function settleSaving(): Promise<void> {
+    for (let pending = active?.saving; pending; pending = active?.saving) {
+      await pending.catch(() => undefined)
+    }
+  }
+
   return {
     async start() {
+      await settleSaving()
       if (active) finish(active, 'cancelled')
       const existing = decodeWeixinCredential(await dependencies.readCredential())
       const startedAt = dependencies.now()
@@ -223,6 +240,7 @@ export function createWeixinLoginController(dependencies: WeixinLoginDependencie
         pinAccepted: false,
         knownTokens: existing ? [existing.token] : [],
         poll: null,
+        saving: null,
       }
       active = login
       const controller = new AbortController()
@@ -242,7 +260,12 @@ export function createWeixinLoginController(dependencies: WeixinLoginDependencie
       if (!login || login.id !== loginId) {
         return { loginId, phase: 'failed', message: genericLoginFailure, retryAfterMs: 0 }
       }
-      if (dependencies.now() - login.startedAt > loginDeadlineMs) return finish(login, 'failed', '等太久了，请重新开始扫码')
+      // 这次已经在存了：再问一遍不能又走一遍确认、再存一次，等它存完交回结果。
+      if (login.saving) {
+        await login.saving.catch(() => undefined)
+        return snapshot(login)
+      }
+      if (dependencies.now() - login.startedAt > loginDeadlineMs) return finish(login, 'failed', '等待时间过长，请重新开始扫码')
       if (verifyCode !== undefined && verifyCode !== null) {
         const normalized = normalizeWeixinVerifyCode(verifyCode)
         if (!normalized) return snapshot(login, { message: '请输入手机微信上显示的数字' })
@@ -256,7 +279,7 @@ export function createWeixinLoginController(dependencies: WeixinLoginDependencie
       } catch (error) {
         if (controller.signal.aborted || active !== login) return snapshot(login)
         if (error instanceof RemoteHttpError && (error.reason === 'network' || error.reason === 'timeout')) {
-          return snapshot(login, { message: '连不上微信，正在重试', retryAfterMs: transientRetryMs })
+          return snapshot(login, { message: '无法连接微信，正在重试', retryAfterMs: transientRetryMs })
         }
         dependencies.log('warn', 'weixin-login-poll-failed', { reason: error instanceof WeixinIlinkError || error instanceof RemoteHttpError ? error.reason : 'unknown' })
         return finish(login, 'failed', failureText(error))
@@ -267,6 +290,12 @@ export function createWeixinLoginController(dependencies: WeixinLoginDependencie
 
     cancel(loginId) {
       if (!active || (loginId !== undefined && active.id !== loginId)) return
+      // 微信那边已经确认、正在存登录信息（M12）：存到一半停不下来，扫码的人可能已经绑上。这时不装作取消了，让这次照常
+      // 存完、记成登录好，卡片随后就显示已登录；也不先把它放掉，免得紧接着再扫码时跟这次的保存抢着写。
+      if (active.saving) {
+        dependencies.log('info', 'weixin-login-cancel-while-saving', {})
+        return
+      }
       finish(active, 'cancelled')
     },
   }

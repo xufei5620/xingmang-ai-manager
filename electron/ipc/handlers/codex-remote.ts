@@ -6,7 +6,16 @@ import {
   validateFeishuCredentialInput,
   verifyFeishuCredential,
 } from '../../codex-remote-feishu'
-import { parseFeishuCredentialRequest, parseRemoteChannel, parseRemoteEnabled, parseRemoteIdleClose, parseRemoteWorkspaceChoice } from '../parsers/codex-remote'
+import {
+  parseFeishuCredentialRequest,
+  parseRemoteChannel,
+  parseRemoteConversationChoice,
+  parseRemoteEnabled,
+  parseRemoteIdleClose,
+  parseRemoteModel,
+  parseRemotePermission,
+  parseRemoteWorkspaceChoice,
+} from '../parsers/codex-remote'
 import type { IpcHandlerContext } from './context'
 
 export function registerCodexRemoteHandlers(ctx: IpcHandlerContext): void {
@@ -18,13 +27,19 @@ export function registerCodexRemoteHandlers(ctx: IpcHandlerContext): void {
   registerTrustedHandler('codex-remote:reconnect', (_event, channel: unknown) => codexRemote().reconnectChannel(parseRemoteChannel(channel)))
   registerTrustedHandler('codex-remote:set-auto-start', (_event, enabled: unknown) => codexRemote().setAutoStart(parseRemoteEnabled(enabled)))
   registerTrustedHandler('codex-remote:set-idle-close', (_event, hours: unknown) => codexRemote().setIdleClose(parseRemoteIdleClose(hours)))
+  registerTrustedHandler('codex-remote:set-model', (_event, model: unknown) => codexRemote().setModel(parseRemoteModel(model)))
+  registerTrustedHandler('codex-remote:set-permission', (_event, permission: unknown) => codexRemote().setPermission(parseRemotePermission(permission)))
+  registerTrustedHandler('codex-remote:list-conversations', () => codexRemote().listConversations())
+  registerTrustedHandler('codex-remote:choose-conversation', (_event, conversationId: unknown) => (
+    codexRemote().chooseConversation(parseRemoteConversationChoice(conversationId))
+  ))
   registerTrustedHandler('codex-remote:stop-turn', () => codexRemote().stopTurnFromComputer())
   registerTrustedHandler('codex-remote:decline-approvals', () => codexRemote().declineApprovalsFromComputer())
   registerTrustedHandler('codex-remote:choose-workspace', async (event) => {
     const service = codexRemote()
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const dialogOptions: OpenDialogOptions = {
-      title: '选择手机遥控时 Codex 干活的文件夹',
+      title: '选择遥控 Codex 的工作文件夹',
       properties: ['openDirectory', 'createDirectory'],
     }
     const result = parentWindow ? await dialog.showOpenDialog(parentWindow, dialogOptions) : await dialog.showOpenDialog(dialogOptions)

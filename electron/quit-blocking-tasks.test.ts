@@ -8,15 +8,18 @@ import {
   buildUnfinishedRestartWorkPrompt,
   confirmQuitInterruptions,
   confirmUpdateRestart,
+  confirmWindowsRestartWork,
   isRollbackInstall,
   resolveInstallableUpdateOnQuit,
   resolveInterruptibleInstallTask,
   waitForUpdateInstallFailure,
+  waitForWindowsUpdateHandoff,
   type ChatReplyQuitPrompt,
   type InterruptibleInstallTask,
   type QuitInterruptionConfirmation,
   type UnfinishedRestartWorkPrompt,
   type UpdateRestartConfirmation,
+  type WindowsRestartConfirmation,
 } from './quit-blocking-tasks'
 import type { UpdateSnapshot } from './updater'
 
@@ -130,17 +133,17 @@ describe('unfinished work before restarting to install an update', () => {
   it('uses the approved sentence word for word when all three are running', () => {
     expect(buildUnfinishedRestartWorkPrompt(['canvas', 'chat', 'video-compose'])).toEqual({
       kinds: ['chat', 'video-compose', 'canvas'],
-      message: '还有任务没做完',
-      detail: '对话还在回复或出图，视频剪辑还在拼接，或者画布还在生成。现在重启会把它们停下，出到一半的图可能已经扣费。',
-      buttons: ['等它做完', '仍然重启'],
+      message: '仍有任务未完成',
+      detail: '对话仍在回复或生成图片，视频剪辑仍在合成，或画布仍在生成。现在重启将停止这些任务，生成中的图片可能已产生扣费。',
+      buttons: ['等待完成', '仍然重启'],
     })
   })
 
   it('lists only the work that is actually running', () => {
-    expect(buildUnfinishedRestartWorkPrompt(['chat'])?.detail).toBe('对话还在回复或出图。现在重启会把它们停下，出到一半的图可能已经扣费。')
-    expect(buildUnfinishedRestartWorkPrompt(['video-compose'])?.detail).toBe('视频剪辑还在拼接。现在重启会把它们停下，出到一半的图可能已经扣费。')
-    expect(buildUnfinishedRestartWorkPrompt(['canvas'])?.detail).toBe('画布还在生成。现在重启会把它们停下，出到一半的图可能已经扣费。')
-    expect(buildUnfinishedRestartWorkPrompt(['canvas', 'chat'])?.detail).toBe('对话还在回复或出图，或者画布还在生成。现在重启会把它们停下，出到一半的图可能已经扣费。')
+    expect(buildUnfinishedRestartWorkPrompt(['chat'])?.detail).toBe('对话仍在回复或生成图片。现在重启将停止这些任务，生成中的图片可能已产生扣费。')
+    expect(buildUnfinishedRestartWorkPrompt(['video-compose'])?.detail).toBe('视频剪辑仍在合成。现在重启将停止这些任务，生成中的图片可能已产生扣费。')
+    expect(buildUnfinishedRestartWorkPrompt(['canvas'])?.detail).toBe('画布仍在生成。现在重启将停止这些任务，生成中的图片可能已产生扣费。')
+    expect(buildUnfinishedRestartWorkPrompt(['canvas', 'chat'])?.detail).toBe('对话仍在回复或生成图片，或画布仍在生成。现在重启将停止这些任务，生成中的图片可能已产生扣费。')
   })
 
   it('names each kind once however often it is reported', () => {
@@ -212,11 +215,53 @@ describe('confirming a restart to install an update', () => {
   })
 })
 
+describe('confirming a computer restart from the restart dialog', () => {
+  const work = buildUnfinishedRestartWorkPrompt(['chat', 'canvas']) as UnfinishedRestartWorkPrompt
+
+  function steps(overrides: Partial<WindowsRestartConfirmation> = {}) {
+    return {
+      queueBusy: vi.fn(() => false),
+      unfinishedWork: vi.fn(() => null),
+      confirmWork: vi.fn(async () => true),
+      log: vi.fn(),
+      ...overrides,
+    } satisfies WindowsRestartConfirmation
+  }
+
+  it('restarts without asking when nothing in the creative workspace is running', async () => {
+    const host = steps()
+    await expect(confirmWindowsRestartWork(host)).resolves.toBe(true)
+    expect(host.confirmWork).not.toHaveBeenCalled()
+    expect(host.log).not.toHaveBeenCalled()
+  })
+
+  it('asks the same question as restarting to install an update, naming what is running', async () => {
+    const host = steps({ unfinishedWork: () => work })
+    await expect(confirmWindowsRestartWork(host)).resolves.toBe(true)
+    expect(host.confirmWork).toHaveBeenCalledWith(work)
+    expect(host.log).toHaveBeenCalledWith('restart.work-in-progress', '重启电脑前确认：chat,canvas')
+  })
+
+  it('does not restart when the user waits for the work to finish', async () => {
+    const host = steps({ unfinishedWork: () => work, confirmWork: vi.fn(async () => false) })
+    await expect(confirmWindowsRestartWork(host)).resolves.toBe(false)
+    expect(host.log).toHaveBeenLastCalledWith('restart.postponed', '还有任务没做完，这次不重启电脑')
+  })
+
+  it('leaves a busy install queue to the restart guard instead of asking a question that cannot lead to a restart', async () => {
+    const unfinishedWork = vi.fn(() => work)
+    const host = steps({ queueBusy: () => true, unfinishedWork })
+    await expect(confirmWindowsRestartWork(host)).resolves.toBe(true)
+    expect(unfinishedWork).not.toHaveBeenCalled()
+    expect(host.confirmWork).not.toHaveBeenCalled()
+  })
+})
+
 describe('chat reply still streaming on quit', () => {
   it('uses the approved sentence and buttons word for word', () => {
     expect(buildChatReplyQuitPrompt(['chat'])).toEqual({
-      message: '正在回复，退出会停下这条回复。',
-      buttons: ['等它说完', '仍然退出'],
+      message: '对话仍在回复，现在退出将中断本次回复。',
+      buttons: ['等待完成', '仍然退出'],
     })
   })
 
@@ -227,7 +272,7 @@ describe('chat reply still streaming on quit', () => {
   })
 
   it('asks once however the work is reported', () => {
-    expect(buildChatReplyQuitPrompt(['video-compose', 'chat', 'chat'])?.message).toBe('正在回复，退出会停下这条回复。')
+    expect(buildChatReplyQuitPrompt(['video-compose', 'chat', 'chat'])?.message).toBe('对话仍在回复，现在退出将中断本次回复。')
   })
 })
 
@@ -412,5 +457,60 @@ describe('waiting on the Mac installer at quit', () => {
     }
     await waitForUpdateInstallFailure(source)
     expect(listeners.size).toBe(0)
+  })
+})
+
+describe('waiting on the Windows install handoff at quit', () => {
+  function updates(initial: UpdateSnapshot = updateSnapshot()) {
+    const listeners = new Set<(snapshot: UpdateSnapshot) => void>()
+    return {
+      listeners,
+      getState: () => initial,
+      subscribe(listener: (snapshot: UpdateSnapshot) => void) {
+        listeners.add(listener)
+        return () => { listeners.delete(listener) }
+      },
+      emit(snapshot: UpdateSnapshot) {
+        for (const listener of [...listeners]) listener(snapshot)
+      },
+    }
+  }
+
+  it('settles on a cancelled prompt or a handoff that failed, and stops listening', async () => {
+    for (const code of ['UPDATE_INSTALL_CANCELLED', 'UPDATE_HANDOFF_FAILED']) {
+      const source = updates()
+      let settled = false
+      const waiting = waitForWindowsUpdateHandoff(source).then(() => { settled = true })
+      source.emit(updateSnapshot())
+      await Promise.resolve()
+      expect(settled).toBe(false)
+      source.emit(updateSnapshot({ error: { code, message: '没装上' }, failedStep: 'install' }))
+      await waiting
+      expect(source.listeners.size).toBe(0)
+    }
+  })
+
+  it('settles when the package turned out to have changed, which sends it back to downloading', async () => {
+    const source = updates()
+    const waiting = waitForWindowsUpdateHandoff(source)
+    source.emit(updateSnapshot({ phase: 'error', error: { code: 'UPDATE_PACKAGE_CHANGED', message: '安装包变了' }, failedStep: 'download' }))
+    await waiting
+    expect(source.listeners.size).toBe(0)
+  })
+
+  it('settles at once when install() already failed before anyone listened', async () => {
+    const source = updates(updateSnapshot({ phase: 'error', error: { code: 'UPDATE_PACKAGE_PATH_MISSING', message: '找不到安装包' }, failedStep: 'download' }))
+    await waitForWindowsUpdateHandoff(source)
+    expect(source.listeners.size).toBe(0)
+  })
+
+  it('keeps waiting while the check is still running or has passed', async () => {
+    const source = updates()
+    let settled = false
+    void waitForWindowsUpdateHandoff(source).then(() => { settled = true })
+    source.emit(updateSnapshot({ phase: 'downloaded', error: null }))
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    expect(source.listeners.size).toBe(1)
   })
 })

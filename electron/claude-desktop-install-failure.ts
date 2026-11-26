@@ -5,39 +5,39 @@
  *
  * 一键安装有两路：先交给系统自带的安装组件（winget），不行再从 Claude 官网下离线
  * 安装包。两路都没装上时，把原话归成客户分得清的几种原因，每种一句大白话，配上
- * 「下载离线安装包」「去 Claude 官网」两个自己动手的出口；原话照旧挂在错误上进运行日志，界面不出现。
+ * 「下载离线安装包」「前往 Claude 官网」两个自己动手的出口；原话照旧挂在错误上进运行日志，界面不出现。
  *
  * 这个模块同时给主进程和渲染层用（渲染层靠 claudeDesktopInstallFailedPrefix 认出
  * 这一类），所以和 codex-desktop-install-failure.ts 一样不许引 Node。
  */
 
 /**
- * Claude 官网的下载页：首页「去官网下载」和错误框「去 Claude 官网」打开的都是它。
+ * Claude 官网的下载页：首页「去官网下载」和错误框「前往 Claude 官网」打开的都是它。
  * main.ts 的外链白名单经 externalClientOfficialDownloadUrls 按全等匹配收录这一条（I12）。
  */
 export const claudeDesktopDownloadPageUrl = 'https://claude.com/download'
 
 /**
  * 错误框「下载离线安装包」打开的教程站「备用安装包」那一节（D64）。Claude 官网在国内多半
- * 打不开、下不动，那边的包直接来自国内存储桶，所以它排在「去 Claude 官网」前面。
+ * 打不开、下不动，那边的包直接来自国内存储桶，所以它排在「前往 Claude 官网」前面。
  * main.ts 的外链白名单按全等匹配收录这一条（I12），锚点是教程站页面上现成的。
  */
 export const claudeDesktopOfflinePackagesUrl = 'https://docs-new.solov.cc/guide/manager#offline-packages'
 
 /** 安装失败那句话的开头；渲染层 operation-error.ts 按它归到 claudeDesktopInstallFailed。 */
-export const claudeDesktopInstallFailedPrefix = 'Claude Desktop 没装上'
+export const claudeDesktopInstallFailedPrefix = 'Claude Desktop 未能安装'
 
 /** 两路都试过时，原因前面那半句。电脑上本来就没有系统安装组件时不说它。 */
-export const claudeDesktopBothRoutesFailedNotice = '系统自带的安装组件和 Claude 官网的离线安装包这次都没装上'
+export const claudeDesktopBothRoutesFailedNotice = '系统自带的安装组件和 Claude 官网的离线安装包均安装失败'
 
 export type ClaudeDesktopInstallFailureReason = 'unsupported' | 'blocked' | 'damaged' | 'unreachable' | 'unknown'
 
 export const claudeDesktopInstallFailureReasons: Readonly<Record<ClaudeDesktopInstallFailureReason, string>> = {
-  unsupported: '这台电脑的 Windows 版本太旧，装不了 Claude Desktop。',
-  blocked: '这台电脑不让装（Windows 拒绝了这次安装）。',
-  damaged: '下载下来的安装包不完整或不是官方原版，已经删掉了。',
-  unreachable: 'Claude 官网这会儿连不上。',
-  unknown: '没查出是哪一步出了问题，经过已经记进日志。',
+  unsupported: '本机的 Windows 版本过旧，无法安装 Claude Desktop。',
+  blocked: 'Windows 拒绝了本次安装。',
+  damaged: '下载的安装包不完整或并非官方原版，已删除。',
+  unreachable: 'Claude 官网暂时无法连接。',
+  unknown: '未能确定出错的步骤，详细过程已记录到日志。',
 }
 
 /**

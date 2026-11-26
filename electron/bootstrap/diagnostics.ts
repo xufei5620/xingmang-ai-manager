@@ -205,19 +205,19 @@ export function createDiagnostics(options: DiagnosticsWiringOptions) {
         relayRoute: diagnosticsRelayRoute(systemService.readStoredConfig().relaySiteId),
         toolRoute: diagnosticsToolRoute(systemService.readStoredConfig().relaySiteId),
         inspectAccelerationActive: accelerationRunning,
-        // 「别的代理软件」问只跟随系统代理的那个会话：星芒自己改了直连以后默认会话答 DIRECT，问它会把没在
+        // 「其他代理软件」问只跟随系统代理的那个会话：星芒自己改了直连以后默认会话答 DIRECT，问它会把没在
         // 运行的代理说成没有。再经它、经直连会话各连一次星芒，比出是不是代理软件挡的路。
         resolveSystemProxy,
         fetchThroughSystemProxy: systemProxyFetch,
         fetchDirect: siteDirectFetch,
-        // 「查网址的服务（DNS）」：电脑自己的 DNS 和公共 DNS 各查一遍两条线路的地址。线路状态文件只用上次读到的。
+        // 「域名解析服务（DNS）」：电脑自己的 DNS 和公共 DNS 各查一遍两条线路的地址。线路状态文件只用上次读到的。
         lookupHost: lookupWithSystemDns,
         lookupHostWithPublicDns: lookupWithPublicDns,
         routeStatus: () => latestRouteStatus()?.status ?? null,
         // 「Claude 命令确认方式」要分清 bypassPermissions 是我们写的还是别人写的。
         // 来源的判定要比对当前登录账号，只有 system-service 那边算得出来。
         readClaudeConfigOwnership: () => systemService.getConfig(false).providers.claude.configurationOwnership ?? null,
-        // 「项目文件夹里的设置」看的是用户最近一次选的项目文件夹，每次检查现读。
+        // 「项目文件夹中的设置」看的是用户最近一次选的项目文件夹，每次检查现读。
         workspace: systemService.readStoredConfig().workspace,
       })
       latestDiagnostics = report
@@ -265,7 +265,7 @@ export function createDiagnostics(options: DiagnosticsWiringOptions) {
     },
     probeCodexResponses: (expectedAccountScope: string) => {
       if (expectedAccountScope !== readBillingAccountScope()) {
-        throw new Error('当前账号变了，请重新勾选确认后再检查')
+        throw new Error('当前账号已变更，请重新勾选确认后再检测')
       }
       return codexResponsesProbe.run()
     },

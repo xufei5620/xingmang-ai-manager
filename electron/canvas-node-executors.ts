@@ -29,6 +29,7 @@ import type {
   CanvasNodeInputs,
 } from './canvas-run-engine'
 import type { AiOperationProgressObserver, AiOperationProgressUpdate, AiRelayBillingObserver } from './ai-operation-progress'
+import { AiAnswerCutOffError } from './ai-answer-cut-off'
 import { parseDramaTablesJson } from './drama-parse'
 import { dramaParseSystemPrompt } from './drama-parse-prompt'
 
@@ -226,6 +227,9 @@ function throwIfCancelled(signal: AbortSignal): void {
 
 /** What a canvas project can hold as a node's text result (canvas-project-package.ts). */
 export const maximumCanvasTextOutputLength = 32_000
+
+/** 剧本解析的表格到了单次输出上限、没写完（D10）。带「剧本」二字，failure() 不再加前缀。 */
+export const dramaParseTooLongMessage = '剧本内容超出单次解析上限。请将剧本分段后分别解析。'
 
 export function createCanvasNodeExecutors(options: {
   imageService: CanvasImageOperationService
@@ -472,7 +476,7 @@ export function createCanvasNodeExecutors(options: {
   // 不发任何付费请求；等的这段时间节点显示「处理中」，画布顶上写「正在准备视频帧图片」。
   const frameExtract: CanvasNodeExecutors['image-edit'] = async ({ runId, attemptId, userId, projectId, node, inputs, signal, reportFramePreparation }) => {
     const frames = options.frames
-    if (!frames || !reportFramePreparation) throw new Error('「视频抽帧」节点桌面版暂不支持，本次没有提交任何付费请求')
+    if (!frames || !reportFramePreparation) throw new Error('「视频抽帧」节点桌面版暂不支持，本次未提交任何付费请求')
     const video = inputs.video
     if (!video) throw new Error('请先给视频抽帧节点连接一段视频')
     await frames.assertDecodableVideo(userId, video.assetId)
@@ -500,7 +504,7 @@ export function createCanvasNodeExecutors(options: {
     const label = canvasRunImageToolNodeLabels[node.kind as keyof typeof canvasRunImageToolNodeLabels] ?? '图片处理'
     const tools = options.imageTools
     const kind = canvasImageTransformKindForNode(node.kind)
-    if (!tools || !reportImagePreparation || !kind) throw new Error(`「${label}」节点桌面版暂不支持，本次没有提交任何付费请求`)
+    if (!tools || !reportImagePreparation || !kind) throw new Error(`「${label}」节点桌面版暂不支持，本次未提交任何付费请求`)
     if (!projectId) throw new Error('画布项目尚未选择，无法保存图片处理结果')
     if (!node.data.imageTransform) throw new Error('请先设置图像工具参数')
     // Parsed when the run started; read again here only for what the pictures are checked against.
@@ -572,6 +576,8 @@ export function createCanvasNodeExecutors(options: {
         })
       } catch (error) {
         if (signal.aborted) throw error
+        // 表格写到一半被截断，再问一次多半照样截断，还多扣一次钱；直接说清是剧本太长（D10）。
+        if (error instanceof AiAnswerCutOffError && error.cutOff === 'length') throw new Error(dramaParseTooLongMessage)
         throw failure(error)
       }
     }

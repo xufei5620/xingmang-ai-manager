@@ -1,11 +1,15 @@
 import { EventEmitter } from 'node:events'
-import { describe, expect, it, vi } from 'vitest'
+import fc from 'fast-check'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Menu, MenuItemConstructorOptions, NativeImage } from 'electron'
 import {
   buildApplicationTrayMenu,
   createApplicationTray,
+  nextTrayBalanceTextChangeAt,
   resolveTrayUpdateEntry,
   trayBalanceLabel,
+  trayBalanceStaleAfterMs,
+  trayBalanceText,
   trayKeepAwakeLabel,
   traySubscriptionLabel,
   type ApplicationTrayOptions,
@@ -100,47 +104,47 @@ describe('tray update entry', () => {
       return menu.map((entry) => entry.label).find((text) => typeof text === 'string' && /更新|安装新版本/.test(text))
     }
     expect(label(null)).toBe('版本更新')
-    expect(label({ kind: 'available', version: '0.2.12', waitingForDisk: false })).toBe('版本更新：有新版本 0.2.12')
-    expect(label({ kind: 'available', version: '0.2.12', waitingForDisk: true })).toBe('版本更新：新版本 0.2.12 等电脑腾出空间再下载')
+    expect(label({ kind: 'available', version: '0.2.12', waitingForDisk: false })).toBe('版本更新：发现新版本 0.2.12')
+    expect(label({ kind: 'available', version: '0.2.12', waitingForDisk: true })).toBe('版本更新：新版本 0.2.12 待磁盘空间充足后下载')
     expect(label({ kind: 'downloading', version: '0.2.12' })).toBe('版本更新：正在下载新版本 0.2.12')
     expect(label({ kind: 'downloading', version: null })).toBe('版本更新：正在下载新版本')
     expect(label({ kind: 'downloaded', version: '0.2.12' })).toBe('重启并安装新版本 0.2.12')
     // Linux hands the package to the system installer: the app only closes, it does not restart itself.
     expect(label({ kind: 'downloaded', version: '0.2.12', systemInstaller: true })).toBe('安装新版本 0.2.12')
-    expect(label({ kind: 'downloaded', version: '0.2.12' }, false)).toBe('版本更新：新版本 0.2.12 已下载好')
-    expect(label({ kind: 'failed', version: '0.2.12' })).toBe('版本更新：新版本 0.2.12 没更新成功，点开看看')
+    expect(label({ kind: 'downloaded', version: '0.2.12' }, false)).toBe('版本更新：新版本 0.2.12 已下载')
+    expect(label({ kind: 'failed', version: '0.2.12' })).toBe('版本更新：新版本 0.2.12 更新失败，点击查看')
   })
 
   it('says the suggested older version instead of a new one when the update is a rollback', () => {
-    // D11：退回旧版时那一项跟设置页一样说「建议退回」，读不到版本号时照旧用平时那几句。
+    // D11：退回旧版时那一项跟设置页一样说「建议回退」，读不到版本号时照旧用平时那几句。
     const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn(), onInstallUpdate: vi.fn() }
     const label = (update: ApplicationTraySnapshot['update'], withInstall = true) => {
       const menu = buildApplicationTrayMenu({ installedTools: [], update }, withInstall ? actions : { ...actions, onInstallUpdate: undefined }, (action) => { void action() })
-      return menu.map((entry) => entry.label).find((text) => typeof text === 'string' && /更新|安装新版本|退回/.test(text))
+      return menu.map((entry) => entry.label).find((text) => typeof text === 'string' && /更新|安装新版本|回退/.test(text))
     }
-    expect(label({ kind: 'available', version: '0.2.22', waitingForDisk: false, rollback: true })).toBe('版本更新：建议退回 0.2.22 版')
-    expect(label({ kind: 'available', version: '0.2.22', waitingForDisk: true, rollback: true })).toBe('版本更新：建议退回的 0.2.22 版等电脑腾出空间再下载')
-    expect(label({ kind: 'downloading', version: '0.2.22', rollback: true })).toBe('版本更新：正在下载建议退回的 0.2.22 版')
-    expect(label({ kind: 'downloaded', version: '0.2.22', rollback: true })).toBe('重启并退回 0.2.22 版')
-    expect(label({ kind: 'downloaded', version: '0.2.22', systemInstaller: true, rollback: true })).toBe('退回 0.2.22 版')
-    expect(label({ kind: 'downloaded', version: '0.2.22', rollback: true }, false)).toBe('版本更新：建议退回的 0.2.22 版已下载好')
-    expect(label({ kind: 'failed', version: '0.2.22', rollback: true })).toBe('版本更新：退回 0.2.22 版没成功，点开看看')
+    expect(label({ kind: 'available', version: '0.2.22', waitingForDisk: false, rollback: true })).toBe('版本更新：建议回退至 0.2.22 版')
+    expect(label({ kind: 'available', version: '0.2.22', waitingForDisk: true, rollback: true })).toBe('版本更新：建议回退的 0.2.22 版待磁盘空间充足后下载')
+    expect(label({ kind: 'downloading', version: '0.2.22', rollback: true })).toBe('版本更新：正在下载建议回退的 0.2.22 版')
+    expect(label({ kind: 'downloaded', version: '0.2.22', rollback: true })).toBe('重启并回退至 0.2.22 版')
+    expect(label({ kind: 'downloaded', version: '0.2.22', systemInstaller: true, rollback: true })).toBe('回退至 0.2.22 版')
+    expect(label({ kind: 'downloaded', version: '0.2.22', rollback: true }, false)).toBe('版本更新：建议回退的 0.2.22 版已下载')
+    expect(label({ kind: 'failed', version: '0.2.22', rollback: true })).toBe('版本更新：回退至 0.2.22 版失败，点击查看')
     // 没有版本号时说不出「X 版」，跟平时一样。
     expect(label({ kind: 'downloading', version: null, rollback: true })).toBe('版本更新：正在下载新版本')
     expect(label({ kind: 'downloaded', version: '\n', rollback: true })).toBe('重启并安装新版本')
-    expect(label({ kind: 'failed', version: null, rollback: true })).toBe('版本更新：新版本没更新成功，点开看看')
+    expect(label({ kind: 'failed', version: null, rollback: true })).toBe('版本更新：新版本更新失败，点击查看')
   })
 
   it('installs the rollback through the same action as a normal update', async () => {
     const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn(), onInstallUpdate: vi.fn() }
     const pending: Promise<unknown>[] = []
     const run = (action: () => unknown) => { pending.push(Promise.resolve(action())) }
-    click(buildApplicationTrayMenu({ installedTools: [], update: { kind: 'downloaded', version: '0.2.22', rollback: true } }, actions, run), '重启并退回 0.2.22 版')
+    click(buildApplicationTrayMenu({ installedTools: [], update: { kind: 'downloaded', version: '0.2.22', rollback: true } }, actions, run), '重启并回退至 0.2.22 版')
     await Promise.all(pending)
     expect(actions.onInstallUpdate).toHaveBeenCalledOnce()
     expect(actions.onNavigate).not.toHaveBeenCalled()
 
-    click(buildApplicationTrayMenu({ installedTools: [], update: { kind: 'failed', version: '0.2.22', rollback: true } }, actions, run), '版本更新：退回 0.2.22 版没成功，点开看看')
+    click(buildApplicationTrayMenu({ installedTools: [], update: { kind: 'failed', version: '0.2.22', rollback: true } }, actions, run), '版本更新：回退至 0.2.22 版失败，点击查看')
     await Promise.all(pending)
     expect(actions.onNavigate).toHaveBeenCalledExactlyOnceWith('updates')
     expect(actions.onInstallUpdate).toHaveBeenCalledOnce()
@@ -195,7 +199,7 @@ describe('tray summary and native menu', () => {
       installedTools: [{ id: 'codex', label: 'Codex CLI' }, { id: 'claude', label: 'Claude Code', enabled: false }],
       update: { kind: 'available', version: '0.2.0', waitingForDisk: false },
     }, actions, (action) => { void action() })
-    expect(menu.map((entry) => entry.label)).toEqual(expect.arrayContaining(['user@example.com', '余额：USD 4.25', '版本更新：有新版本 0.2.0']))
+    expect(menu.map((entry) => entry.label)).toEqual(expect.arrayContaining(['user@example.com', '余额：USD 4.25', '版本更新：发现新版本 0.2.0']))
     const installed = menu.find((entry) => entry.label === '已安装的工具')!.submenu as MenuItemConstructorOptions[]
     expect(installed.map((entry) => [entry.label, entry.enabled])).toEqual([['Codex CLI', true], ['Claude Code', false]])
     click(installed, 'Codex CLI')
@@ -502,21 +506,153 @@ describe('application tray subscription line', () => {
   })
 })
 
+// F8-3：托盘里的余额是最后一次读到的，后来一直读不到也照旧显示。读到太久的要写多久以前，登录了一个都没读到要说「暂未读到」。
+describe('application tray balance that could not be read again', () => {
+  const minute = 60_000
+  const readAt = Date.parse('2026-11-20T08:00:00Z')
+  const at = (ms: number) => readAt + ms
+  const signedIn = { balanceUsd: 12.3, balanceReadAt: readAt, signedIn: true }
+
+  afterEach(() => { vi.useRealTimers() })
+
+  it('tells a signed-in account that has no balance yet apart from nobody being signed in', () => {
+    expect(trayBalanceText({ signedIn: true }, readAt)).toBe('暂未获取')
+    expect(trayBalanceText({ balanceUsd: null, balanceReadAt: null, signedIn: true }, readAt)).toBe('暂未获取')
+    expect(trayBalanceText({ balanceUsd: Number.NaN, balanceReadAt: readAt, signedIn: true }, readAt)).toBe('暂未获取')
+    expect(trayBalanceText({ signedIn: false }, readAt)).toBe('\u2014')
+    expect(trayBalanceText({}, readAt)).toBe('\u2014')
+  })
+
+  it('shows the amount alone until it is fifteen minutes old, then how long ago it was read', () => {
+    expect(trayBalanceStaleAfterMs).toBe(15 * minute)
+    expect(trayBalanceText(signedIn, readAt)).toBe('USD 12.30')
+    expect(trayBalanceText(signedIn, at(10 * minute + 30_000))).toBe('USD 12.30')
+    expect(trayBalanceText(signedIn, at(15 * minute - 1))).toBe('USD 12.30')
+    expect(trayBalanceText(signedIn, at(15 * minute))).toBe('USD 12.30（15 分钟前）')
+    expect(trayBalanceText(signedIn, at(23 * minute + 59_000))).toBe('USD 12.30（23 分钟前）')
+    expect(trayBalanceText(signedIn, at(60 * minute - 1))).toBe('USD 12.30（59 分钟前）')
+    expect(trayBalanceText(signedIn, at(60 * minute))).toBe('USD 12.30（1 小时前）')
+    expect(trayBalanceText(signedIn, at(135 * minute))).toBe('USD 12.30（2 小时前）')
+    expect(trayBalanceText(signedIn, at(24 * 60 * minute - 1))).toBe('USD 12.30（23 小时前）')
+    expect(trayBalanceText(signedIn, at(24 * 60 * minute))).toBe('USD 12.30（1 天前）')
+    expect(trayBalanceText({ ...signedIn, balanceUsd: 0 }, at(20 * minute))).toBe('USD 0.00（20 分钟前）')
+  })
+
+  it('keeps the old wording without a read time, and counts from the read once a clock set back catches up', () => {
+    expect(trayBalanceText({ balanceUsd: 12.3, signedIn: true }, at(3 * 60 * minute))).toBe('USD 12.30')
+    expect(trayBalanceText({ ...signedIn, balanceReadAt: Number.NaN }, at(3 * 60 * minute))).toBe('USD 12.30')
+    expect(nextTrayBalanceTextChangeAt({ ...signedIn, balanceReadAt: Number.NaN }, readAt)).toBeNull()
+    expect(trayBalanceText(signedIn, at(-30 * minute))).toBe('USD 12.30')
+    expect(nextTrayBalanceTextChangeAt(signedIn, at(-30 * minute))).toBe(at(15 * minute))
+    expect(nextTrayBalanceTextChangeAt({ balanceUsd: 12.3 }, readAt)).toBeNull()
+    expect(nextTrayBalanceTextChangeAt({ signedIn: true }, readAt)).toBeNull()
+  })
+
+  it('names the next moment the wording changes, at most once a minute, and stops after a day', () => {
+    expect(nextTrayBalanceTextChangeAt(signedIn, readAt)).toBe(at(15 * minute))
+    expect(nextTrayBalanceTextChangeAt(signedIn, at(15 * minute))).toBe(at(16 * minute))
+    expect(nextTrayBalanceTextChangeAt(signedIn, at(59 * minute + 10_000))).toBe(at(60 * minute))
+    expect(nextTrayBalanceTextChangeAt(signedIn, at(90 * minute))).toBe(at(120 * minute))
+    expect(nextTrayBalanceTextChangeAt(signedIn, at(23 * 60 * minute + 1))).toBe(at(24 * 60 * minute))
+    expect(nextTrayBalanceTextChangeAt(signedIn, at(24 * 60 * minute))).toBeNull()
+  })
+
+  it('names exactly the moments the wording changes, with random inputs', () => {
+    const day = 24 * 60 * minute
+    fc.assert(fc.property(fc.integer({ min: -minute, max: 2 * day }), fc.integer({ min: 0, max: day }), (age, probe) => {
+      const now = at(age)
+      const next = nextTrayBalanceTextChangeAt(signedIn, now)
+      const text = trayBalanceText(signedIn, now)
+      if (next === null) {
+        expect(trayBalanceText(signedIn, now + probe)).toBe(text)
+        return
+      }
+      expect(next).toBeGreaterThan(now)
+      expect(next - now).toBeLessThanOrEqual(60 * minute)
+      // 一变就是下一档：最多一分钟重建一次菜单。
+      const after = nextTrayBalanceTextChangeAt(signedIn, next)
+      if (after !== null) expect(after - next).toBeGreaterThanOrEqual(minute)
+      // 到点之前一个字都不变，到点那一刻就变：不会漏掉一次，也不会白重建菜单。
+      expect(trayBalanceText(signedIn, Math.min(now + probe, next - 1))).toBe(text)
+      expect(trayBalanceText(signedIn, next)).not.toBe(text)
+    }), { numRuns: 500 })
+  })
+
+  it('rebuilds the menu and tooltip on its own when the wording changes, from a fresh snapshot each time', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(readAt)
+    const getSnapshot = vi.fn((): ApplicationTraySnapshot => ({ installedTools: [], accountLabel: 'u', ...signedIn }))
+    const { runtime, handle } = fixture({ getSnapshot })
+    const lastBalanceRow = () => vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0][3].label
+    expect(lastBalanceRow()).toBe('余额：USD 12.30')
+    const built = vi.mocked(runtime.buildMenu).mock.calls.length
+    vi.advanceTimersByTime(15 * minute - 1)
+    expect(vi.mocked(runtime.buildMenu).mock.calls.length).toBe(built)
+    vi.advanceTimersByTime(1)
+    expect(lastBalanceRow()).toBe('余额：USD 12.30（15 分钟前）')
+    expect(handle.setToolTip).toHaveBeenLastCalledWith('星芒AI管理工具\n余额：USD 12.30（15 分钟前）')
+    vi.advanceTimersByTime(minute)
+    expect(lastBalanceRow()).toBe('余额：USD 12.30（16 分钟前）')
+    expect(getSnapshot).toHaveBeenCalledTimes(3)
+  })
+
+  it('starts counting again from a newer read and does nothing extra while the balance is fresh', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(readAt)
+    let snapshot: ApplicationTraySnapshot = { installedTools: [], ...signedIn }
+    const { controller, runtime } = fixture({ getSnapshot: () => snapshot })
+    vi.advanceTimersByTime(10 * minute)
+    snapshot = { installedTools: [], ...signedIn, balanceUsd: 11, balanceReadAt: at(10 * minute) }
+    controller.updateSnapshot()
+    const built = vi.mocked(runtime.buildMenu).mock.calls.length
+    vi.advanceTimersByTime(15 * minute - 1)
+    expect(vi.mocked(runtime.buildMenu).mock.calls.length).toBe(built)
+    expect(vi.getTimerCount()).toBe(1)
+    vi.advanceTimersByTime(1)
+    expect(vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0][3].label).toBe('余额：USD 11.00（15 分钟前）')
+  })
+
+  it('keeps no timer when there is nothing that will change, and drops it when the tray goes away', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(readAt)
+    const unread = fixture({ getSnapshot: () => ({ installedTools: [], signedIn: true }) })
+    expect(vi.mocked(unread.runtime.buildMenu).mock.calls.at(-1)![0][3].label).toBe('余额：暂未获取')
+    expect(unread.handle.setToolTip).toHaveBeenLastCalledWith('星芒AI管理工具\n余额：暂未获取')
+    expect(vi.getTimerCount()).toBe(0)
+    unread.controller.dispose()
+
+    const getSnapshot = vi.fn((): ApplicationTraySnapshot => ({ installedTools: [], ...signedIn }))
+    const read = fixture({ getSnapshot })
+    expect(vi.getTimerCount()).toBe(1)
+    read.controller.dispose()
+    expect(vi.getTimerCount()).toBe(0)
+    vi.advanceTimersByTime(2 * 60 * minute)
+    expect(getSnapshot).toHaveBeenCalledOnce()
+
+    vi.setSystemTime(readAt)
+    const failing = fixture({ getSnapshot: () => ({ installedTools: [], ...signedIn }) })
+    failing.handle.setContextMenu.mockImplementationOnce(() => { throw new Error('native menu failed') })
+    vi.advanceTimersByTime(15 * minute)
+    expect(failing.controller.available).toBe(false)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+})
+
 describe('application tray keep-awake line', () => {
   it('says one thing at a time, with the tools working in a terminal first', () => {
     const idle = { tools: [], installing: false, downloadingUpdate: false }
     expect(trayKeepAwakeLabel(idle)).toBeNull()
-    expect(trayKeepAwakeLabel({ tools: ['Grok CLI'], installing: true, downloadingUpdate: true })).toBe('Grok CLI 正在干活，暂不让电脑自动睡眠')
-    expect(trayKeepAwakeLabel({ ...idle, tools: ['Claude Code', 'Gemini CLI'], installing: true })).toBe('AI 工具正在干活，暂不让电脑自动睡眠')
-    expect(trayKeepAwakeLabel({ ...idle, tools: ['Claude Code'], remoteControl: true })).toBe('Claude Code 正在干活，暂不让电脑自动睡眠')
-    expect(trayKeepAwakeLabel({ ...idle, remoteControl: true, installing: true, downloadingUpdate: true })).toBe('手机遥控开着，暂不让电脑自动睡眠')
-    expect(trayKeepAwakeLabel({ ...idle, installing: true, downloadingUpdate: true })).toBe('正在安装，暂不让电脑自动睡眠')
-    expect(trayKeepAwakeLabel({ ...idle, downloadingUpdate: true })).toBe('正在下载星芒新版本，暂不让电脑自动睡眠')
+    expect(trayKeepAwakeLabel({ tools: ['Grok CLI'], installing: true, downloadingUpdate: true })).toBe('Grok CLI 正在运行，已暂停系统自动睡眠')
+    expect(trayKeepAwakeLabel({ ...idle, tools: ['Claude Code', 'Gemini CLI'], installing: true })).toBe('AI 工具正在运行，已暂停系统自动睡眠')
+    expect(trayKeepAwakeLabel({ ...idle, tools: ['Claude Code'], remoteControl: true })).toBe('Claude Code 正在运行，已暂停系统自动睡眠')
+    expect(trayKeepAwakeLabel({ ...idle, remoteControl: true, installing: true, downloadingUpdate: true })).toBe('遥控已开启，已暂停系统自动睡眠')
+    expect(trayKeepAwakeLabel({ ...idle, installing: true, downloadingUpdate: true })).toBe('正在安装，已暂停系统自动睡眠')
+    expect(trayKeepAwakeLabel({ ...idle, downloadingUpdate: true })).toBe('正在下载星芒新版本，已暂停系统自动睡眠')
   })
 
   it('shows a greyed-out line under the open entry and at the end of the tooltip, and drops both once sleep is given back', () => {
     const { controller, runtime, handle } = fixture()
-    const line = 'Claude Code 正在干活，暂不让电脑自动睡眠'
+    const line = 'Claude Code 正在运行，已暂停系统自动睡眠'
     controller.updateSnapshot({ installedTools: [], balanceUsd: 8, subscriptionLabel: '剩余 USD 9.00 · 10月3日到期', keepAwakeLabel: line })
     const menu = vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0]
     expect(menu[0].label).toBe('打开星芒AI管理工具')
@@ -526,7 +662,7 @@ describe('application tray keep-awake line', () => {
     controller.updateSnapshot({ installedTools: [], balanceUsd: 8, keepAwakeLabel: null })
     const after = vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0]
     expect(after[1].type).toBe('separator')
-    expect(after.some((entry) => entry.label?.includes('暂不让电脑自动睡眠'))).toBe(false)
+    expect(after.some((entry) => entry.label?.includes('已暂停系统自动睡眠'))).toBe(false)
     expect(handle.setToolTip).toHaveBeenLastCalledWith('星芒AI管理工具\n余额：USD 8.00')
   })
 })
@@ -535,29 +671,29 @@ describe('application tray remote-control switch', () => {
   it('offers a clickable way to switch phone remote control off right under the keep-awake line while a channel is on', () => {
     const off = vi.fn()
     const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn(), onRemoteControlOff: off }
-    const menu = buildApplicationTrayMenu({ installedTools: [], keepAwakeLabel: '手机遥控开着，暂不让电脑自动睡眠', remoteControlOn: true }, actions, (action) => { void action() })
+    const menu = buildApplicationTrayMenu({ installedTools: [], keepAwakeLabel: '遥控已开启，已暂停系统自动睡眠', remoteControlOn: true }, actions, (action) => { void action() })
     expect(menu.slice(0, 4).map((entry) => entry.label ?? entry.type))
-      .toEqual(['打开星芒AI管理工具', '手机遥控开着，暂不让电脑自动睡眠', '关掉手机遥控', 'separator'])
+      .toEqual(['打开星芒AI管理工具', '遥控已开启，已暂停系统自动睡眠', '关闭遥控', 'separator'])
     expect(menu[2].enabled).not.toBe(false)
-    click(menu, '关掉手机遥控')
+    click(menu, '关闭遥控')
     expect(off).toHaveBeenCalledOnce()
   })
 
   // 灰字同一时间只说一件：终端里的工具在干活时说的是那件，遥控照样开着，关它的那一项不能跟着不见。
   it('keeps the switch while the keep-awake line is talking about something else', () => {
     const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn(), onRemoteControlOff: vi.fn() }
-    const busy = buildApplicationTrayMenu({ installedTools: [], keepAwakeLabel: 'Claude Code 正在干活，暂不让电脑自动睡眠', remoteControlOn: true }, actions, () => undefined)
-    expect(busy.map((entry) => entry.label)).toContain('关掉手机遥控')
+    const busy = buildApplicationTrayMenu({ installedTools: [], keepAwakeLabel: 'Claude Code 正在运行，已暂停系统自动睡眠', remoteControlOn: true }, actions, () => undefined)
+    expect(busy.map((entry) => entry.label)).toContain('关闭遥控')
     const needsLogin = buildApplicationTrayMenu({ installedTools: [], keepAwakeLabel: null, remoteControlOn: true }, actions, () => undefined)
-    expect(needsLogin.slice(0, 3).map((entry) => entry.label ?? entry.type)).toEqual(['打开星芒AI管理工具', '关掉手机遥控', 'separator'])
+    expect(needsLogin.slice(0, 3).map((entry) => entry.label ?? entry.type)).toEqual(['打开星芒AI管理工具', '关闭遥控', 'separator'])
   })
 
   it('leaves the switch out when nothing is on or nothing is wired to switch it off', () => {
     const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn() }
     const labels = (snapshot: ApplicationTraySnapshot, wired: boolean) => buildApplicationTrayMenu(snapshot, wired ? { ...actions, onRemoteControlOff: vi.fn() } : actions, () => undefined).map((entry) => entry.label)
-    expect(labels({ installedTools: [] }, true)).not.toContain('关掉手机遥控')
-    expect(labels({ installedTools: [], remoteControlOn: false }, true)).not.toContain('关掉手机遥控')
-    expect(labels({ installedTools: [], remoteControlOn: true }, false)).not.toContain('关掉手机遥控')
+    expect(labels({ installedTools: [] }, true)).not.toContain('关闭遥控')
+    expect(labels({ installedTools: [], remoteControlOn: false }, true)).not.toContain('关闭遥控')
+    expect(labels({ installedTools: [], remoteControlOn: true }, false)).not.toContain('关闭遥控')
   })
 
   // YF-8：都关着、文件夹和配对过的人都齐了时，托盘里能直接打开，不用进设置翻到最底下。
@@ -565,32 +701,32 @@ describe('application tray remote-control switch', () => {
     const on = vi.fn()
     const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn(), onRemoteControlOff: vi.fn(), onRemoteControlOn: on }
     const menu = buildApplicationTrayMenu({ installedTools: [], keepAwakeLabel: null, remoteControlReady: true }, actions, (action) => { void action() })
-    expect(menu.slice(0, 3).map((entry) => entry.label ?? entry.type)).toEqual(['打开星芒AI管理工具', '打开手机遥控', 'separator'])
+    expect(menu.slice(0, 3).map((entry) => entry.label ?? entry.type)).toEqual(['打开星芒AI管理工具', '开启遥控', 'separator'])
     expect(menu[1].enabled).not.toBe(false)
-    expect(menu.map((entry) => entry.label)).not.toContain('关掉手机遥控')
-    click(menu, '打开手机遥控')
+    expect(menu.map((entry) => entry.label)).not.toContain('关闭遥控')
+    click(menu, '开启遥控')
     expect(on).toHaveBeenCalledOnce()
     // 开着时只给关的那一项，齐不齐都一样。
     const running = buildApplicationTrayMenu({ installedTools: [], remoteControlOn: true, remoteControlReady: true }, actions, () => undefined).map((entry) => entry.label)
-    expect(running).toContain('关掉手机遥控')
-    expect(running).not.toContain('打开手机遥控')
+    expect(running).toContain('关闭遥控')
+    expect(running).not.toContain('开启遥控')
   })
 
   it('leaves the switch-on item out until everything is set up, or when nothing is wired to it', () => {
     const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn() }
     const labels = (snapshot: ApplicationTraySnapshot, wired: boolean) => buildApplicationTrayMenu(snapshot, wired ? { ...actions, onRemoteControlOn: vi.fn() } : actions, () => undefined).map((entry) => entry.label)
-    expect(labels({ installedTools: [] }, true)).not.toContain('打开手机遥控')
-    expect(labels({ installedTools: [], remoteControlReady: false }, true)).not.toContain('打开手机遥控')
-    expect(labels({ installedTools: [], remoteControlReady: true }, false)).not.toContain('打开手机遥控')
+    expect(labels({ installedTools: [] }, true)).not.toContain('开启遥控')
+    expect(labels({ installedTools: [], remoteControlReady: false }, true)).not.toContain('开启遥控')
+    expect(labels({ installedTools: [], remoteControlReady: true }, false)).not.toContain('开启遥控')
   })
 
   it('reports a failed switch-off through the tray error path and drops the item once the tray snapshot says it is off', async () => {
     const failure = new Error('飞书断开失败')
     const { controller, runtime, options } = fixture({ onRemoteControlOff: vi.fn(async () => { throw failure }) })
     controller.updateSnapshot({ installedTools: [], remoteControlOn: true })
-    click(vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0], '关掉手机遥控')
+    click(vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0], '关闭遥控')
     await vi.waitFor(() => expect(options.onError).toHaveBeenCalledWith(failure))
     controller.updateSnapshot({ installedTools: [], remoteControlOn: false })
-    expect(vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0].map((entry) => entry.label)).not.toContain('关掉手机遥控')
+    expect(vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0].map((entry) => entry.label)).not.toContain('关闭遥控')
   })
 })

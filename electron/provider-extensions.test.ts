@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError, type runCommand as productionRunCommand } from './command-runner'
 import { codexPluginCatalogNetworkMessage } from './codex-plugin-catalog'
 import { codexPluginCatalogBucketIndexUrl } from './codex-plugin-catalog-bucket'
-import { providerIds } from './catalog'
+import { activeProviderIds, providerIds } from './catalog'
 import { gitLinuxInstallCommand } from './git-runtime'
 import type { ProviderId } from './catalog'
 import {
@@ -32,6 +32,7 @@ import {
   type SourceUpdateInspector,
 } from './provider-extensions'
 import { setRelocatedFolderPolicy } from './relocated-folders'
+import { isSkillImportStagingName } from './skill-import-snapshot'
 
 const temporaryDirectories: string[] = []
 
@@ -211,7 +212,7 @@ describe('provider source update network policy', () => {
     })
 
     const failure = inspect({ kind: 'git', locator: repository, localPath: repository, currentVersion: null })
-    await expect(failure).rejects.toThrow('点「同意」')
+    await expect(failure).rejects.toThrow('点击「同意」')
     await expect(failure).rejects.not.toThrow('命令行开发者工具')
     expect(runCommandImplementation).not.toHaveBeenCalled()
   })
@@ -545,7 +546,7 @@ describe('ProviderExtensionService list facade', () => {
       }),
     })
 
-    const snapshots = await service.listAll()
+    const snapshots = await Promise.all(activeProviderIds.map((provider) => service.list(provider)))
 
     for (const calls of [resolveCalls, runCalls]) {
       expect(calls.find((call) => call.provider === 'codex')?.env).toMatchObject({
@@ -1642,7 +1643,7 @@ describe('official marketplace as a standalone action', () => {
     })
 
     const message = claudeMarketplaceGitMissingMessage('darwin', { commandLineToolsShim: true })
-    expect(message).toContain('空壳')
+    expect(message).toContain('需先安装苹果的「命令行开发者工具」')
     expect(message).toContain('「安装 Git」')
     await expect(service.ensureMarketplace('claude')).rejects.toThrow(message)
     expect(calls.some((argv) => argv.includes('add'))).toBe(false)
@@ -1663,7 +1664,7 @@ describe('official marketplace as a standalone action', () => {
     })
 
     const message = claudeMarketplaceGitMissingMessage('darwin', { commandLineToolsShim: true, xcodeLicensePending: true })
-    expect(message).toContain('点「同意」')
+    expect(message).toContain('点击「同意」')
     expect(message).not.toMatch(/空壳|xcode-select|xcodebuild|sudo|许可协议/)
     await expect(service.ensureMarketplace('claude')).rejects.toThrow(message)
     expect(calls.some((argv) => argv.includes('add'))).toBe(false)
@@ -1819,11 +1820,11 @@ describe('MCP connection health', () => {
         state: 'failed',
         detail: '启动失败：MCP server "broken" connection timed out after 30000ms',
       },
-      { id: 'remote', state: 'failed', detail: '还没登录这个服务' },
-      { id: 'partial', state: 'failed', detail: '连上了，但读不到它提供的工具：listTools failed' },
-      { id: 'waiting', state: 'unknown', detail: '这条连接还没在工具里确认过，本次没有检测' },
-      { id: 'paused', state: 'unknown', detail: '这条连接在当前目录下已停用，本次没有检测' },
-      { id: 'empty', state: 'failed', detail: '这条连接没有填地址' },
+      { id: 'remote', state: 'failed', detail: '尚未登录该服务' },
+      { id: 'partial', state: 'failed', detail: '已连接，但无法读取其提供的工具：listTools failed' },
+      { id: 'waiting', state: 'unknown', detail: '该连接尚未在工具中确认，本次未检测' },
+      { id: 'paused', state: 'unknown', detail: '该连接在当前目录下已停用，本次未检测' },
+      { id: 'empty', state: 'failed', detail: '该连接未填写地址' },
     ])
   })
 
@@ -1870,7 +1871,7 @@ describe('MCP connection health', () => {
     for (const provider of ['codex', 'grok'] as const) {
       const report = await service.checkMcpHealth(provider)
       expect(report).toMatchObject({ provider, supported: false, entries: [] })
-      expect(report.reason).toContain('没有提供连接状态')
+      expect(report.reason).toContain('未提供连接状态')
     }
   })
 
@@ -2092,7 +2093,7 @@ describe('ProviderExtensionService scope-preserving mutations', () => {
     const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), invoke })
 
     await expect(service.mutate({ provider: 'gemini', kind: 'skill', action: 'uninstall', id: path.resolve(stray) }))
-      .rejects.toThrow('没法确定这个技能装在哪里')
+      .rejects.toThrow('无法确定该技能的安装位置')
     expect(calls.some((call) => call.argv[1] === 'uninstall')).toBe(false)
   })
 
@@ -2237,7 +2238,7 @@ describe('ProviderExtensionService scope-preserving mutations', () => {
       action: 'disable',
       id: 'demo@market',
       scope: 'project',
-    })).rejects.toThrow('请先在工作目录里选好这个项目')
+    })).rejects.toThrow('请先选择该项目的文件夹')
     expect(calls).toHaveLength(0)
   })
 
@@ -2305,7 +2306,7 @@ describe('ProviderExtensionService scope-preserving mutations', () => {
     calls.length = 0
     service.setRepositoryRoot(null)
     await expect(service.mutate({ provider: 'grok', kind: 'mcp', action: 'disable', id: 'shared', scope: 'project' }))
-      .rejects.toThrow('请先在工作目录里选好这个项目')
+      .rejects.toThrow('请先选择该项目的文件夹')
     expect(calls).toHaveLength(0)
   })
 
@@ -2335,7 +2336,7 @@ describe('ProviderExtensionService scope-preserving mutations', () => {
       id: 'project-db',
       scope: 'project',
       mcp: { type: 'http', url: 'https://example.com/mcp' },
-    })).rejects.toThrow('请先在工作目录里选好这个项目')
+    })).rejects.toThrow('请先选择该项目的文件夹')
     expect(calls).toHaveLength(0)
   })
 
@@ -2695,7 +2696,7 @@ describe('Claude Code and Grok CLI skills managed in the app', () => {
 
     await expect(managedService(home).service.mutate({
       provider: 'grok', kind: 'skill', action: 'install', source, scope: 'project',
-    })).rejects.toThrow('请先在工作目录里选好这个项目')
+    })).rejects.toThrow('请先选择该项目的文件夹')
   })
 
   it('refuses a relative source, a name already taken and an unknown scope', async () => {
@@ -2713,6 +2714,78 @@ describe('Claude Code and Grok CLI skills managed in the app', () => {
       .rejects.toThrow('当前 Provider 不支持该原生操作')
     await expect(service.mutate({ provider: 'claude', kind: 'skill', action: 'enable', id: source }))
       .rejects.toThrow('当前 Provider 不支持该原生操作')
+  })
+
+  // 0.2.25 复查第三轮第 3 条：跟 Codex 同一套，临时文件夹删不掉时照旧报原来的原因，留下的那份不列、开机清掉。
+  it('keeps the real reason when the staging folder cannot be removed, and sweeps it later', async () => {
+    for (const provider of ['claude', 'grok'] as const) {
+      const home = temporaryDirectory()
+      const { service } = managedService(home)
+      const source = skillSource('taken')
+      const skillsRoot = path.resolve(home, `.${provider}`, 'skills')
+      write(path.join(skillsRoot, 'taken', 'SKILL.md'), '---\nname: taken\ndescription: mine\n---\n')
+      const originalRm = fs.rmSync.bind(fs)
+      const spy = vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
+        if (isSkillImportStagingName(path.basename(String(target)))) {
+          throw Object.assign(new Error('EBUSY: resource busy or locked, rmdir'), { code: 'EBUSY' })
+        }
+        originalRm(target, options)
+      })
+
+      try {
+        await expect(service.mutate({ provider, kind: 'skill', action: 'install', source, scope: 'user' }))
+          .rejects.toThrow('Skill 已存在：taken')
+      } finally {
+        spy.mockRestore()
+      }
+
+      expect(fs.readdirSync(skillsRoot).filter(isSkillImportStagingName)).toHaveLength(1)
+      const listed = (await service.list(provider)).items.filter((item) => item.kind === 'skill')
+      expect(listed.map((item) => item.id)).toEqual([path.join(skillsRoot, 'taken', 'SKILL.md')])
+      expect(await service.discardSkillImportLeftovers()).toEqual({ removed: 1, remaining: 0 })
+      expect(fs.readdirSync(skillsRoot)).toEqual(['taken'])
+    }
+  })
+
+  it('sweeps a skills folder once when the chosen project is the home folder itself', async () => {
+    const home = temporaryDirectory()
+    const leftover = path.join(home, '.claude', 'skills', '.xingmang-import-0b6f3c2e-4a1d-4c8e-9f00-123456789abc')
+    write(path.join(leftover, 'SKILL.md'), '---\nname: Copy\n---\n')
+
+    expect(await managedService(home, home).service.discardSkillImportLeftovers()).toEqual({ removed: 1, remaining: 0 })
+    expect(fs.existsSync(leftover)).toBe(false)
+  })
+
+  // O17: Claude Code and Grok share Codex's import, so a folder swapped during
+  // the copy is refused the same way and nothing lands in their skills folders.
+  it('refuses a subfolder swapped for an outside link during the copy, as Codex does', async () => {
+    for (const provider of ['claude', 'grok'] as const) {
+      const home = temporaryDirectory()
+      const { service } = managedService(home)
+      const source = skillSource('swapped')
+      write(path.join(source, 'sub', 'notes.txt'), 'inside')
+      const outside = temporaryDirectory()
+      write(path.join(outside, 'notes.txt'), 'OUTSIDE-MARKER')
+      const skillsRoot = path.resolve(home, `.${provider}`, 'skills')
+      const originalMkdir = fs.mkdirSync.bind(fs)
+      let swapped = false
+      const spy = vi.spyOn(fs, 'mkdirSync').mockImplementation(((target: fs.PathLike, options?: fs.MakeDirectoryOptions | fs.Mode | null) => {
+        const created = originalMkdir(target, options as fs.MakeDirectoryOptions)
+        if (!swapped && path.basename(String(target)) === 'sub' && path.resolve(String(target)).startsWith(skillsRoot)) {
+          swapped = true
+          fs.renameSync(path.join(source, 'sub'), path.join(path.dirname(source), 'sub-away'))
+          fs.symlinkSync(outside, path.join(source, 'sub'), process.platform === 'win32' ? 'junction' : 'dir')
+        }
+        return created
+      }) as typeof fs.mkdirSync)
+
+      await expect(service.mutate({ provider, kind: 'skill', action: 'install', source, scope: 'user' }))
+        .rejects.toThrow('导入过程中文件夹内容发生变化')
+      spy.mockRestore()
+
+      expect(swapped).toBe(true)
+      expect(fs.existsSync(skillsRoot) ? fs.readdirSync(skillsRoot) : []).toEqual([])
+    }
   })
 
   it.runIf(process.platform !== 'win32')('refuses a source reached through a symbolic link', async () => {
@@ -2863,12 +2936,12 @@ describe('ProviderExtensionService.readUserMcpConnection', () => {
     await expect(service.readUserMcpConnection('claude', 'acme')).resolves.toEqual({ type: 'stdio', command: 'npx', args: ['-y', '@acme/mcp'], env: { ACME_TOKEN: 'secret' } })
     await expect(service.readUserMcpConnection('codex', 'remote')).resolves.toEqual({ type: 'http', url: 'https://mcp.example.com', headers: { Authorization: 'Bearer secret' } })
     // 项目里那份（local）不是全局那份，不给搬。
-    await expect(service.readUserMcpConnection('claude', 'local')).rejects.toThrow('没有找到这个连接')
-    await expect(service.readUserMcpConnection('claude', 'constructor')).rejects.toThrow('没有找到这个连接')
+    await expect(service.readUserMcpConnection('claude', 'local')).rejects.toThrow('未找到该连接')
+    await expect(service.readUserMcpConnection('claude', 'constructor')).rejects.toThrow('未找到该连接')
   })
 
   it('does not read Grok connections, whose list carries no environment or headers', async () => {
     const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), invoke: async () => '[]' })
-    await expect(service.readUserMcpConnection('grok', 'acme')).rejects.toThrow('这个工具的连接星芒读不全，请在要装的工具里手动添加。')
+    await expect(service.readUserMcpConnection('grok', 'acme')).rejects.toThrow('星芒无法完整读取该工具的连接，请在目标工具中手动添加。')
   })
 })

@@ -92,14 +92,14 @@ export function useStartupChecks({ native, app, boot, settings, setSettings, aut
       publishDiagnosticsCounts(report.counts, started)
       const notice = startupDiagnosticsIssues(report.counts)
       if (notice) noteStartupCheck(notice)
-    }).catch((cause) => { if (mounted.current) noteStartupCheck(startupCheckFailure('diagnostics', errorMessage(cause, '启动环境检查没有完成'))) })
+    }).catch((cause) => { if (mounted.current) noteStartupCheck(startupCheckFailure('diagnostics', errorMessage(cause, '启动环境检查未完成'))) })
   }, [boot, native, noteStartupCheck, authenticated, settings?.runDiagnosticsOnStartup, mounted, restoredBoot])
   // 兼容显示提示里的二选一：两颗都写进设置，主进程据此清掉崩溃记录。「一直用」现在
   // 已经是兼容方式，不用重开；「恢复」要重开才生效，接着给一颗「现在重开」。
   const chooseDisplayCompat = useCallback((choice: 'keep' | 'restore') => perform('保存显示方式', async () => {
     setSettings(await app.savePreferences({ version: 2, hardwareAcceleration: choice === 'restore' }))
     if (choice === 'restore') noteStartupCheck(displayRelaunchNotice())
-    else toast.show('以后都用兼容方式显示。想改回来，到「设置」的「外观显示」里打开「用显卡加速显示」。', 'ok')
+    else toast.show('已设为始终使用兼容方式显示。如需恢复，请在「设置 › 外观显示」中开启「使用显卡加速显示」。', 'ok')
   }), [app, noteStartupCheck, perform, setSettings, toast])
   // 错误报告告知：登录进来后说一次，这次运行里只出一回。两颗按钮都记下「已告知」，
   // 「不想发送」同时把上报关掉，和设置页那个开关是同一个设置。
@@ -113,7 +113,7 @@ export function useStartupChecks({ native, app, boot, settings, setSettings, aut
   }, [boot, noteStartupCheck, authenticated, settings, restoredBoot])
   const chooseCrashReporting = useCallback((choice: 'keep' | 'off') => perform('保存错误报告设置', async () => {
     setSettings(await app.savePreferences({ version: 2, crashReportingNoticeShown: true, ...(choice === 'off' ? { crashReporting: false } : {}) }))
-    if (choice === 'off') toast.show('已关闭，出错时不再发送错误报告。想重新打开，到「设置」的「隐私数据」里。', 'ok')
+    if (choice === 'off') toast.show('已关闭，出错或无响应时不再发送错误报告。如需重新开启，请前往「设置 › 隐私数据」。', 'ok')
   }), [app, perform, setSettings, toast])
   // 匿名使用统计告知：一次打开只说一件这种事，错误报告那张这次出过就等下次打开，同样一次运行只出一回。
   // 开关在系统界面设置那边，要先读一下现在是不是开着：亲手关过的不用再说。
@@ -137,7 +137,7 @@ export function useStartupChecks({ native, app, boot, settings, setSettings, aut
       if (platform) await platform.setPrivacyPreference('anonymousUsage', false)
     }
     setSettings(await app.savePreferences({ version: 2, usageStatsNoticeShown: true }))
-    if (choice === 'off') toast.show('已关闭，不再发送使用情况', 'ok')
+    if (choice === 'off') toast.show('已关闭，不再发送使用数据', 'ok')
   }), [app, perform, setSettings, toast])
   return { chooseDisplayCompat, chooseCrashReporting, chooseUsageStats }
 }

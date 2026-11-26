@@ -1,6 +1,17 @@
 // 手机遥控那几条通道的入参（I5）：渠道只认 remoteChannelIds 里的，开关只认布尔，自动关时长只认 remoteIdleCloseHours 里的数或 null，
-// 飞书凭据只认两个限长字符串，「用这个」「移除」的文件夹只认一个限长字符串（主进程再到单子里找，YF-19）。
-import { isRemoteChannelId, isRemoteIdleCloseHours, type RemoteChannelId, type RemoteIdleCloseHours } from '../../codex-remote-channel'
+// 飞书凭据只认两个限长字符串，「用这个」「移除」的文件夹只认一个限长字符串（主进程再到单子里找，YF-19），
+// 手机端使用的模型只认长得像型号名的字串或 null，权限只认 remotePermissions 里的两档，
+// 「手机端的对话」只认 Codex 的对话编号（UUID）或 null（主进程再到上一次列出来的里面找，文件夹不从这里来）。
+import {
+  isCodexThreadId,
+  isRemoteChannelId,
+  isRemoteIdleCloseHours,
+  isRemoteModel,
+  isRemotePermission,
+  type RemoteChannelId,
+  type RemoteIdleCloseHours,
+  type RemotePermission,
+} from '../../codex-remote-channel'
 import { isRecord } from '../../input-guards'
 import type { CodexRemoteFeishuCredentialRequest } from '../../ipc-contract'
 
@@ -18,6 +29,26 @@ export function parseRemoteEnabled(value: unknown): boolean {
 export function parseRemoteIdleClose(value: unknown): RemoteIdleCloseHours | null {
   if (value === null) return null
   if (!isRemoteIdleCloseHours(value)) throw new Error('遥控自动关时长参数无效')
+  return value
+}
+
+/** null = 跟电脑上的 Codex 一样。 */
+export function parseRemoteModel(value: unknown): string | null {
+  if (value === null) return null
+  if (!isRemoteModel(value)) throw new Error('手机端模型参数无效')
+  return value
+}
+
+/** null = 新对话。 */
+export function parseRemoteConversationChoice(value: unknown): string | null {
+  if (value === null) return null
+  if (!isCodexThreadId(value)) throw new Error('手机端对话参数无效')
+  return value
+}
+
+/** 只有两档，没有「完全访问」：多出来的值一律不收。 */
+export function parseRemotePermission(value: unknown): RemotePermission {
+  if (!isRemotePermission(value)) throw new Error('遥控权限参数无效')
   return value
 }
 

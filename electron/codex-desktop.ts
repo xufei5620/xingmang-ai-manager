@@ -181,7 +181,7 @@ export function parseCodexDesktopPackagesJson(output: string): CodexDesktopPacka
  * 带着下一步，所以是查包结果里唯一能原样上屏的话。脚本照这一份拼（buildCodexDesktopPackageProbeScript），
  * 解析时也只认这一份。
  */
-export const codexDesktopPackageProbeAccountMessage = '读不到这台电脑上 Codex 桌面端的安装信息，请换成当初装它的那个 Windows 账户登录，再打开星芒重试。'
+export const codexDesktopPackageProbeAccountMessage = '无法读取本机 Codex 桌面端的安装信息，请使用安装它时所用的 Windows 账户登录，再重新打开星芒重试。'
 
 // 原话进日志时最多留多长：够看出是哪个字段不对、是不是更新到一半，又不把整段输出塞进一行日志。
 const maximumPackageProbeDetailLength = 600

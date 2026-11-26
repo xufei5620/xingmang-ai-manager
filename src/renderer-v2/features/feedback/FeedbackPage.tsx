@@ -1,5 +1,5 @@
 // 反馈与客服页（#1070 第 11 步，从 pages-maintenance.tsx 原样搬来）：留言反馈、运行日志、预览与复制/导出反馈报告，
-// 右边那张「找客服」卡。pages-maintenance.tsx 照旧转出这里的导出名；各业务页共用的参数类型在 business-actions.ts。
+// 右边那张「联系客服」卡。pages-maintenance.tsx 照旧转出这里的导出名；各业务页共用的参数类型在 business-actions.ts。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ChevronDown,
@@ -38,6 +38,7 @@ import {
   useResource,
 } from '../../business-common'
 import { feedbackTabs, type FeedbackTabValue } from '../../registry/business'
+import { useBackgroundWork } from '../../background-work'
 import { feedbackMessageTypes, isFeedbackMessageType, type FeedbackMessageType } from '../../../../electron/feedback-message'
 import { SupportIdentity } from '../app/SupportIdentity'
 import {
@@ -77,7 +78,7 @@ const runtimeLogPage = 100
 // 预览过了 30 分钟，主进程会按最新日志重生成再复制/导出；提示要让客户知道拿到的是新的那份。
 export function feedbackCopyNotice(result: FeedbackReportCopyResult) {
   return result.regenerated
-    ? '报告已更新到最新日志并复制，发给客服就行'
+    ? '报告已更新至最新日志并复制，请发送给客服'
     : '报告已复制'
 }
 
@@ -121,13 +122,17 @@ export function FeedbackPage({
   const [source, setSource] = useState(feedbackRequest?.installLog ? installRuntimeLogArea : anyRuntimeLogValue)
   const [onlyCurrentBoot, setOnlyCurrentBoot] = useState(false)
   const [openId, setOpenId] = useState<string | null>(null)
-  // 刚点过「清除」：列表空着时说「日志已清空」，不说「还没有运行日志」。下一次读到日志就不再算。
+  // 刚点过「清除」：列表空着时说「日志已清空」，不说「暂无运行日志」。下一次读到日志就不再算。
   const [cleared, setCleared] = useState(false)
   const [type, setType] = useState<FeedbackMessageType>('bug')
   const [description, setDescription] = useState('')
   const [descriptionError, setDescriptionError] = useState('')
   const [contact, setContact] = useState('')
   const [attachReport, setAttachReport] = useState(true)
+  // 留言写了还没复制出去：窗口缩到托盘久了主进程会关掉界面省内存（renderer-release.ts），再叫出来字就没了。
+  // 登记成手上有事，界面就不关；复制出去以后没再改过的不算，免得一直占着内存。
+  const [copiedDescription, setCopiedDescription] = useState('')
+  useBackgroundWork('feedback-draft', description.trim() !== '' && description !== copiedDescription)
   const formRef = useRef<HTMLElement>(null)
   // 外面点名要看「运行日志」（错误框「查看日志」、顶部搜索、帮助弹窗）：页面早就挂着，只是藏着，换到那个页签；
   // 装工具没装上时来源先选好「安装与更新」。别的筛选条件清掉，免得刚出的那一条被筛走。
@@ -182,7 +187,7 @@ export function FeedbackPage({
     )
   const copyToSupport = () => {
     if (!description.trim()) {
-      setDescriptionError('请先描述一下发生了什么')
+      setDescriptionError('请先描述遇到的问题')
       formRef.current?.querySelector('textarea')?.focus()
       return
     }
@@ -197,16 +202,17 @@ export function FeedbackPage({
         ...(support?.lastFailure ? { lastFailure: support.lastFailure } : {}),
         attachReport,
       })
+      setCopiedDescription(description)
       support?.open()
-      if (reportMissing) toast.show('反馈报告没生成出来，只复制了你写的内容，发给客服就行', 'warn')
+      if (reportMissing) toast.show('反馈报告生成失败，已复制您填写的内容，请发送给客服', 'warn')
       return reportMissing === true
-    }, (reportMissing) => reportMissing ? '' : '已复制，发给客服就行')
+    }, (reportMissing) => reportMissing ? '' : '已复制，请发送给客服')
   }
   const tries = [
-    { id: 'health', title: '工具装不上，或者打开就闪退', action: '先跑一遍检查', go: () => navigate?.('health') },
-    ...(ordersVisible === false ? [] : [{ id: 'orders', title: '付了款，余额没变', action: '看我的订单', go: () => navigate?.('account', 'orders') }]),
-    { id: 'tutorial', title: '不知道从哪里开始用', action: '看教程', go: () => navigate?.('tutorial') },
-    { id: 'mcp', title: '想把 AI 连上浏览器或文件夹', action: '去外接工具', go: () => navigate?.('mcp') },
+    { id: 'health', title: '工具无法安装或打开后闪退', action: '前往检查', go: () => navigate?.('health') },
+    ...(ordersVisible === false ? [] : [{ id: 'orders', title: '已付款，余额未变化', action: '查看我的订单', go: () => navigate?.('account', 'orders') }]),
+    { id: 'tutorial', title: '不清楚如何开始使用', action: '查看教程', go: () => navigate?.('tutorial') },
+    { id: 'mcp', title: '需要将 AI 连接到浏览器或文件夹', action: '前往插件', go: () => navigate?.('mcp') },
   ]
   const form = (
     <div className="v2-fb-grid">
@@ -221,10 +227,10 @@ export function FeedbackPage({
           <Segment options={[...feedbackMessageTypes]} value={type} onChange={(value) => { if (isFeedbackMessageType(value)) setType(value) }} label="类型" testId="feedback-type" />
         </div>
         <Textarea
-          label="描述一下发生了什么"
+          label="问题描述"
           rows={5}
           value={description}
-          placeholder="比如：点「打开」后终端闪一下就关了"
+          placeholder="例如：点击「打开」后终端窗口闪退"
           error={descriptionError || undefined}
           onChange={(event) => {
             setDescription(event.target.value)
@@ -235,7 +241,7 @@ export function FeedbackPage({
         <Input
           label="联系方式（可选）"
           value={contact}
-          placeholder="微信号或邮箱（会一起复制，发给客服时方便他回你）"
+          placeholder="微信号或邮箱（将一并复制，便于客服联系您）"
           onChange={(event) => setContact(event.target.value)}
           testId="feedback-contact"
         />
@@ -261,12 +267,12 @@ export function FeedbackPage({
       <div className="v2-fb-side">
         {support && (
           <section className="v2-acct-card is-focus v2-fb-support" data-testid="feedback-support-card">
-            <h2>找客服</h2>
+            <h2>联系客服</h2>
             <div className="v2-fb-support-qr">
               {support.qr && <img src={support.qr} alt="微信客服二维码" />}
               <div>
                 <strong>微信扫码添加客服</strong>
-                <p>装不上、付了没到账，都可以问。</p>
+                <p>安装、充值到账等问题均可咨询。</p>
                 {support.qrFallback && <p role="alert" data-testid="feedback-support-qr-fallback">{support.qrFallback}</p>}
                 <button type="button" className="v2-fb-link" onClick={support.open} data-testid="feedback-support-open">在浏览器打开</button>
               </div>
@@ -284,7 +290,7 @@ export function FeedbackPage({
           </section>
         )}
         <section className="v2-acct-well v2-fb-try" data-testid="feedback-try">
-          <h2>先试试这些</h2>
+          <h2>常见解决方法</h2>
           {tries.map((entry) => (
             <button key={entry.id} type="button" className="v2-fb-try-item" onClick={entry.go} data-testid={`feedback-try-${entry.id}`}>
               <span>
@@ -309,7 +315,7 @@ export function FeedbackPage({
           actions={
             navigate ? (
               <Button size="sm" icon={HeartPulse} onClick={() => navigate('health')}>
-                去检查页
+                前往检查页
               </Button>
             ) : undefined
           }
@@ -391,10 +397,10 @@ export function FeedbackPage({
           retry={() => void resource.reload()}
           clear={resetFilters}
           emptyTitle={cleared ? '日志已清空' : undefined}
-          emptyDescription={cleared ? '之后的操作会重新记录在这里。' : '软件运行时的事件会记录在这里。'}
-          filteredTitle="没有符合条件的日志"
-          filteredDescription="换个筛选条件，或者关掉「只看本次启动」。"
-          errorDescription="点「重新加载」再试；还不行，点「打开日志文件夹」直接看日志文件。"
+          emptyDescription={cleared ? '后续操作将重新记录在此处。' : '软件运行时的事件将记录在此处。'}
+          filteredTitle="无符合条件的日志"
+          filteredDescription="请调整筛选条件，或关闭「只看本次启动」。"
+          errorDescription="请点击「重新加载」；如仍无法加载，请点击「打开日志文件夹」直接查看日志文件。"
         >
           {shownLogs.map(({ entry, time }) => {
             const open = openId === entry.id
@@ -472,7 +478,7 @@ export function FeedbackPage({
           )}
         </ListState>
       </Card>
-      <p className="v2-fb-foot">日志只保存在这台电脑上。</p>
+      <p className="v2-fb-foot">日志仅保存在本机。</p>
     </div>
   )
   return (
@@ -501,7 +507,7 @@ export function FeedbackPage({
         onReveal={(path) => api.revealExportedFile(path)}
         target={exportTarget}
       />
-      {/* 两个页签都挂着、只藏不卸：留言写到一半去翻日志，回来字还在，关窗口时也照样提醒没复制出去。 */}
+      {/* 两个页签都挂着、只藏不卸：留言写到一半去翻日志，回来字还在。缩到托盘久了不丢字靠上面的 feedback-draft。 */}
       <div id="feedback-panel-form" role="tabpanel" aria-label="留言反馈" hidden={tab !== 'form'} data-testid="feedback-panel-form">{form}</div>
       <div id="feedback-panel-log" role="tabpanel" aria-label="运行日志" hidden={tab !== 'log'} data-testid="feedback-panel-log">{log}</div>
       <Dialog
@@ -553,14 +559,14 @@ export function FeedbackPage({
       >
         <p className="v2-fb-privacy" data-testid="feedback-privacy">
           <ShieldCheck size={16} aria-hidden="true" />
-          <span>密钥、密码和电脑用户名都已隐去。发送前再看一眼有没有私有项目名称和地址。</span>
+          <span>密钥、密码和电脑用户名均已隐藏。发送前请确认不含私有项目名称和地址。</span>
         </p>
         {report?.selfChecked === false && navigate && (
           <Notice
             tone="accent"
             icon={HeartPulse}
-            title="报告里还没有检查结果"
-            body="点「去检查」，等检查页查完再回来复制或导出，客服能少问你几句。"
+            title="报告中暂无检查结果"
+            body="请点击「前往检查」，检查完成后再复制或导出报告，便于客服快速定位问题。"
             actions={
               <Button
                 size="sm"
@@ -571,7 +577,7 @@ export function FeedbackPage({
                 }}
                 testId="feedback-report-go-check"
               >
-                去检查
+                前往检查
               </Button>
             }
             testId="feedback-report-unchecked"
@@ -595,7 +601,7 @@ export function FeedbackPage({
         title="清除全部运行日志？"
         body={
           <>
-            <p>清除后找不回来。要发反馈的话，建议先保留日志。</p>
+            <p>清除后无法恢复。如需提交反馈，建议先保留日志。</p>
             <p>仅清除运行日志，不会删除工具配置、账号或对话记录。</p>
             <ResultNotice error={operation.error} detail={operation.detail} />
           </>

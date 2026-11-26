@@ -15,6 +15,9 @@ import { classifyRelayQuotaFailure, classifySub2apiBillingFailure, extractRelayE
 import { unsentRequestFailure } from './relay-line-fetch'
 import { reportRelayAnswer, reportRelayDispatch } from './relay-request-id'
 import type { AiRelayBillingObserver } from './ai-operation-progress'
+import { AiAnswerCutOffError, resolveAnswerCutOff, type AiAnswerCutOff } from './ai-answer-cut-off'
+
+export type { AiAnswerCutOff } from './ai-answer-cut-off'
 
 export const AI_CHAT_STREAM_LIMITS = {
   requestIdLength: 160,
@@ -74,6 +77,8 @@ export type AiChatStreamEvent =
       durationMs: number
       receivedBytes: number
       outputBytes: number
+      /** Set when the answer was cut short (output cap or content filter); absent = finished normally. */
+      cutOff?: AiAnswerCutOff
     }
   | {
       type: 'error'
@@ -94,6 +99,7 @@ export type AiChatStreamLogEntry = {
   phase: 'credential' | 'response-headers' | 'response-stream'
   errorCode?: AiChatStreamErrorCode
   httpStatus?: number
+  cutOff?: AiAnswerCutOff
   durationMs: number
   receivedBytes: number
   outputBytes: number
@@ -185,6 +191,7 @@ type ActiveRequest = {
   pendingReasoning: string
   received: ReceivedOutput
   completed: boolean
+  cutOff: AiAnswerCutOff | null
   phase: AiChatStreamLogEntry['phase']
   responseStatus: number | null
   connectionTimer: unknown | null
@@ -213,12 +220,12 @@ const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
 
 const SAFE_ERROR_MESSAGES: Record<AiChatStreamErrorCode, string> = {
-  'credential-error': '无法准备所选分组，请检查登录状态和 API Key',
+  'credential-error': '无法准备所选分组，请检查登录状态和密钥',
   'key-quota-exhausted': chatKeyQuotaExhaustedMessage,
   'model-unavailable': '当前模型不在所选分组的可用列表中，请刷新后重新选择',
   'connection-timeout': 'AI 服务响应较慢，本次等待已超时，请重试',
-  'idle-timeout': 'AI 服务太久没有返回内容，已经停下，请重试',
-  'total-timeout': '本次对话超过最长处理时间，已经停下，请重试',
+  'idle-timeout': 'AI 服务长时间未返回内容，已停止，请重试',
+  'total-timeout': '本次对话超过最长处理时间，已停止，请重试',
   'network-error': '无法连接 AI 服务，请检查网络后重试',
   'upstream-http-error': 'AI 服务暂时无法完成请求',
   'service-unavailable': networkFailureMessages.serviceUnavailable,
@@ -228,7 +235,7 @@ const SAFE_ERROR_MESSAGES: Record<AiChatStreamErrorCode, string> = {
   'event-limit-exceeded': 'AI 服务单个事件超过安全上限',
   'fragment-limit-exceeded': 'AI 服务单次输出超过安全上限',
   'output-limit-exceeded': 'AI 服务累计输出超过安全上限',
-  'image-unavailable': '刚附上的图片找不到了，这次没有发出去，也没有扣费。请把图片重新加一次再发',
+  'image-unavailable': '刚附加的图片已找不到，本次未发送，也未扣费。请重新添加图片后再发送',
 }
 
 // 超时停下时已经显示出来的内容不撤回，所以提示要说清哪些是半截、可能已经计费，
@@ -236,13 +243,13 @@ const SAFE_ERROR_MESSAGES: Record<AiChatStreamErrorCode, string> = {
 const TIMEOUT_MESSAGES: Record<StreamTimeoutCode, Record<ReceivedOutput, string>> = {
   'idle-timeout': {
     none: SAFE_ERROR_MESSAGES['idle-timeout'],
-    reasoning: '思考太久没有新内容，已经停下，还没收到正式回复；上面的思考过程可能已经计费，可以重新生成',
-    content: '回复太久没有新内容，已经停下；上面是已经收到的部分，这部分可能已经计费',
+    reasoning: '思考过程长时间无新内容，已停止，尚未收到正式回复；上方的思考过程可能已计费，可重新生成',
+    content: '回复长时间无新内容，已停止；上方为已收到的部分，该部分可能已计费',
   },
   'total-timeout': {
     none: SAFE_ERROR_MESSAGES['total-timeout'],
-    reasoning: '思考超过了最长处理时间，已经停下，还没收到正式回复；上面的思考过程可能已经计费',
-    content: '回复写得太久，超过了最长处理时间，已经停下；上面是已经收到的部分，这部分可能已经计费',
+    reasoning: '思考超过最长处理时间，已停止，尚未收到正式回复；上方的思考过程可能已计费',
+    content: '回复超过最长处理时间，已停止；上方为已收到的部分，该部分可能已计费',
   },
 }
 
@@ -374,11 +381,11 @@ async function readBoundedErrorPayload(
 const rejectedRequestMessages: readonly { test: RegExp; message: string }[] = [
   {
     test: /context_length_exceeded|maximum context length|context length|context window|prompt is too long|too many tokens|上下文[^。]{0,8}(?:超|过长|上限)/i,
-    message: '这段对话太长了，超过了这个模型一次能读的长度。开一个新对话接着聊，或者换一个能读更长内容的模型。',
+    message: '当前对话过长，已超过此模型单次可读取的长度。请新建对话继续，或更换支持更长内容的模型。',
   },
   {
     test: /content_policy_violation|content[_ ]policy|safety system|content[_ ]filter|content_management|sensitive[_ ]words?|敏感词|内容[^。]{0,8}(?:审核|违规|不合规)/i,
-    message: '这次的内容没通过 AI 服务的安全审核，没有回复。改一改说法再发；一直被拦就换个模型。',
+    message: '本次内容未通过 AI 服务的安全审核，未返回回复。请调整表述后重新发送；如持续被拦截，请更换模型。',
   },
   { test: /model_not_found|\bmodel\b[^.。]{0,80}(?:does not exist|not found)|模型[^。]{0,20}不存在/i, message: SAFE_ERROR_MESSAGES['model-unavailable'] },
 ]
@@ -396,7 +403,7 @@ function safeHttpFailure(status: number, headers: Headers, payload: unknown, bac
   const detail = extractRelayErrorDetail(payload)
   const json = isJsonContentType(headers.get('content-type'))
   if (status === 503 && json && noChannelPattern.test(detail)) {
-    return new StreamFailure('upstream-http-error', '所选分组下这个模型暂时用不了。换个模型或分组再发；一直这样请找客服。')
+    return new StreamFailure('upstream-http-error', '所选分组下的该模型暂不可用。请更换模型或分组后重新发送；如问题持续，请联系客服。')
   }
   if (isServiceUnavailableResponse({ status, json, headers })) {
     return new StreamFailure('service-unavailable', SAFE_ERROR_MESSAGES['service-unavailable'])
@@ -406,7 +413,7 @@ function safeHttpFailure(status: number, headers: Headers, payload: unknown, bac
     ?? (backend === 'sub2api' && status === 403 ? classifySub2apiBillingFailure(payload) : null)
   if (quota) return new StreamFailure('upstream-http-error', relayQuotaFailureMessages[quota])
   if (status === 401 || status === 403) {
-    return new StreamFailure('upstream-http-error', '当前 API Key 无权使用所选模型或分组')
+    return new StreamFailure('upstream-http-error', '当前密钥无权使用所选模型或分组')
   }
   if (status === 429) {
     return new StreamFailure('upstream-http-error', '请求过于频繁，请稍后重试')
@@ -416,7 +423,7 @@ function safeHttpFailure(status: number, headers: Headers, payload: unknown, bac
     if (rejected) return new StreamFailure('upstream-http-error', rejected.message)
   }
   if (status === 400) {
-    return new StreamFailure('upstream-http-error', 'AI 服务没接受这次请求（HTTP 400）。换个模型，或者把参数调回默认再试；一直这样请找客服。')
+    return new StreamFailure('upstream-http-error', 'AI 服务未接受本次请求（HTTP 400）。请更换模型，或将参数恢复默认后重试；如问题持续，请联系客服。')
   }
   return new StreamFailure('upstream-http-error', SAFE_ERROR_MESSAGES['upstream-http-error'])
 }
@@ -573,8 +580,15 @@ function streamClosedFailure(parser: BoundedSseParser, backend: AiChatServiceOpt
     : new StreamFailure('stream-closed', SAFE_ERROR_MESSAGES['stream-closed'])
 }
 
-function parsedDelta(data: string, backend: AiChatServiceOptions['backend']): { content: string; reasoning: string; finished: boolean } {
-  if (byteLength(data) === 0) return { content: '', reasoning: '', finished: false }
+interface ParsedDelta {
+  content: string
+  reasoning: string
+  finished: boolean
+  cutOff: AiAnswerCutOff | null
+}
+
+function parsedDelta(data: string, backend: AiChatServiceOptions['backend']): ParsedDelta {
+  if (byteLength(data) === 0) return { content: '', reasoning: '', finished: false, cutOff: null }
   let payload: unknown
   try {
     payload = JSON.parse(data) as unknown
@@ -590,12 +604,14 @@ function parsedDelta(data: string, backend: AiChatServiceOptions['backend']): { 
     throw new StreamFailure('upstream-http-error', quota ? relayQuotaFailureMessages[quota] : SAFE_ERROR_MESSAGES['upstream-http-error'])
   }
   const choices = record.choices
-  if (!Array.isArray(choices) || choices.length === 0) return { content: '', reasoning: '', finished: false }
+  if (!Array.isArray(choices) || choices.length === 0) return { content: '', reasoning: '', finished: false, cutOff: null }
   const first = choices[0]
-  if (!first || typeof first !== 'object' || Array.isArray(first)) return { content: '', reasoning: '', finished: false }
+  if (!first || typeof first !== 'object' || Array.isArray(first)) return { content: '', reasoning: '', finished: false, cutOff: null }
   const choice = first as Record<string, unknown>
   const finishReason = choice.finish_reason
   const finished = typeof finishReason === 'string' && Boolean(finishReason.trim())
+  // 到了长度上限、被内容审核拦下，流照样正常收尾；不看原因，半截回答就跟说完了一样（D10）。
+  const cutOff = finished ? resolveAnswerCutOff(finishReason) : null
   const delta = choice.delta
   const hasDelta = Boolean(delta && typeof delta === 'object' && !Array.isArray(delta))
   const fields = hasDelta
@@ -621,6 +637,7 @@ function parsedDelta(data: string, backend: AiChatServiceOptions['backend']): { 
           ? completedFields.reasoning_content
           : (!hasDelta && typeof completedFields.reasoning === 'string' ? completedFields.reasoning : ''),
     finished,
+    cutOff,
   }
 }
 
@@ -710,6 +727,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
         phase: request.phase,
         ...(errorCode ? { errorCode } : {}),
         ...(request.responseStatus === null ? {} : { httpStatus: request.responseStatus }),
+        ...(request.cutOff ? { cutOff: request.cutOff } : {}),
         durationMs: Math.max(0, clock.now() - request.startedAt),
         receivedBytes: request.receivedBytes,
         outputBytes: request.outputBytes,
@@ -772,9 +790,10 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
     }, limits.batchIntervalMs)
   }
 
-  function complete(request: ActiveRequest): void {
+  function complete(request: ActiveRequest, cutOff: AiAnswerCutOff | null = null): void {
     if (request.completed || !flush(request)) return
     request.sequence += 1
+    request.cutOff = cutOff
     const event: AiChatStreamEvent = {
       type: 'complete',
       requestId: request.requestId,
@@ -782,6 +801,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       durationMs: Math.max(0, clock.now() - request.startedAt),
       receivedBytes: request.receivedBytes,
       outputBytes: request.outputBytes,
+      ...(cutOff ? { cutOff } : {}),
     }
     if (!tryEmit(request, event)) {
       terminateForMissingSender(request)
@@ -850,7 +870,8 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
     const delta = parsedDelta(data, options.backend)
     appendDelta(request, delta.content, delta.reasoning)
     if (!delta.finished) return false
-    complete(request)
+    // 聊天页把已经出来的字留着，只在下面说一句没写完；要不要接着写由客户决定，这里不自动再发付费请求。
+    complete(request, delta.cutOff)
     return true
   }
 
@@ -1105,6 +1126,8 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
             }
             outputBytes += added
             text += delta.content
+            // 这条路径的调用方拿到什么都当成整段（画布节点的结果、要解析的表格），半截不能交回去。
+            if (delta.cutOff) throw new AiAnswerCutOffError(delta.cutOff)
             if (delta.finished) return text
           }
           if (chunk.done) break
@@ -1119,6 +1142,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       // 时限先认：超时后取消读取会让读取以「连接提前结束」收尾，那不是真正的原因。
       // 这条路径从不交回半截结果，所以只用「什么都没拿到」那一句。
       if (timedOut) throw new Error(SAFE_ERROR_MESSAGES[timedOut])
+      if (error instanceof AiAnswerCutOffError) throw error
       if (error instanceof StreamFailure) throw new Error(error.message)
       if (input.signal?.aborted || controller.signal.aborted) throw new Error('已取消')
       throw new Error(connectionFailure(error).message)
@@ -1164,6 +1188,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       pendingReasoning: '',
       received: 'none',
       completed: false,
+      cutOff: null,
       phase: 'credential',
       responseStatus: null,
       connectionTimer: null,

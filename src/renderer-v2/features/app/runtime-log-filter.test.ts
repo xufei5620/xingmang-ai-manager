@@ -182,8 +182,8 @@ describe('runtimeLogArea', () => {
 
 describe('runtimeLogDisplayMessage', () => {
   it('drops the bracketed repeat after a plain network message', () => {
-    expect(runtimeLogDisplayMessage('星芒账号余额查询失败：连接账号服务超时，请检查网络后再试。（账号余额查询请求超时）'))
-      .toBe('星芒账号余额查询失败：连接账号服务超时，请检查网络后再试。')
+    expect(runtimeLogDisplayMessage('星芒账号余额查询失败：连接账号服务超时，请检查网络后重试。（账号余额查询请求超时）'))
+      .toBe('星芒账号余额查询失败：连接账号服务超时，请检查网络后重试。')
   })
 
   it('leaves other messages untouched', () => {
@@ -206,19 +206,19 @@ describe('formatRuntimeLogEntry', () => {
 describe('runtimeLogWriteNotice', () => {
   it('stays silent while every entry reached the log file', () => {
     expect(runtimeLogWriteNotice(undefined)).toBeNull()
-    expect(runtimeLogWriteNotice({ reason: '磁盘满了', lostEntries: 0, firstFailedAt: '2026-09-22T00:00:00.000Z' })).toBeNull()
+    expect(runtimeLogWriteNotice({ reason: '磁盘已满', lostEntries: 0, firstFailedAt: '2026-09-22T00:00:00.000Z' })).toBeNull()
   })
 
   it('says how many entries were lost, why, and that they are still shown here', () => {
     const notice = runtimeLogWriteNotice({
-      reason: '日志所在的文件夹被搬到了别的位置',
+      reason: '日志所在的文件夹已被移动到其他位置',
       lostEntries: 12,
       firstFailedAt: '2026-09-22T00:00:00.000Z',
     })
-    expect(notice?.title).toBe('日志没能保存下来')
+    expect(notice?.title).toBe('日志保存失败')
     expect(notice?.body).toContain('12 条')
-    expect(notice?.body).toContain('日志所在的文件夹被搬到了别的位置')
-    expect(notice?.body).toContain('导出反馈报告时也会带上')
+    expect(notice?.body).toContain('日志所在的文件夹已被移动到其他位置')
+    expect(notice?.body).toContain('导出反馈报告时将一并包含')
     // 面向小白：不出现路径里的技术名词。
     expect(notice?.body).not.toMatch(/AppData|junction|联接|符号链接/)
   })

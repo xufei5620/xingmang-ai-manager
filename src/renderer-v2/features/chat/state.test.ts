@@ -4,7 +4,7 @@ import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { missingAiAssetMessages } from '../../../../electron/ai-asset-missing'
 import { buildChatCompletionsRequest, IMAGE_GROUP_MODEL_ORDER } from '../../../../electron/ai-chat-protocol'
-import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, autoConversationTitle, buildChatCatalog, chatAssetSaveErrorMessage, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, draftLengthError, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, imageModeFilesMessage, messageWithFiles, removeDraftFile, shouldShowOfflineReplyNotice, offlineReplyNotice, addChatPhrase, draftWithPhrase, removeChatPhrase, MAX_CHAT_PHRASES, MAX_CHAT_PHRASE_LENGTH, customImageSizeRule, imageSizeFits } from './state'
+import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, autoConversationTitle, buildChatCatalog, chatAssetSaveErrorMessage, chatCutOffNotice, chatCutOffNotices, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, draftLengthError, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, imageModeFilesMessage, messageWithFiles, removeDraftFile, shouldShowOfflineReplyNotice, offlineReplyNotice, addChatPhrase, draftWithPhrase, removeChatPhrase, MAX_CHAT_PHRASES, MAX_CHAT_PHRASE_LENGTH, customImageSizeRule, imageSizeFits } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
 import { canEditImages, chatLimits, inspectModel, noImageEditModelMessage, validateImageRequest } from './api'
@@ -150,8 +150,8 @@ describe('v2 chat request transitions', () => {
     expect(draftLengthError('a'.repeat(chatLimits.messageLength))).toBe('')
     // Surrounding blank lines are trimmed before sending, so they do not count against the limit.
     expect(draftLengthError(`\n${'a'.repeat(chatLimits.messageLength)}\n  `)).toBe('')
-    expect(draftLengthError('a'.repeat(45011))).toBe('最多 40000 字，现在 45011 字，删掉一些再发。')
-    expect(draftLengthError(` ${'a'.repeat(chatLimits.messageLength + 1)} `)).toBe('最多 40000 字，现在 40001 字，删掉一些再发。')
+    expect(draftLengthError('a'.repeat(45011))).toBe('最多 40000 字，当前 45011 字，请删减后发送。')
+    expect(draftLengthError(` ${'a'.repeat(chatLimits.messageLength + 1)} `)).toBe('最多 40000 字，当前 40001 字，请删减后发送。')
     // The sentence and the check behind the send button agree on what is too long.
     const tooLong = 'a'.repeat(chatLimits.messageLength + 1)
     expect(() => planTurn(readyConversation(), { prompt: tooLong, requestId: 'r', assistantId: 'a', userMessageId: 'u' })).toThrow()
@@ -175,7 +175,7 @@ describe('v2 chat request transitions', () => {
     try { planTurn(conversation, { prompt: 'one more', requestId: 'r', assistantId: 'a', userMessageId: 'u' }) } catch (error) { thrown = error }
     expect(chatErrorMessage(thrown)).toBe(conversationTooLongMessage)
     expect(isConversationTooLongMessage(conversationTooLongMessage)).toBe(true)
-    expect(isConversationTooLongMessage('请求太频繁，请稍候再试')).toBe(false)
+    expect(isConversationTooLongMessage('请求过于频繁，请稍后重试')).toBe(false)
   })
   it('lets a short picture request through a conversation too long to send back, because a picture is drawn from its own description alone (N7)', () => {
     const text = readyConversation()
@@ -248,12 +248,30 @@ describe('v2 chat request transitions', () => {
     expect(activeConversation(state).messages.at(-1)).toMatchObject({ content: 'partial', reasoning: 'thinking', status: 'canceled', mayStillComplete: true })
     expect(activeConversation(applyStreamEvent(state, { type: 'complete', requestId: 'another-request' })).messages).toEqual(activeConversation(state).messages)
   })
+  it('keeps an answer that was cut off, says why under it, and lets the next turn continue from it (D10)', () => {
+    const plan = turn(); let state = saveConversation(createWorkspace('owner:7'), plan.conversation)
+    state = applyStreamEvent(state, { type: 'content', requestId: 'request-1', content: '写到一半' })
+    state = applyStreamEvent(state, { type: 'complete', requestId: 'request-1', cutOff: 'length' })
+    const reply = activeConversation(state).messages.at(-1)!
+    expect(reply).toMatchObject({ content: '写到一半', status: 'complete', cutOff: 'length' })
+    expect(chatCutOffNotice(reply)).toBe(chatCutOffNotices.length)
+    expect(chatCutOffNotice({ ...reply, settings: { ...reply.settings!, parameters: { maxTokens: 512 } } })).toBe(chatCutOffNotices.lengthCap)
+    expect(chatCutOffNotice({ ...reply, cutOff: 'filtered' })).toBe(chatCutOffNotices.filtered)
+    // Sending 「继续」 carries the half answer along, so the model picks up where it stopped.
+    const next = planTurn(activeConversation(state), { prompt: '继续', requestId: 'request-2', assistantId: 'assistant-2', userMessageId: 'user-2' })
+    expect(next.messages.slice(-2)).toEqual([{ role: 'assistant', content: '写到一半' }, { role: 'user', content: '继续' }])
+
+    const finished = applyStreamEvent(saveConversation(createWorkspace('owner:7'), plan.conversation), { type: 'complete', requestId: 'request-1' })
+    const whole = activeConversation(finished).messages.at(-1)!
+    expect(whole).not.toHaveProperty('cutOff')
+    expect(chatCutOffNotice(whole)).toBeNull()
+  })
   it('keeps safe stream failure reasons distinct instead of labeling every disconnect as local network trouble', () => {
-    expect(chatErrorMessage(new Error("Error invoking remote method 'ai:image-generate': Error: 保存位置写不进去，这次没有扣费。请联系客服帮你处理。")))
-      .toBe('保存位置写不进去，这次没有扣费。请联系客服帮你处理。')
+    expect(chatErrorMessage(new Error("Error invoking remote method 'ai:image-generate': Error: 保存位置无法写入，本次未扣费。请联系客服协助处理。")))
+      .toBe('保存位置无法写入，本次未扣费。请联系客服协助处理。')
     expect(chatErrorMessage('连接 AI 服务超时，请检查网络后重试', 'connection-timeout')).toBe('AI 服务响应较慢，本次等待已超时，请重试')
     expect(chatErrorMessage('AI 服务连接提前关闭，请重试', 'stream-closed')).toBe('AI 服务提前结束了本次响应，请重试')
-    expect(chatErrorMessage('当前模型不可用', 'model-unavailable')).toBe('当前模型暂时用不了，请刷新模型后重新选择')
+    expect(chatErrorMessage('当前模型不可用', 'model-unavailable')).toBe('当前模型暂不可用，请刷新模型后重新选择')
     expect(chatErrorMessage('无法连接 AI 服务，请检查网络后重试', 'network-error')).toBe('无法连接 AI 服务，请检查网络后重试')
   })
   it('shows the low disk space stop before a paid image instead of asking for a retry that cannot work (D38)', () => {
@@ -263,45 +281,49 @@ describe('v2 chat request transitions', () => {
     expect(chatErrorMessage(new Error(mac))).toBe(mac)
   })
   it('shows an image refusal the main process already worded instead of asking for a retry', () => {
-    const blocked = '这次的描述或参考图没通过安全审核，没有生成图片。改一改描述或换一张图再试。'
+    const blocked = '本次描述或参考图未通过安全审核，未生成图片。请调整描述或更换图片后重试。'
     expect(chatErrorMessage(new Error(`Error invoking remote method 'ai:image-generate': Error: ${blocked}`))).toBe(blocked)
-    const tooLarge = '参考图太大了，服务端收不下。换一张小一点的图，或者压缩一下再试。'
+    const tooLarge = '参考图过大，服务端无法接收。请更换较小的图片或压缩后重试。'
     expect(chatErrorMessage(new Error(tooLarge))).toBe(tooLarge)
   })
   it('says a picture removed outside the app is gone instead of asking for a retry that cannot work (D37)', () => {
     const gone = missingAiAssetMessages.image
-    expect(gone).toBe('这张图已经不在电脑上了，可能被移走或删掉了。')
+    expect(gone).toBe('该图片已不在本机，可能已被移动或删除。')
     expect(chatErrorMessage(new Error(`Error invoking remote method 'chat:copy-asset': Error: ${gone}`))).toBe(gone)
     expect(chatErrorMessage(new Error(`Error invoking remote method 'chat:asset-menu': Error: ${gone}`))).toBe(gone)
     expect(chatAssetSaveErrorMessage(new Error(`Error invoking remote method 'chat:save-asset': Error: ${gone}`))).toBe(gone)
     // Anything else still reads as a save that can be tried again.
-    expect(chatAssetSaveErrorMessage(new Error("Error invoking remote method 'chat:save-asset': Error: 图片另存失败，请检查目标目录写入权限"))).toBe('图片没有保存成功，可以重试')
-    expect(chatAssetSaveErrorMessage(undefined)).toBe('图片没有保存成功，可以重试')
+    expect(chatAssetSaveErrorMessage(new Error("Error invoking remote method 'chat:save-asset': Error: 图片另存失败，请检查目标目录写入权限"))).toBe('图片保存失败，请重试')
+    expect(chatAssetSaveErrorMessage(undefined)).toBe('图片保存失败，请重试')
   })
   it('keeps the partial reply and shows the main-process cut-off note when a stream times out', () => {
     const plan = turn(); let state = saveConversation(createWorkspace('owner:7'), plan.conversation)
     state = applyStreamEvent(state, { type: 'reasoning', requestId: 'request-1', content: '先想一下' })
     state = applyStreamEvent(state, { type: 'content', requestId: 'request-1', content: '前半段' })
-    const note = '回复太久没有新内容，已经停下；上面是已经收到的部分，这部分可能已经计费'
+    const note = '回复长时间无新内容，已停止；上方为已收到的部分，该部分可能已计费'
     state = applyStreamEvent(state, { type: 'error', requestId: 'request-1', code: 'idle-timeout', message: note })
     expect(activeConversation(state).messages.at(-1)).toMatchObject({ content: '前半段', reasoning: '先想一下', status: 'error', error: note })
-    expect(chatErrorMessage('', 'idle-timeout')).toBe('AI 服务太久没有返回内容，已经停下，请重试')
-    expect(chatErrorMessage('', 'total-timeout')).toBe('本次对话超过最长处理时间，已经停下，请重试')
+    expect(chatErrorMessage('', 'idle-timeout')).toBe('AI 服务长时间未返回内容，已停止，请重试')
+    expect(chatErrorMessage('', 'total-timeout')).toBe('本次对话超过最长处理时间，已停止，请重试')
   })
   it('keeps the do-not-resubmit warning when a paid image request times out or cannot be saved', () => {
     const timeout = '生图请求超时；服务端可能仍在生成图片，请勿立即重复提交'
     expect(chatErrorMessage(new Error(`Error invoking remote method 'ai:image-generate': Error: ${timeout}`))).toBe(timeout)
-    const downloaded = '图片已生成但下载失败，这次可能已经扣费，请勿立即重复提交；先检查网络，稍后再重新生成'
+    const downloaded = '图片已生成但下载失败，本次可能已扣费，请勿立即重复提交；请先检查网络，稍后再重新生成'
     expect(chatErrorMessage(new Error(downloaded))).toBe(downloaded)
     const video = '视频任务已创建但本地恢复记录保存失败（任务 video_1），请勿重复提交'
     expect(chatErrorMessage(video)).toBe(video)
     expect(chatErrorMessage('生图请求超时')).toBe('请求未完成，请检查网络后重试')
   })
   it('keeps the do-not-regenerate sentence when a paid image was set aside instead of saved', () => {
-    const kept = '图片已经生成、也已经扣费了，但没能存进作品库，已经先替你收着。先别重新生成，清出一些空间后会自动存进作品库。'
+    const kept = '图片已生成并已扣费，但未能存入作品库，已为您临时保存。请勿重新生成，释放部分空间后将自动存入作品库。'
     expect(chatErrorMessage(new Error(`Error invoking remote method 'chat:generate-image': Error: ${kept}`))).toBe(kept)
     // Shown text goes through here again when the reply is marked failed.
     expect(chatErrorMessage(kept)).toBe(kept)
+    // Held only in memory: the do-not-quit half must reach the page too (A02).
+    const inMemory = '图片已生成并已扣费，但本机暂时无法保存，已临时保存在星芒中，退出后将丢失。请勿重新生成，也请暂勿退出星芒，释放部分空间后将自动存入作品库。'
+    expect(chatErrorMessage(new Error(`Error invoking remote method 'chat:generate-image': Error: ${inMemory}`))).toBe(inMemory)
+    expect(chatErrorMessage(inMemory)).toBe(inMemory)
   })
   it('shows the network reason the main process gave when an image request never left', () => {
     for (const reason of ['offline', 'dns', 'proxy', 'refused', 'intercepted'] as const) {
@@ -437,11 +459,11 @@ describe('v2 chat request transitions', () => {
   // 表单 F5：数字框的 min/max/step 只管上下箭头，手打的 1000、删空的宽度都能交出去，发之前按型号说清规矩。
   it('names the size rule of the model when a custom size breaks it, in the same words as the canvas', () => {
     const image = (model: string, size: string): Pick<ChatSettings, 'mode' | 'model' | 'size'> => ({ mode: 'image', model, size })
-    const gptRule = '这个型号的宽和高都要是 16 的倍数，并在 256 到 4096 之间'
+    const gptRule = '该型号的宽和高均须为 16 的倍数，且在 256 到 4096 之间'
     for (const size of ['1000x1000', 'x1024', '1024x', '240x1024', '4112x1024', '1e3x1024', '1024.5x1024', 'auto']) expect(customImageSizeRule(image('gpt-image-2', size))).toBe(gptRule)
     for (const size of ['1024x1024', '1008x1024', '256x4096']) expect(customImageSizeRule(image('gpt-image-2', size))).toBe('')
     // 即梦上限是 1024，句子一样、数字跟着型号表走。
-    expect(customImageSizeRule(image('jimeng_high_aes_general_v21_L', '2048x1024'))).toBe('这个型号的宽和高都要是 16 的倍数，并在 256 到 1024 之间')
+    expect(customImageSizeRule(image('jimeng_high_aes_general_v21_L', '2048x1024'))).toBe('该型号的宽和高均须为 16 的倍数，且在 256 到 1024 之间')
     // 只能从菜单里挑尺寸的型号、文字对话、还没选模型的，都不说。
     expect(customImageSizeRule(image('gemini-3.1-flash-image', '1000x1000'))).toBe('')
     expect(customImageSizeRule({ mode: 'text', model: 'gpt-image-2', size: '1000x1000' })).toBe('')
@@ -476,7 +498,7 @@ describe('v2 chat image in flight', () => {
 
 describe('v2 chat reply while offline', () => {
   it('says the network dropped only under a text reply that is still coming in (D43)', () => {
-    expect(offlineReplyNotice).toBe('网络断了，这条回复可能接不上，可以先停止。')
+    expect(offlineReplyNotice).toBe('网络已断开，本条回复可能无法继续，可先停止。')
     const pending = turn().conversation
     const reply = pending.messages.find((message) => message.role === 'assistant')!
     const question = pending.messages.find((message) => message.role === 'user')!
@@ -640,7 +662,7 @@ describe('v2 chat attached images', () => {
     const reply = (id: string): ChatMessage => ({ id, role: 'assistant', content: 'ok', reasoning: '', status: 'complete', createdAt: 1 })
     conversation.messages = [user('old', ['A', 'B']), reply('r1'), user('mid', ['C', 'D', 'E', 'F']), reply('r2')]
     const plan = planTurn(conversation, { prompt: 'new', images: ['G', 'H', 'I', 'J'].map(image), requestId: 'r', assistantId: 'a', userMessageId: 'u' })
-    expect(plan.messages[0]).toEqual({ role: 'user', content: 'old\n（这里附过 2 张图片，这次没有再发给 AI）' })
+    expect(plan.messages[0]).toEqual({ role: 'user', content: 'old\n（此处曾附带 2 张图片，本次未发送给 AI）' })
     expect(plan.messages[2]).toMatchObject({ images: ['C', 'D', 'E', 'F'].map((letter) => letter.repeat(43)) })
     expect(plan.messages[4]).toMatchObject({ images: ['G', 'H', 'I', 'J'].map((letter) => letter.repeat(43)) })
     expect(plan.messages.flatMap((message) => message.images ?? [])).toHaveLength(chatLimits.imagesPerRequest)
@@ -650,7 +672,7 @@ describe('v2 chat attached images', () => {
     const conversation = readyConversation()
     conversation.messages = [{ id: 'old', role: 'user', content: '', reasoning: '', status: 'complete', createdAt: 1, assets: [image('A')] }]
     const plan = planTurn(conversation, { prompt: 'follow up', requestId: 'r', assistantId: 'a', userMessageId: 'u' })
-    expect(plan.messages[0]).toEqual({ role: 'user', content: '（这里附过 1 张图片，这次没有再发给 AI）' })
+    expect(plan.messages[0]).toEqual({ role: 'user', content: '（此处曾附带 1 张图片，本次未发送给 AI）' })
   })
 
   it('retries and edits keep the images of the message they resend', () => {
@@ -688,13 +710,13 @@ describe('v2 chat attached images', () => {
 
   it('shows the main-process reason for a failed pick without the IPC prefix', () => {
     expect(attachmentErrorMessage(new Error("Error invoking remote method 'chat:pick-images': Error: 图片太大了，请截小一点再试"))).toBe('图片太大了，请截小一点再试')
-    expect(attachmentErrorMessage(new Error('boom'))).toBe('图片没有加上，请再试一次')
+    expect(attachmentErrorMessage(new Error('boom'))).toBe('图片添加失败，请重试')
   })
 
   // 已知21：英文的写入失败里汉字只出现在路径上（Windows 的中文用户名、Mac 上的中文文件夹），
   // 以前从第一个汉字截起，把半截路径端上了屏。
   it('falls back to the plain line when an English failure has Chinese only inside a path', () => {
-    const fallback = '图片没有加上，请再试一次'
+    const fallback = '图片添加失败，请重试'
     expect(attachmentErrorMessage(new Error("Error invoking remote method 'chat:pick-images': Error: EPERM: operation not permitted, open 'C:\\Users\\张三\\AppData\\Roaming\\xingmang-ai-manager\\ai-assets\\user-7\\.a.png.tmp'"))).toBe(fallback)
     expect(attachmentErrorMessage(new Error("Error invoking remote method 'chat:paste-image': Error: ENOSPC: no space left on device, write 'C:\\Users\\张 三\\AppData\\Roaming\\xingmang-ai-manager\\ai-assets\\a.png'"))).toBe(fallback)
     expect(attachmentErrorMessage(new Error("EACCES: permission denied, mkdir '/Users/张三/Pictures/星芒 AI 作品/user-7'"))).toBe(fallback)
@@ -765,7 +787,7 @@ describe('v2 chat attached text files', () => {
     expect(messageWithFiles('y'.repeat(room), files)).toHaveLength(chatLimits.messageLength)
     expect(draftLengthError('y'.repeat(room), files)).toBe('')
     expect(() => planTurn(readyConversation(), { prompt: 'y'.repeat(room), files, requestId: 'r', assistantId: 'a', userMessageId: 'u' })).not.toThrow()
-    expect(draftLengthError('y'.repeat(room + 1), files)).toBe('最多 40000 字，现在 40001 字，删掉一些再发。')
+    expect(draftLengthError('y'.repeat(room + 1), files)).toBe('最多 40000 字，当前 40001 字，请删减后发送。')
     expect(() => planTurn(readyConversation(), { prompt: 'y'.repeat(room + 1), files, requestId: 'r', assistantId: 'a', userMessageId: 'u' })).toThrow(`单条消息最多 ${chatLimits.messageLength} 个字符`)
     expect(draftLengthError('y'.repeat(room + 1))).toBe('')
     expect(draftLengthError('', files)).toBe('')
@@ -801,9 +823,9 @@ describe('v2 chat attached text files', () => {
   })
 
   it('shows the main process words for a failed pick and a fallback for English ones', () => {
-    expect(fileAttachmentErrorMessage(new Error("Error invoking remote method 'chat:pick-text-files': Error: 这个文件读不出来，可能正被别的软件占着，关掉它再试。"))).toBe('这个文件读不出来，可能正被别的软件占着，关掉它再试。')
-    expect(fileAttachmentErrorMessage(new Error('请先登录星芒账号'))).toBe('请先登录，再加文件')
-    expect(fileAttachmentErrorMessage(new Error('EPERM: operation not permitted'))).toBe('文件没有加上，请再试一次')
+    expect(fileAttachmentErrorMessage(new Error("Error invoking remote method 'chat:pick-text-files': Error: 该文件无法读取，可能已被其他软件打开，请关闭相关软件后重试。"))).toBe('该文件无法读取，可能已被其他软件打开，请关闭相关软件后重试。')
+    expect(fileAttachmentErrorMessage(new Error('请先登录星芒账号'))).toBe('请先登录后再添加文件')
+    expect(fileAttachmentErrorMessage(new Error('EPERM: operation not permitted'))).toBe('文件添加失败，请重试')
   })
 
   it('finds a conversation by the name of a file sent in it', () => {

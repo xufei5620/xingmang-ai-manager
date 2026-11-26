@@ -160,10 +160,12 @@ export interface MacosCodexAppInspectionOptions {
  * Opens an already verified bundle through LaunchServices, using the same
  * workspace deep link as the official `codex app` command. The caller must
  * obtain appPath from inspectMacosCodexApp before executing this plan.
+ * A null workspace (the remembered folder is gone) opens the app with no deep
+ * link, so Codex returns to its own last project, as the Windows launch does.
  */
 export function buildMacosCodexAppLaunchPlan(
   appPath: string,
-  workspace: string,
+  workspace: string | null,
   codexHome?: string,
   appArguments: readonly string[] = [],
 ): CommandSpec {
@@ -176,11 +178,10 @@ export function buildMacosCodexAppLaunchPlan(
     throw new Error('Codex 桌面端应用路径无效，请重新检测')
   }
   if (
-    !path.isAbsolute(workspace)
-    || workspace.includes('\0')
-    || workspace.length > 32_767
+    workspace !== null
+    && (!path.isAbsolute(workspace) || workspace.includes('\0') || workspace.length > 32_767)
   ) {
-    throw new Error('Codex Desktop 工作目录无效')
+    throw new Error('Codex 桌面端的项目文件夹无效')
   }
   if (
     codexHome !== undefined
@@ -188,13 +189,15 @@ export function buildMacosCodexAppLaunchPlan(
   ) {
     throw new Error('Codex 配置目录无效')
   }
-  const url = new URL('codex://threads/new')
-  url.searchParams.set('path', workspace)
   const argv = ['-a', appPath]
   // LaunchServices starts the application outside open's process tree. Pass
   // the selected config root explicitly rather than relying on inheritance.
   if (codexHome !== undefined) argv.push('--env', `CODEX_HOME=${codexHome}`)
-  argv.push(url.href)
+  if (workspace !== null) {
+    const url = new URL('codex://threads/new')
+    url.searchParams.set('path', workspace)
+    argv.push(url.href)
+  }
   // open 把 --args 之后的原样交给新拉起的 Codex（codex-desktop-startup-route.ts 拼的启动参数）；Codex
   // 已经开着时 LaunchServices 只把链接交过去，参数丢掉，和 Windows 一样。
   if (appArguments.some((argument) => !argument.startsWith('--') || argument.includes('\0') || argument.length > 2_048)) {

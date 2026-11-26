@@ -22,6 +22,7 @@ import {
   type ResolvedManagedCliGroup,
 } from './managed-cli-groups'
 import type { ManagedCliGroupCheck, ManagedSkillKeys, StoredManagedCliKey } from './managed-cli-key-store'
+import { networkFailureMessages } from './network-failure'
 import { NewApiNetworkError } from './new-api-client'
 import { RealmAccountError } from './realm-account'
 import type { RelayBackendClient } from './relay-backend'
@@ -114,12 +115,37 @@ type ManagedKeyAccountService = Pick<RelayBackendClient,
 
 class AccountSessionChangedError extends Error {
   constructor() {
-    super('星芒账号已切换，已停止本次 API Key 初始化')
+    super('星芒账号已切换，已停止本次密钥初始化')
     this.name = 'AccountSessionChangedError'
   }
 }
 
 const inFlightResolutions = new WeakMap<object, Map<string, Promise<ResolvedManagedCliKeys>>>()
+
+// 本机密钥缓存的版本号是整份文件一个（managed-cli-key-store.ts 的 revision）：登录那一轮从读缓存到存回去要联网签好几把，
+// 这中间别处存过一次，它带着旧版本号存就被拒，签好的密钥没存下，首页还冒一句「本地密钥缓存已被其他操作更新」。换账号时
+// Antigravity 在后台取密钥正好跟它同时（复查 A 第 2 轮第 1 条）。所以同一个账号「读缓存、签、存回去」这一整段按缓存排队，
+// 一次只走一段；同一段的重复调用照旧由 inFlightResolutions 合并。只按账号排：换走了的那个账号还没跑完的那段不挡新账号
+// （它下一次核账号就停下，不会存）。前面没人时当场开始，不多等一拍。
+const keyCacheTurns = new WeakMap<object, Map<number, Promise<void>>>()
+
+function withKeyCacheTurn<T>(keyStore: ManagedCliKeyStoreLike | undefined, userId: number, work: () => Promise<T>): Promise<T> {
+  if (!keyStore) return work()
+  let turns = keyCacheTurns.get(keyStore)
+  if (!turns) {
+    turns = new Map()
+    keyCacheTurns.set(keyStore, turns)
+  }
+  const accountTurns = turns
+  const previous = accountTurns.get(userId)
+  const turn = previous ? previous.then(work) : work()
+  const settled = turn.then(() => undefined, () => undefined)
+  accountTurns.set(userId, settled)
+  void settled.then(() => {
+    if (accountTurns.get(userId) === settled) accountTurns.delete(userId)
+  })
+  return turn
+}
 
 interface AccountSessionCapture {
   readonly userId: number
@@ -369,6 +395,24 @@ function regroupedKeyInput(limits: InheritedKeySettings | null): Partial<Inherit
   return limits ? { ...limits, fresh: true } : {}
 }
 
+/**
+ * The cached keys this account may use without going online. A cache bound
+ * to another site proves nothing here. Old/unscoped stores only prove their
+ * shipped names. The realm-bound encrypted store may also prove a renamed
+ * group without going online.
+ */
+function usableCachedKeys(
+  cached: readonly StoredManagedCliKey[],
+  profiles: Record<ProviderId, { group: string }>,
+  activeSiteId: string | undefined,
+  cacheSiteId: string | undefined,
+): StoredManagedCliKey[] {
+  const foreignCache = cacheSiteId !== undefined && activeSiteId !== undefined && cacheSiteId !== activeSiteId
+  if (foreignCache) return []
+  const scopedCache = activeSiteId !== undefined && cacheSiteId === activeSiteId
+  return scopedCache ? [...cached] : cached.filter((entry) => entry.group === profiles[entry.provider].group)
+}
+
 async function resolveManagedCliKeys(
   accountService: ManagedKeyAccountService,
   capture: AccountSessionCapture,
@@ -385,7 +429,7 @@ async function resolveManagedCliKeys(
     inFlightResolutions.set(serviceKey, serviceResolutions)
   }
 
-  const operation = (async (): Promise<ResolvedManagedCliKeys> => {
+  const operation = withKeyCacheTurn(keyStore, userId, async (): Promise<ResolvedManagedCliKeys> => {
     assertSameAuthenticatedUser(accountService, capture)
     let cached: StoredManagedCliKey[] = []
     if (keyStore) {
@@ -406,14 +450,7 @@ async function resolveManagedCliKeys(
     assertSameAuthenticatedUser(accountService, capture)
     const profiles = resolveManagedCliKeyProfiles(accountService.getActiveSiteId?.())
     const activeSiteId = accountService.getActiveSiteId?.()
-    const cacheSiteId = keyStore?.getSiteId?.()
-    const foreignCache = cacheSiteId !== undefined && activeSiteId !== undefined && cacheSiteId !== activeSiteId
-    const scopedCache = activeSiteId !== undefined && cacheSiteId === activeSiteId
-    // Old/unscoped stores only prove their shipped names. The realm-bound
-    // encrypted store may also prove a renamed group without going online.
-    const usableCache = foreignCache ? [] : scopedCache ? cached : cached.filter((entry) => (
-      entry.group === profiles[entry.provider].group
-    ))
+    const usableCache = usableCachedKeys(cached, profiles, activeSiteId, keyStore?.getSiteId?.())
     // 历史账号例外：订阅是在服务端买、在服务端到期的，本机缓存看不出来，
     // 每次都得问一次，否则买了订阅工具也还在扣余额。
     const everyKeyCached = !subscriptionsBindKeyGroups(accountService) && activeProviderIds.every((provider) => (
@@ -544,10 +581,10 @@ async function resolveManagedCliKeys(
           ? await keyStore.save(userId, cachedKeys)
           : await keyStore.save(userId, cachedKeys, cacheRevision)
         assertSameAuthenticatedUser(accountService, capture)
-        if (saved === false) storageWarning = '本地 API Key 缓存已被其他操作更新，本次保留新缓存'
+        if (saved === false) storageWarning = '本地密钥缓存已被其他操作更新，本次保留新缓存'
       } catch (error) {
         rethrowAccountSessionChange(error)
-        storageWarning = error instanceof Error ? error.message : '本地 API Key 保存失败'
+        storageWarning = error instanceof Error ? error.message : '本地密钥保存失败'
       }
     }
 
@@ -561,7 +598,7 @@ async function resolveManagedCliKeys(
       regrouped,
       ...(storageWarning ? { storageWarning } : {}),
     }
-  })()
+  })
   const trackedOperation = operation.finally(() => {
     const current = inFlightResolutions.get(serviceKey)
     if (current?.get(resolutionKey) !== trackedOperation) return
@@ -606,16 +643,22 @@ async function cacheReplacementKey(
   assertSession: () => void,
 ): Promise<void> {
   try {
-    const stored = await keyStore.read(userId)
-    const revision = keyStore.captureRevision?.()
-    assertSession()
-    const cachedKeys = providerIds.flatMap((provider) => {
-      if (provider === replacement.provider) return [replacement]
-      const entry = stored.find((item) => item.provider === provider)
-      return entry ? [entry] : []
-    })
-    if (revision === undefined) await keyStore.save(userId, cachedKeys)
-    else await keyStore.save(userId, cachedKeys, revision)
+    // 只换自己这一格、别的格照读到的留，所以被拒（别处刚存过）时按最新那份再来一次是安全的；再被拒就算了，
+    // 下次用到时重签一把，不为缓存卡住客户。
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const stored = await keyStore.read(userId)
+      const revision = keyStore.captureRevision?.()
+      assertSession()
+      const cachedKeys = providerIds.flatMap((provider) => {
+        if (provider === replacement.provider) return [replacement]
+        const entry = stored.find((item) => item.provider === provider)
+        return entry ? [entry] : []
+      })
+      const saved = revision === undefined
+        ? await keyStore.save(userId, cachedKeys)
+        : await keyStore.save(userId, cachedKeys, revision)
+      if (saved !== false) return
+    }
   } catch (error) {
     rethrowAccountSessionChange(error)
   }
@@ -759,4 +802,116 @@ function failedConfiguration(provider: ProviderId, error: unknown): ManagedCliCo
     message: error instanceof Error ? error.message : 'CLI 配置失败',
     ...(isServiceUnavailableError(error) ? { serviceUnavailable: true } : {}),
   })
+}
+
+/** Antigravity 拿到的那把密钥和它此刻能用的型号。key 是明文，只在主进程里交给写设置那一步，不过 IPC（I3）。 */
+export interface AntigravityManagedKey {
+  key: string
+  group: string
+  models: string[]
+}
+
+/**
+ * 账号里认不出 Gemini 分组、分组被拒又没有别的可换、分组列不出型号时给客户的那句。yoyo 11-23 定：历史账号
+ * 也照同一套做，不可用就说服务暂时不可用（历史账号的 Gemini 分组上游 11-19 起基本不可用）。
+ */
+export class AntigravityServiceUnavailableError extends Error {
+  constructor() {
+    super(networkFailureMessages.serviceUnavailable)
+    this.name = 'AntigravityServiceUnavailableError'
+  }
+}
+
+// 列不出型号就没有菜单可写，换成那句；列得出来就整份交出去，菜单怎么排、怎么收窄归 antigravity-gateway.ts。
+function antigravityKey(entry: StoredManagedCliKey, models: readonly string[]): AntigravityManagedKey {
+  if (models.length === 0) throw new AntigravityServiceUnavailableError()
+  return { key: entry.key, group: entry.group, models: [...models] }
+}
+
+/**
+ * Antigravity 用的密钥：Gemini 分组那一把，和下线的 Gemini CLI 是同一把（同名、同组、缓存里同一格），老客户
+ * 以前签过的直接接着用。只在客户点 Antigravity 的安装、保存、打开时才签：登录时的那一轮只签 activeProviderIds，
+ * 不为一个客户可能不用的工具每次登录多签一把。
+ *
+ * 缓存里那把先拿去问一次型号，凭据失效、分组被拒才重签，规矩和 configureManagedClis 失效重签那段一致：额度上限
+ * 用完的不重签（重签只会换来一把不限额的），换分组照抄旧那把的限制，先问服务端分组再签。不删旧那把：那是给
+ * 换组签 Key 用的（retireReplacedKey），这里宁可在账号里多留一把。
+ */
+export async function resolveAntigravityManagedKey(
+  accountService: ManagedKeyAccountService,
+  modelService: Pick<SystemService, 'fetchAvailableModels'>,
+  keyStore?: ManagedCliKeyStoreLike,
+): Promise<AntigravityManagedKey> {
+  const capture = authenticatedSession(accountService)
+  // 跟登录那一轮、另一次取 Antigravity 密钥排同一队（withKeyCacheTurn）：换账号时后台跟的那一步和登录那一轮同时开始，
+  // 排在后面的读到的是前面存好的缓存，不会两边都签、互相把对方签好的冲掉；跟的那一步和客户点「打开」撞上也只签一把。
+  return withKeyCacheTurn(keyStore, capture.userId, () => resolveAntigravityManagedKeyInTurn(accountService, modelService, capture, keyStore))
+}
+
+async function resolveAntigravityManagedKeyInTurn(
+  accountService: ManagedKeyAccountService,
+  modelService: Pick<SystemService, 'fetchAvailableModels'>,
+  capture: AccountSessionCapture,
+  keyStore: ManagedCliKeyStoreLike | undefined,
+): Promise<AntigravityManagedKey> {
+  const userId = capture.userId
+  const assertSession = () => assertSameAuthenticatedUser(accountService, capture)
+  // 排队时可能换了账号：轮到这里先核一次，不替上一个账号读缓存、签密钥。
+  assertSession()
+  const siteId = accountService.getActiveSiteId?.()
+  const profiles = resolveManagedCliKeyProfiles(siteId)
+  const profile = profiles.gemini
+  // 缓存读不出来跟 resolveManagedCliKeys 一样当作没有，照常去签；签好以后的那次保存会把坏掉的那份换掉。
+  const cached = keyStore ? await keyStore.read(userId).catch((): StoredManagedCliKey[] => []) : []
+  assertSession()
+  const previous = usableCachedKeys(cached, profiles, siteId, keyStore?.getSiteId?.())
+    .find((entry) => entry.provider === 'gemini')
+
+  let rejection: { error: unknown; groupRejected: boolean } | null = null
+  if (previous) {
+    let models: string[] | null = null
+    try {
+      models = await modelService.fetchAvailableModels(previous.key, { bypassCache: true })
+    } catch (error) {
+      if (isKeyQuotaExhaustedMessage(error instanceof Error ? error.message : String(error))) {
+        throw new Error(managedKeyQuotaExhaustedMessage)
+      }
+      const groupRejected = isGroupRejection(error)
+      if (!groupRejected && !isCredentialFailure(error)) throw error
+      rejection = { error, groupRejected }
+    }
+    assertSession()
+    if (models) return antigravityKey(previous, models)
+  }
+
+  // 失效也可能是分组改名，签之前先问服务端。组列表暂不可用时沿用旧那把已确认过的组名，再没有才用出厂名。
+  const listing = await loadManagedCliGroupListing(accountService)
+  assertSession()
+  const resolved = listing?.resolved.gemini
+  const identified = resolved?.source !== 'fallback' ? resolved?.group : undefined
+  const group = identified ?? previous?.group ?? profile.group
+  // 服务端列了分组、却认不出哪个是 Gemini 的，出厂名也不在里面：签只会换来一句「分组不存在」。
+  if (!previous && listing && identified === undefined && !listing.names.includes(group)) {
+    throw new AntigravityServiceUnavailableError()
+  }
+  // 分组被拒、又认不出别的分组可换：同一个分组里重签只会拿回同一把。
+  if (previous && rejection?.groupRejected && group === previous.group) throw new AntigravityServiceUnavailableError()
+
+  let limits: InheritedKeySettings | null = null
+  if (previous && group !== previous.group) {
+    limits = await regroupedKeyLimits(accountService, previous, siteId)
+    assertSession()
+  }
+  // 失效的那把先从缓存里拿掉，下面重签没成也不会下次再拿它去试。照抄了限制的不拿：下一次还要靠它认出这是换组。
+  if (previous && keyStore && !limits) {
+    await keyStore.remove(userId, previous.id).catch(() => undefined)
+    assertSession()
+  }
+  const result = await accountService.provisionCliKey({ name: profile.keyName, group, ...regroupedKeyInput(limits) })
+  assertSession()
+  const entry: StoredManagedCliKey = { id: result.id, provider: 'gemini', group, name: result.name, key: result.key }
+  if (keyStore) await cacheReplacementKey(keyStore, userId, entry, assertSession)
+  const models = await modelService.fetchAvailableModels(entry.key, { bypassCache: true })
+  assertSession()
+  return antigravityKey(entry, models)
 }

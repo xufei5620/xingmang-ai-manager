@@ -50,4 +50,32 @@ describe('parseProviderSessionListQuery', () => {
     expect(() => parseProviderSessionListQuery({ search: 's'.repeat(257) })).toThrow('会话搜索内容过长')
     expect(() => parseProviderSessionListQuery({ page: 0 })).toThrow('页码格式错误')
   })
+
+  it('passes the recent-scan reuse request through only when it is literally true (R-3)', () => {
+    expect(parseProviderSessionListQuery({ search: '登录', reuseRecentScan: true })).toEqual({
+      provider: undefined,
+      search: '登录',
+      page: undefined,
+      pageSize: undefined,
+      reuseRecentScan: true,
+    })
+    expect(parseProviderSessionListQuery({ reuseRecentScan: false })).not.toHaveProperty('reuseRecentScan')
+    expect(parseProviderSessionListQuery({ page: 2 })).not.toHaveProperty('reuseRecentScan')
+    for (const bad of ['true', 1, null, {}]) {
+      expect(() => parseProviderSessionListQuery({ reuseRecentScan: bad })).toThrow('会话查询格式错误')
+    }
+  })
+})
+
+describe('parseProviderSessionListQuery searchContent', () => {
+  it('passes the content search switch through only when it is exactly true', () => {
+    expect(parseProviderSessionListQuery({ search: '发票', searchContent: true })).toMatchObject({ search: '发票', searchContent: true })
+    expect(parseProviderSessionListQuery({ search: '发票', searchContent: false })).not.toHaveProperty('searchContent')
+    expect(parseProviderSessionListQuery({ search: '发票' })).not.toHaveProperty('searchContent')
+  })
+
+  it('rejects a content search switch that is not a boolean', () => {
+    expect(() => parseProviderSessionListQuery({ searchContent: 'yes' })).toThrow('会话搜索方式格式错误')
+    expect(() => parseProviderSessionListQuery({ searchContent: 1 })).toThrow('会话搜索方式格式错误')
+  })
 })

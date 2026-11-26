@@ -6,27 +6,27 @@ import type { WeixinLoginPhase, WeixinLoginSnapshot } from '../../../../../elect
 import type { RemoteChannelSectionProps } from './channel-sections'
 
 // 「设置 › 手机遥控 Codex」里微信那一块：只管扫码登录。开关、配对码、绑定的人、退出登录是卡片
-// 公共部分（CodexRemoteCard.tsx）。二维码图由主进程画好给过来，这里不碰登录链接，也拿不到令牌。
+// 公共部分（CodexRemotePage.tsx）。二维码图由主进程画好给过来，这里不碰登录链接，也拿不到令牌。
 
 export const weixinRemoteText = {
-  warningTitle: '实验功能，随时可能断',
-  warningBody: '这条通道是腾讯给 OpenClaw 开的，星芒借来用。腾讯随时可能限流或关掉它，断了我们也修不了。长期用建议选飞书。',
+  warningTitle: '实验功能，可能随时中断',
+  warningBody: '此通道由腾讯为 OpenClaw 提供，星芒借用该通道。腾讯可能随时限流或关闭，届时我们无法修复。长期使用建议选择飞书。',
   rowTitle: '微信扫码登录',
-  description: '在手机微信的 ClawBot 对话里遥控这台电脑上的 Codex。',
+  description: '在手机微信的 ClawBot 对话中遥控本机的 Codex。',
   loggedIn: (label: string) => `已登录：${label}`,
   login: '扫码登录',
   relogin: '重新扫码',
-  dialogTitle: '用手机微信扫码',
+  dialogTitle: '使用手机微信扫码',
   qrAlt: '微信登录二维码',
-  scanHint: '打开手机微信「扫一扫」，扫完在手机上点确认。二维码 5 分钟内有效。',
-  scanned: '已扫码，请在手机上点确认',
-  needCode: '手机微信上显示了一串数字，请输在下面',
+  scanHint: '请使用手机微信「扫一扫」扫码，并在手机上确认。二维码 5 分钟内有效。',
+  scanned: '已扫码，请在手机上确认',
+  needCode: '手机微信上显示了一组数字，请在下方输入',
   codePlaceholder: '手机上的数字',
   confirmCode: '确认',
-  wrongCode: '数字不对，请对照手机上的数字重新输入',
-  confirmed: '微信登录好了。下一步打开下面的「打开遥控」，再点「开始配对」，在微信的 ClawBot 对话里发配对码。',
-  confirmedStillBound: '微信登录好了，绑定的人没变，不用重新配对。',
-  confirmedBound: '微信登录好了，已经绑定你这个微信。下一步打开下面的「打开遥控」。',
+  wrongCode: '数字不正确，请对照手机上显示的数字重新输入',
+  confirmed: '微信已登录。请开启下方「打开遥控」，再点击「开始配对」，在微信 ClawBot 对话中发送配对码。',
+  confirmedStillBound: '微信已登录，绑定用户未变更，无需重新配对。',
+  confirmedBound: '微信已登录并已绑定当前微信。请开启下方「打开遥控」。',
   cancel: '取消',
   retry: '重新扫码',
   close: '关闭',
@@ -45,6 +45,19 @@ export function weixinLoginKeepsPolling(phase: WeixinLoginPhase): boolean {
 
 export function weixinLoginFinished(phase: WeixinLoginPhase): boolean {
   return phase === 'confirmed' || phase === 'failed' || phase === 'cancelled'
+}
+
+/**
+ * 主进程这一轮没连上微信、叫界面过一会儿再问（带 retryAfterMs）。输完数字、交上去那一下断网时阶段还是「要输数字」，
+ * 原来只看阶段就停了，「连不上微信，正在重试」那句挂着却再也不问（M11）。主进程留着交上去的数字，再问一次就接着验。
+ */
+export function weixinLoginRetrying(view: WeixinLoginSnapshot): boolean {
+  return !weixinLoginFinished(view.phase) && view.retryAfterMs > 0
+}
+
+/** 这一轮问完要不要接着问：等手机那边的两种状态，或者主进程说过一会儿再问。 */
+export function weixinLoginPollsAgain(view: WeixinLoginSnapshot): boolean {
+  return weixinLoginKeepsPolling(view.phase) || weixinLoginRetrying(view)
 }
 
 /**
@@ -137,7 +150,7 @@ export function WeixinRemoteSection({ snapshot, api, disabled, busy, run }: Remo
       pendingCode = undefined
       if (!current()) return
       setView((previous) => mergeWeixinLoginView(previous, next))
-      if (!weixinLoginKeepsPolling(next.phase)) return
+      if (!weixinLoginPollsAgain(next)) return
       if (next.retryAfterMs > 0) await wait(next.retryAfterMs)
     }
   }
@@ -199,7 +212,7 @@ export function WeixinRemoteSection({ snapshot, api, disabled, busy, run }: Remo
       testId="settings-remote-weixin-login-row"
     />
     <Dialog open={view !== null} title={weixinRemoteText.dialogTitle} onClose={close} footer={footer} testId="settings-remote-weixin-dialog">
-      {view ? <WeixinLoginDialogBody view={view} hasBoundPeer={snapshot.boundPeer !== null} code={code} onCodeChange={setCode} onSubmitCode={submitCode} busy={false} /> : null}
+      {view ? <WeixinLoginDialogBody view={view} hasBoundPeer={snapshot.boundPeer !== null} code={code} onCodeChange={setCode} onSubmitCode={submitCode} busy={weixinLoginRetrying(view)} /> : null}
     </Dialog>
   </>
 }

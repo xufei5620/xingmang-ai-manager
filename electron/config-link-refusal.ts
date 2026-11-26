@@ -9,7 +9,7 @@
  * 这里只管说法（#1100 第2条）。以前客户看到的是「必须是单链接普通文件」「包含符号链接」，或者被认成
  * 「文件夹被搬到了别的位置」，都不知道该做什么。渲染层认这一段配「配置文件是个链接」，两边用这一个常量。
  */
-export const configLinkRefusalMarker = '为了安全，星芒不往链接里写'
+export const configLinkRefusalMarker = '为保障安全，星芒不会写入链接'
 
 /**
  * location 是给客户看的位置：用户文件夹里的写「用户文件夹里的 .claude/settings.json」（Windows 用反斜杠），
@@ -17,18 +17,18 @@ export const configLinkRefusalMarker = '为了安全，星芒不往链接里写'
  */
 export function configLinkRefusalMessage(location: string, kind: 'file' | 'folder'): string {
   return kind === 'folder'
-    ? `${location} 这个文件夹是个链接。${configLinkRefusalMarker}，原来的设置没有动。把它换成普通文件夹后再试。`
-    : `${location} 是个链接。${configLinkRefusalMarker}，原来的设置没有动。把它换成普通文件后再试。`
+    ? `${location} 是一个链接文件夹。${configLinkRefusalMarker}，原有设置未改动。请将其替换为普通文件夹后重试。`
+    : `${location} 是一个链接。${configLinkRefusalMarker}，原有设置未改动。请将其替换为普通文件后重试。`
 }
 
 /**
- * 从包了几层的报错里（「改用当前账号没有完成：……已恢复到切换前的配置。」）取回上面那一整句；没有就是 null。
+ * 从包了几层的报错里（「改用当前账号未完成：……已恢复到切换前的配置。」）取回上面那一整句；没有就是 null。
  * 位置里不会有全角冒号，所以从标志前最近的一个「：」后面算起。
  */
 export function configLinkRefusalIn(message: string): string | null {
   const at = message.indexOf(configLinkRefusalMarker)
   if (at < 0) return null
   const start = message.lastIndexOf('：', at) + 1
-  const end = message.indexOf('后再试。', at)
-  return end < 0 ? message.slice(start) : message.slice(start, end + '后再试。'.length)
+  const end = message.indexOf('后重试。', at)
+  return end < 0 ? message.slice(start) : message.slice(start, end + '后重试。'.length)
 }

@@ -6,7 +6,7 @@ import { isRecord } from '../../input-guards'
 import { pastedApiKeyFormatMessage } from '../../pasted-api-key'
 import type { ChooseWorkspaceOptions } from '../../ipc-contract'
 import type { CliLaunchMode, CliUninstallOptions, CodexDesktopLaunchMode, ConfigSavePayload } from '../../system-service'
-import { isCodexSessionUuid } from '../../tool-installation'
+import { isCliSessionUuid } from '../../tool-installation'
 import { isExactCliVersion } from '../../versions'
 import { requiredWorkspacePath } from './common'
 
@@ -47,11 +47,11 @@ export function parseConfigSavePayload(payload: unknown): ConfigSavePayload {
 
 export function parseChooseWorkspaceOptions(value: unknown): ChooseWorkspaceOptions {
   if (value === undefined) return {}
-  if (!isRecord(value)) throw new Error('选择工作目录的参数无效')
+  if (!isRecord(value)) throw new Error('选择项目文件夹的参数无效')
   const keys = Object.keys(value)
-  if (keys.some((key) => key !== 'createStarter' && key !== 'firstOpen')) throw new Error('选择工作目录的参数无效')
-  if (value.createStarter !== undefined && typeof value.createStarter !== 'boolean') throw new Error('选择工作目录的参数无效')
-  if (value.firstOpen !== undefined && typeof value.firstOpen !== 'boolean') throw new Error('选择工作目录的参数无效')
+  if (keys.some((key) => key !== 'createStarter' && key !== 'firstOpen')) throw new Error('选择项目文件夹的参数无效')
+  if (value.createStarter !== undefined && typeof value.createStarter !== 'boolean') throw new Error('选择项目文件夹的参数无效')
+  if (value.firstOpen !== undefined && typeof value.firstOpen !== 'boolean') throw new Error('选择项目文件夹的参数无效')
   return {
     ...(value.createStarter === undefined ? {} : { createStarter: value.createStarter }),
     ...(value.firstOpen === undefined ? {} : { firstOpen: value.firstOpen }),
@@ -62,7 +62,7 @@ export function parseChooseWorkspaceOptions(value: unknown): ChooseWorkspaceOpti
 // 存进去一个相对路径，同样会让「这个文件夹不建议打开」那一问认不出来。带了但不是字符串的直接报错，
 // 不悄悄换成记住的目录——那只会是界面出了 bug 或被人动过。
 export function parseWorkspace(workspace: unknown, fallback: string, platform: NodeJS.Platform): string {
-  if (workspace !== undefined && typeof workspace !== 'string') throw new Error('工作目录格式错误')
+  if (workspace !== undefined && typeof workspace !== 'string') throw new Error('项目文件夹路径格式错误')
   return requiredWorkspacePath(workspace?.trim() ? workspace : fallback, platform)
 }
 
@@ -79,16 +79,32 @@ export function parseCliLaunchMode(mode: unknown): CliLaunchMode {
   return mode
 }
 
-// 第四个参数只收 Codex 记录页 / 首页那条记录自己的 id(`codex:<UUID>`),别的工具、
-// 别的启动方式带了它都算错。id 只拿来在主进程自己读出的 Codex 记录里查找,查到后
-// 交给 argv 的也是重新校验过形状的 UUID,渲染层的字符串不会原样进命令行(I5)。
-export function parseCodexResumeRecordId(provider: ProviderId, mode: CliLaunchMode, recordId: unknown): string | null {
+// 第四个参数只收记录页 / 首页那条记录自己的 id:Codex 是 `codex:<UUID>`,Claude Code、
+// Grok CLI 是 `claude:` / `grok:` 加 64 位十六进制(记录文件位置的哈希,见 provider-sessions.ts
+// 的 stableSessionId)。别的启动方式带了它、或者带的是另一家的记录都算错。id 只拿来在主进程
+// 自己读出的记录里查找,查到后交给 argv 的是从记录里取出、再校验过形状的 UUID,渲染层的
+// 字符串不会原样进命令行(I5)。
+export function parseResumeRecordId(provider: ProviderId, mode: CliLaunchMode, recordId: unknown): string | null {
   if (recordId === undefined || recordId === null) return null
-  if (provider !== 'codex' || mode !== 'resumeLast') throw new Error('CLI 启动方式错误')
-  if (typeof recordId !== 'string' || !recordId.startsWith('codex:') || !isCodexSessionUuid(recordId.slice('codex:'.length))) {
-    throw new Error('会话 ID 格式错误')
-  }
+  if (mode !== 'resumeLast') throw new Error('CLI 启动方式错误')
+  if (typeof recordId !== 'string') throw new Error('会话 ID 格式错误')
+  const owner = resumeRecordOwner(recordId)
+  if (owner === null) throw new Error('会话 ID 格式错误')
+  if (owner !== provider) throw new Error('CLI 启动方式错误')
   return recordId
+}
+
+const externalRecordHashPattern = /^[0-9a-f]{64}$/
+
+// 形状对得上哪一家的记录 id 就是哪一家的;哪家都不像给 null。
+function resumeRecordOwner(recordId: string): ProviderId | null {
+  const separator = recordId.indexOf(':')
+  if (separator < 0) return null
+  const prefix = recordId.slice(0, separator)
+  const rest = recordId.slice(separator + 1)
+  if (prefix === 'codex') return isCliSessionUuid(rest) ? 'codex' : null
+  if (prefix === 'claude' || prefix === 'grok') return externalRecordHashPattern.test(rest) ? prefix : null
+  return null
 }
 
 export function parseCodexDesktopLocale(locale: unknown): CodexDesktopLocale {

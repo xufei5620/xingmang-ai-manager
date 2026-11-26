@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { pageRegistry, retiredPageAlias, settingsPageAlias } from '../../registry/pages'
+import { createPageAlias, extensionPageAlias, pageRegistry, retiredPageAlias, settingsPageAlias } from '../../registry/pages'
 import { tutorialTopics, tutorialTopicsFor } from '../../registry/tutorials'
-import { chatParametersSection, maximumTutorialResults, searchCommands } from './command-search'
+import { chatParametersSection, createLibrarySection, maximumTutorialResults, searchCommands } from './command-search'
 
-// 游戏加速、备份、更新并进了设置（v4 批09），「安装卸载」拆掉了（批10）：它们还在页面表里（老入口靠它换到
-// 新去处），但不再单独出页面结果。
-const searchablePages = pageRegistry.filter((page) => settingsPageAlias(page.id) === null && retiredPageAlias(page.id) === null)
+// 游戏加速、备份、更新并进了设置（v4 批09），「安装卸载」拆掉了（批10），画布、视频剪辑并进了「创作」（融合第 1 步）：
+// 它们还在页面表里（老入口靠它换到新去处），但不再单独出页面结果。精选、外接工具、插件 0.2.25 合进「插件」页，同理；
+// 「技能」照旧单独一条，落到「插件」页的技能那一栏。
+const searchablePages = pageRegistry.filter((page) => settingsPageAlias(page.id) === null && retiredPageAlias(page.id) === null && createPageAlias(page.id) === null
+  && (extensionPageAlias(page.id) === null || page.id === 'skills'))
 
 describe('searchCommands', () => {
   it('lists the everyday actions, then every page, when nothing is typed', () => {
@@ -13,7 +15,7 @@ describe('searchCommands', () => {
     expect(empty.filter((item) => item.group === 'page').map((item) => item.page)).toEqual(searchablePages.map((page) => page.id))
     expect(empty.map((item) => item.group)).toEqual([...empty.filter((item) => item.group === 'action').map(() => 'action'), ...searchablePages.map(() => 'page')])
     expect(searchCommands('').filter((item) => item.group === 'page').every((item) => item.section === undefined)).toBe(true)
-    expect(searchCommands('').filter((item) => item.group === 'action').map((item) => item.label)).toEqual(['充值', '查看用量账单', '开始检查', '帮助与客服', '运行日志', '聊天参数设置'])
+    expect(searchCommands('').filter((item) => item.group === 'action').map((item) => item.label)).toEqual(['充值', '查看用量账单', '开始检查', '帮助与客服', '运行日志', '打开画布窗口', '作品库', '聊天参数设置'])
   })
 
   it('offers switching to the other theme only, and sign-out only while signed in', () => {
@@ -50,7 +52,7 @@ describe('searchCommands', () => {
 
   it('leaves out the top-up and usage actions when the account cannot open those tabs', () => {
     const labels = searchCommands('', { accountTabVisible: (tab) => tab !== 'recharge' && tab !== 'usage' }).filter((item) => item.group === 'action').map((item) => item.label)
-    expect(labels).toEqual(['开始检查', '帮助与客服', '运行日志', '聊天参数设置'])
+    expect(labels).toEqual(['开始检查', '帮助与客服', '运行日志', '打开画布窗口', '作品库', '聊天参数设置'])
   })
 
   it('opens the chat parameters dialog from the action group, and leaves it out when chat is not on this computer', () => {
@@ -64,11 +66,54 @@ describe('searchCommands', () => {
     for (const page of searchablePages) expect(searchCommands(page.label)[0]).toMatchObject({ group: 'page', page: page.id })
   })
 
+  // 融合第 1 步（yoyo 回「融合改」）：侧栏的「聊天」「画布」「视频剪辑」并成「创作」，搜老名字和老说法都到「创作」。
+  it('finds the create page by the old names of chat, canvas and the video studio', () => {
+    for (const word of ['创作', '聊天', '画布', '视频剪辑', '生图', '剪辑', '分镜', '对话', '工作流']) {
+      expect(searchCommands(word).find((item) => item.group === 'page'), word).toEqual({ key: 'page:chat', group: 'page', label: '创作', page: 'chat' })
+    }
+    // 两个老页面不再单独出结果。
+    for (const word of ['画布', '视频剪辑', '']) expect(searchCommands(word).some((item) => item.group === 'page' && (item.page === 'canvas' || item.page === 'video')), word).toBe(false)
+  })
+
+  // 融合第 3 步：聊天顶上的「看做过的图」挪成了「创作」左下角的「作品库」，搜它、搜老说法都落在那里。
+  it('finds the library on the create page by its name and by what the old button was called', () => {
+    for (const word of ['作品库', '作品', '素材库', '做过的图', '成片']) {
+      expect(searchCommands(word).find((item) => item.key === 'action:create-library'), word).toEqual({ key: 'action:create-library', group: 'action', label: '作品库', page: 'chat', section: createLibrarySection })
+    }
+    expect(searchCommands('作品库', { pageVisible: (page) => page !== 'chat' }).some((item) => item.key === 'action:create-library')).toBe(false)
+  })
+
+  // 侧栏原来点一下就开画布窗口；并进「创作」以后，搜「画布」多一条「打开画布窗口」，选它还是一步。
+  it('offers opening the canvas window straight from a search for the canvas', () => {
+    const hits = searchCommands('画布')
+    expect(hits.filter((item) => item.group === 'page' || item.group === 'action')).toEqual([
+      { key: 'page:chat', group: 'page', label: '创作', page: 'chat' },
+      { key: 'action:open-canvas', group: 'action', label: '打开画布窗口', page: 'canvas' },
+    ])
+    expect(searchCommands('工作流').some((item) => item.key === 'action:open-canvas')).toBe(true)
+    expect(searchCommands('画布', { pageVisible: (page) => page !== 'canvas' }).some((item) => item.key === 'action:open-canvas')).toBe(false)
+  })
+
+  // 扩展合并方案第二版：老页面名和它们的说法都落到「插件」这一页，「技能」单独一条。
+  it('finds the plugins page by the names of the four pages merged into it', () => {
+    for (const word of ['精选', '外接工具', 'MCP', '插件', '插件市场', '自定义连接']) expect(searchCommands(word).find((item) => item.group === 'page'), word).toMatchObject({ page: 'extensions' })
+    expect(searchCommands('技能').find((item) => item.group === 'page')).toMatchObject({ page: 'skills', label: '技能' })
+    for (const page of ['featured', 'mcp', 'plugins']) expect(searchCommands('').some((item) => item.group === 'page' && item.page === page), page).toBe(false)
+  })
+
   it('finds the cards that moved into settings by their old page names', () => {
     expect(searchCommands('备份').find((item) => item.group === 'settings')).toMatchObject({ page: 'settings' })
     expect(searchCommands('备份').some((item) => item.section === 'backups')).toBe(true)
     expect(searchCommands('更新').some((item) => item.section === 'version')).toBe(true)
     for (const word of ['网络加速', '备份', '更新']) expect(searchCommands(word).some((item) => item.group === 'page' && settingsPageAlias(item.page) !== null), word).toBe(false)
+  })
+
+  // 手机遥控 0.2.25 从设置 › 工具管理挪到左侧栏单独一页：老说法搜到的是这一页，设置里不再有那一行。
+  it('finds the phone remote page by the words the old settings card answered to', () => {
+    for (const word of ['飞书', '微信', '遥控', '手机遥控', '手机遥控 Codex', 'ClawBot', '配对']) {
+      expect(searchCommands(word)[0], word).toMatchObject({ group: 'page', page: 'remote', label: '遥控' })
+      expect(searchCommands(word).some((item) => item.section === 'codex-remote'), word).toBe(false)
+    }
   })
 
   // 网络加速 2026-10-30 下线（yoyo 回「下线改」）：那一组改叫「网络连接」，加速卡和「加速提醒」不在任何电脑上，
@@ -179,7 +224,7 @@ describe('searchCommands', () => {
 
   it('finds the addresses for other apps by the words those apps use', () => {
     const landing = (query: string) => searchCommands(query).find((item) => item.group === 'account')
-    expect(landing('接口地址')).toEqual({ key: 'account:other-apps', group: 'account', label: '用在别的软件里', page: 'account', section: 'other-apps' })
+    expect(landing('接口地址')).toEqual({ key: 'account:other-apps', group: 'account', label: '在其他软件中使用', page: 'account', section: 'other-apps' })
     expect(landing('Cherry Studio')).toMatchObject({ section: 'other-apps' })
     expect(landing('沉浸式翻译')).toMatchObject({ section: 'other-apps' })
     expect(landing('base url')).toMatchObject({ section: 'other-apps' })

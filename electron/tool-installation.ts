@@ -90,12 +90,12 @@ export interface ResolveCliCommandOptions {
 /**
  * Mac 上命令行里找到的 Codex / Grok 不是 npm 装的，又核不出是官方安装器那一份：目录对不上、签名不是
  * OpenAI / xAI 的、或者报的版本和目录写的对不上（Mac 验收 R1：测试机上是第三方打的 Codex 包）。
- * 星芒不跑来路不明的程序，打开时说这一句；首页同一个判断给「用星芒装一份」（ToolStatus.unrecognizedInstall）。
+ * 星芒不跑来路不明的程序，打开时说这一句；首页同一个判断给「使用星芒安装」（ToolStatus.unrecognizedInstall）。
  * 抄盘、起进程这类说明不了来路的失败不算这一种，照旧按原样报。
  */
 export class UnrecognizedDarwinCliError extends Error {
   constructor(cause: unknown) {
-    super('这一份不是星芒装的，星芒核对不了它是不是官方原版，为了安全没有打开。到首页点「用星芒装一份」，装好就能打开。', { cause })
+    super('该工具并非由星芒安装，星芒无法核对其是否为官方原版，为安全起见未打开。请在首页点击「使用星芒安装」，安装完成后即可打开。', { cause })
   }
 }
 
@@ -796,32 +796,50 @@ export interface CliLaunchArgvOptions {
   /** 已装版本(npm 包版本或 --version 的整行输出);读不出来传 null。 */
   installedVersion?: string | null
   /**
-   * 只对 Codex 的 resumeLast 生效:主进程已经在 Codex 的记录里核对过、就在这个
-   * 文件夹里的那条会话的 id(裸 UUID,不带 `codex:` 前缀)。缺省 = 按目录找最近一条。
+   * 只对 Codex、Claude Code、Grok CLI 的 resumeLast 生效:主进程已经在这家的记录里
+   * 核对过、就在这个文件夹里的那条会话的编号(裸 UUID,不带 `codex:` 这类前缀)。
+   * 缺省 = 按目录找最近一条。
    */
   resumeSessionId?: string | null
 }
 
-const codexSessionUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const cliSessionUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-export function isCodexSessionUuid(value: unknown): value is string {
-  return typeof value === 'string' && codexSessionUuidPattern.test(value)
+/** 三家命令行的对话编号都是标准 UUID;别的样子一律不进 argv(I5)。 */
+export function isCliSessionUuid(value: unknown): value is string {
+  return typeof value === 'string' && cliSessionUuidPattern.test(value)
 }
 
 /**
- * Codex 的 `resume --last` 在上游是按「工作目录 + 当前连接名(model_provider)」
- * 一起过滤的,一条都没有就不声不响开新对话;`resume <UUID>` 走 thread/read,
- * 不看连接名(codex-rs/tui/src/lib.rs 的 latest_session_lookup_params 与
+ * 记录页上点哪条接哪条(0.2.25 S1),三家都有按编号接的参数(2026-11-25 在沙箱里
+ * 按推荐版用 --help 核过):
+ *   codex resume <UUID>       Codex 0.171.0
+ *   claude --resume <UUID>    Claude Code 2.1.330 "Resume a conversation by session ID"
+ *   grok --resume <UUID>      Grok CLI 1.0.92 "Resume a session by ID or title"
+ * 编号必须是 UUID:claude 和 grok 的 --resume 收到别的字会当成搜索词或标题去找。
+ * Codex 另有一层理由:它的 `resume --last` 在上游按「工作目录 + 当前连接名
+ * (model_provider)」一起过滤,一条都没有就不声不响开新对话;`resume <UUID>` 走
+ * thread/read,不看连接名(codex-rs/tui/src/lib.rs 的 latest_session_lookup_params 与
  * lookup_session_target_with_app_server,rust-v0.156.1 与 main 一致)。我们切
- * 官方 ⇄ 当前账号、重置、搬老配置都会换连接名,所以记录里有 id 时一律按 id 接。
- * 其余三家按目录找最近一条不看账号,仍用 cliResumeLastArgv。
+ * 官方 ⇄ 当前账号、重置、搬老配置都会换连接名,所以记录里有编号时一律按编号接。
+ * 没有编号(首页按文件夹接、记录里认不出编号)时仍用 cliResumeLastArgv。
  */
 function cliResumeArgv(provider: ProviderId, resumeSessionId: string | null | undefined): string[] {
-  if (provider === 'codex' && resumeSessionId !== undefined && resumeSessionId !== null) {
-    if (!isCodexSessionUuid(resumeSessionId)) throw new Error('会话 ID 格式错误')
-    return ['resume', resumeSessionId]
+  if (resumeSessionId === undefined || resumeSessionId === null) return cliResumeLastArgv(provider)
+  switch (provider) {
+    case 'codex':
+      return ['resume', checkedCliSessionId(resumeSessionId)]
+    case 'claude':
+    case 'grok':
+      return ['--resume', checkedCliSessionId(resumeSessionId)]
+    case 'gemini':
+      return cliResumeLastArgv(provider)
   }
-  return cliResumeLastArgv(provider)
+}
+
+function checkedCliSessionId(value: string): string {
+  if (!isCliSessionUuid(value)) throw new Error('会话 ID 格式错误')
+  return value
 }
 
 // Codex 0.156.0 起有 --no-daemon;0.157.0 把「自动起后台服务」转成默认开。

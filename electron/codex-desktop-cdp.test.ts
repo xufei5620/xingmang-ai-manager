@@ -8,6 +8,9 @@ import {
   codexDesktopCdpPortOwnerArguments,
   filterCodexDesktopCdpTargets,
   injectCodexDesktopChineseLocale,
+  isCodexDesktopActivationNetworkFailure,
+  isCodexDesktopActivationTimeout,
+  isCodexDesktopActivationNotRegistered,
   parseCodexDesktopCdpPortOwners,
   parseCodexDesktopActivationProcessId,
   resolveCodexDesktopCdpPortOwners,
@@ -267,6 +270,50 @@ describe('Codex Desktop CDP activation failures', () => {
 
     await expect(inject(9222, { expectedProcessId: 18420 })).resolves.toEqual({ injectedTargets: 1, attempts: 1 })
     expect(calls).toEqual([[9222, 18420]])
+  })
+})
+
+describe('Codex Desktop activation refused as not installed', () => {
+  // The shapes activateCodexDesktop produces: the execFile error carries the
+  // full stderr, the wrapper keeps only its first 500 characters.
+  function activationFailure(stderr: string): Error {
+    const execError = Object.assign(new Error(`Command failed: powershell.exe -EncodedCommand …\n${stderr}`), { code: 1, stderr })
+    return new Error(`Codex Desktop AppX 激活失败：${stderr.trim().slice(0, 500)}`, { cause: execError })
+  }
+  const english = 'Exception calling "Activate" with "2" argument(s): "This app does not support the contract specified or is not installed. (Exception from HRESULT: 0x80270254)"'
+  const chinese = '使用“2”个参数调用“Activate”时发生异常:“此应用不支持所指定的协定或未安装。 (异常来自 HRESULT:0x80270254)”'
+
+  it('recognises the code in English and Chinese Windows wording', () => {
+    expect(isCodexDesktopActivationNotRegistered(activationFailure(english))).toBe(true)
+    expect(isCodexDesktopActivationNotRegistered(activationFailure(chinese))).toBe(true)
+  })
+
+  it('finds the code on stderr when a CLIXML preamble pushed it out of the shortened message', () => {
+    const preamble = '#< CLIXML\r\n<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">' + '<Obj S="progress" RefId="0"><TN RefId="0"><T>System.Management.Automation.PSCustomObject</T></TN></Obj>'.repeat(6)
+    const failure = activationFailure(`${preamble}<S S="Error">${english}_x000D__x000A_</S></Objs>`)
+    expect(failure.message).not.toContain('0x80270254')
+    expect(isCodexDesktopActivationNotRegistered(failure)).toBe(true)
+  })
+
+  it('looks through the Chinese-launch wrapper as well', () => {
+    const inner = activationFailure(english)
+    const outer = new Error(`Codex Desktop 中文增强启动失败：${inner.message.slice(0, 500)}`, { cause: inner })
+    expect(isCodexDesktopActivationNotRegistered(outer)).toBe(true)
+  })
+
+  it('leaves other activation failures alone', () => {
+    // 0x8027025A is the start-up timeout the known-broken 26.924 build produced; a restart does not fix that.
+    expect(isCodexDesktopActivationNotRegistered(activationFailure('Exception calling "Activate": "This operation returned because the timeout period expired. (Exception from HRESULT: 0x8027025A)"'))).toBe(false)
+    expect(isCodexDesktopActivationNotRegistered(activationFailure('HRESULT: 0x802702541'))).toBe(false)
+    expect(isCodexDesktopActivationNotRegistered(new Error('Codex Desktop AppX 激活仅支持 Windows'))).toBe(false)
+    expect(isCodexDesktopActivationNotRegistered('0x80270254')).toBe(false)
+    expect(isCodexDesktopActivationNotRegistered(null)).toBe(false)
+  })
+
+  it('stops walking a cause chain that loops', () => {
+    const looped = new Error('first') as Error & { cause?: unknown }
+    looped.cause = looped
+    expect(isCodexDesktopActivationNotRegistered(looped)).toBe(false)
   })
 })
 
@@ -1010,7 +1057,7 @@ describe('Codex Desktop CDP debugging port ownership', () => {
       },
       fetch: async () => { discoveries += 1; return new Response(JSON.stringify([target()])) },
       delay: async () => undefined,
-    })).rejects.toThrow(/^这次没能确认 Codex 已经准备好$/)
+    })).rejects.toThrow(/^本次未能确认 Codex 已就绪$/)
     expect(lookups).toBe(3)
     expect(discoveries).toBe(0)
   })
@@ -1082,7 +1129,7 @@ describe('Codex Desktop CDP debugging port ownership', () => {
       }),
       fetch: async () => { discoveries += 1; return new Response(JSON.stringify([target()])) },
       delay: async () => undefined,
-    })).rejects.toThrow(/^这次没能确认 Codex 已经准备好$/)
+    })).rejects.toThrow(/^本次未能确认 Codex 已就绪$/)
     expect(lookups).toBe(3)
     expect(discoveries).toBe(0)
   })
@@ -1096,5 +1143,74 @@ describe('Codex Desktop CDP debugging port ownership', () => {
       delay: async () => undefined,
     })).rejects.toThrow('未找到可注入的页面')
     expect(lookups).toBe(1)
+  })
+})
+
+describe('Codex Desktop activation refused because Windows could not verify it online', () => {
+  function activationFailure(stderr: string): Error {
+    const execError = Object.assign(new Error(`Command failed: powershell.exe -EncodedCommand …\n${stderr}`), { code: 1, stderr })
+    return new Error(`Codex Desktop AppX 激活失败：${stderr.trim().slice(0, 500)}`, { cause: execError })
+  }
+  // WinINet codes have no text in the system message table, so .NET leaves only the code.
+  const english = 'Exception calling "Activate" with "2" argument(s): "Exception from HRESULT: 0x80072EE2"'
+  const chinese = '使用“2”个参数调用“Activate”时发生异常:“异常来自 HRESULT:0x80072EE2”'
+
+  it('recognises the timeout seen on the Win11 Home machine in English and Chinese Windows wording', () => {
+    expect(isCodexDesktopActivationNetworkFailure(activationFailure(english))).toBe(true)
+    expect(isCodexDesktopActivationNetworkFailure(activationFailure(chinese))).toBe(true)
+    // The same failure is not the "not registered" one that needs a restart.
+    expect(isCodexDesktopActivationNotRegistered(activationFailure(english))).toBe(false)
+  })
+
+  it('recognises the other WinINet codes the Store install path treats as unreachable', () => {
+    for (const code of ['0x80072EE7', '0x80072efd', '0x80072EFE', '0x80072EFF']) {
+      expect(isCodexDesktopActivationNetworkFailure(activationFailure(`Exception from HRESULT: ${code}`))).toBe(true)
+    }
+  })
+
+  it('finds the code on stderr and through the Chinese-launch wrapper', () => {
+    const preamble = '#< CLIXML\r\n<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">' + '<Obj S="progress" RefId="0"><TN RefId="0"><T>System.Management.Automation.PSCustomObject</T></TN></Obj>'.repeat(6)
+    const failure = activationFailure(`${preamble}<S S="Error">${english}_x000D__x000A_</S></Objs>`)
+    expect(failure.message).not.toContain('0x80072EE2')
+    expect(isCodexDesktopActivationNetworkFailure(failure)).toBe(true)
+    const outer = new Error(`Codex Desktop 中文增强启动失败：${failure.message.slice(0, 500)}`, { cause: failure })
+    expect(isCodexDesktopActivationNetworkFailure(outer)).toBe(true)
+  })
+
+  it('leaves other activation failures alone', () => {
+    expect(isCodexDesktopActivationNetworkFailure(activationFailure('Exception from HRESULT: 0x80270254'))).toBe(false)
+    expect(isCodexDesktopActivationNetworkFailure(activationFailure('Exception from HRESULT: 0x8027025A'))).toBe(false)
+    // 0x80072EE4 (internal error) and a longer number that merely starts with the code are not network failures.
+    expect(isCodexDesktopActivationNetworkFailure(activationFailure('Exception from HRESULT: 0x80072EE4'))).toBe(false)
+    expect(isCodexDesktopActivationNetworkFailure(activationFailure('HRESULT: 0x80072EE21'))).toBe(false)
+    expect(isCodexDesktopActivationNetworkFailure('0x80072EE2')).toBe(false)
+    expect(isCodexDesktopActivationNetworkFailure(null)).toBe(false)
+  })
+})
+
+describe('Codex Desktop activation that timed out before Windows created the process', () => {
+  function activationFailure(stderr: string): Error {
+    const execError = Object.assign(new Error(`Command failed: powershell.exe -EncodedCommand …\n${stderr}`), { code: 1, stderr })
+    return new Error(`Codex Desktop AppX 激活失败：${stderr.trim().slice(0, 500)}`, { cause: execError })
+  }
+
+  it('recognises ERROR_TIMEOUT in English and Chinese Windows wording, on stderr and through the Chinese-launch wrapper', () => {
+    const english = 'Exception calling "Activate" with "2" argument(s): "This operation returned because the timeout period expired. (Exception from HRESULT: 0x800705B4)"'
+    const chinese = '使用“2”个参数调用“Activate”时发生异常:“由于超时时间已过，该操作返回。 (异常来自 HRESULT:0x800705B4)”'
+    expect(isCodexDesktopActivationTimeout(activationFailure(english))).toBe(true)
+    expect(isCodexDesktopActivationTimeout(activationFailure(chinese))).toBe(true)
+    const outer = new Error('Codex Desktop 中文增强启动失败：…', { cause: activationFailure(chinese.toLowerCase()) })
+    expect(isCodexDesktopActivationTimeout(outer)).toBe(true)
+    // A timeout is neither of the two codes that already have their own card.
+    expect(isCodexDesktopActivationNetworkFailure(activationFailure(english))).toBe(false)
+    expect(isCodexDesktopActivationNotRegistered(activationFailure(english))).toBe(false)
+  })
+
+  it('leaves other activation failures alone', () => {
+    expect(isCodexDesktopActivationTimeout(activationFailure('Exception from HRESULT: 0x80072EE2'))).toBe(false)
+    expect(isCodexDesktopActivationTimeout(activationFailure('Exception from HRESULT: 0x80270254'))).toBe(false)
+    expect(isCodexDesktopActivationTimeout(activationFailure('HRESULT: 0x800705B41'))).toBe(false)
+    expect(isCodexDesktopActivationTimeout('0x800705B4')).toBe(false)
+    expect(isCodexDesktopActivationTimeout(null)).toBe(false)
   })
 })

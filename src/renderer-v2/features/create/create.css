@@ -1,0 +1,79 @@
+/* 「创作」页（融合第 1 步）：起始页上「从这里开始」的卡，和右边换上去的那一块（一条视频的工作台、一个画布项目的卡）。
+   左边那一列和对话那一半的样式在 features/chat/chat.css。颜色全用令牌，深浅两套自己跟着换。 */
+.create-start { display: grid; gap: calc(10px - var(--chat-start-squeeze, 0px) / 50); }
+/* 升级上来的客户头一次进来，起始页最上面多一条「已合并至此页」的提示，几张卡又被挤到输入框后面（820 高时露不全，
+   740、680 挡掉一截）。有这条提示时按 900 起算收紧，上限同 chat.css 里那条；光收留白还差几十像素，提示本身的上下留白
+   和标志也跟着收。卡里的留白和图标在下面 .create-card 里随同一个量收，没有提示时窗口矮也一样受益。
+   上下的留白和几段之间的间距比没有提示时收得更狠：680 高时只剩十几像素的余量，提示那句话、卡上那段说明换个字体多折
+   一行（约 19 像素）就又挡住了（CI 的 Chromium 上就是这样），所以至少留出两行的量。 */
+.chat-messages:has(> .xm-notice + .chat-empty[data-start='true']) { --chat-start-squeeze: clamp(0px, calc(900px - 100vh), 200px); padding-block: calc(24px - var(--chat-start-squeeze) / 10); gap: calc(22px - var(--chat-start-squeeze) / 12); }
+.chat-messages:has(> .xm-notice + .chat-empty[data-start='true']) > .chat-empty { padding-bottom: calc(4px - var(--chat-start-squeeze) / 50); gap: calc(10px - var(--chat-start-squeeze) / 30); }
+.chat-messages:has(> .xm-notice + .chat-empty[data-start='true']) > .chat-empty h2 { margin-top: calc(4px - var(--chat-start-squeeze) / 50); }
+.chat-messages:has(> .xm-notice + .chat-empty[data-start='true']) > .create-start { gap: calc(10px - var(--chat-start-squeeze) / 40); }
+.chat-messages:has(> .xm-notice + .chat-empty[data-start='true']) > .chat-empty .xm-logo { height: calc(44px - var(--chat-start-squeeze) / 8); }
+.chat-messages:has(> .xm-notice + .chat-empty[data-start='true']) > .xm-notice { padding-block: calc(14px - var(--chat-start-squeeze) / 20) calc(12px - var(--chat-start-squeeze) / 20); }
+.create-start-label { color: var(--text-3); font-size: 12px; text-align: center; }
+.create-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+/* 历史账号做不了视频，只剩「在画布中分步创作」一张：拉满整行像一条横幅，跟三张并排时一张一样宽、放在中间。 */
+.create-cards:has(> .create-card:only-child) { grid-template-columns: minmax(200px, calc((100% - 20px) / 3)); justify-content: center; }
+.create-card { display: grid; align-content: start; gap: calc(6px - var(--chat-start-squeeze, 0px) / 100); min-width: 0; padding: calc(14px - var(--chat-start-squeeze, 0px) / 25); border: 0; border-radius: 12px; corner-shape: squircle; background: var(--panel-solid); box-shadow: inset 0 0 0 1px var(--line); color: var(--text); font: inherit; text-align: left; cursor: pointer; transition: background var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard); }
+.create-card:hover { background: var(--panel-hover); box-shadow: inset 0 0 0 1px var(--soft-line); }
+.create-card-icon { display: grid; place-items: center; width: calc(32px - var(--chat-start-squeeze, 0px) / 16); height: calc(32px - var(--chat-start-squeeze, 0px) / 16); margin-bottom: calc(2px - var(--chat-start-squeeze, 0px) / 100); border-radius: 9px; corner-shape: squircle; background: var(--soft); box-shadow: inset 0 0 0 1px var(--soft-line); color: var(--gold); }
+.create-card > strong { font-size: 13.5px; font-weight: 600; }
+.create-card > span:not(.create-card-icon) { color: var(--text-2); font-size: 12px; line-height: 1.6; }
+.create-card > small { display: inline-flex; align-items: center; gap: 3px; color: var(--text-3); font-size: 11px; }
+
+/* 视频工作台：还是「想法」「分镜」「合成视频」三张卡，在右边这一栏里自己滚。 */
+.create-studio { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 24px 24px; scrollbar-width: thin; }
+.create-studio > .v2-page { max-width: 1000px; margin: 0 auto; }
+
+/* 画布项目：一张说明卡。 */
+.create-canvas { flex: 1; min-height: 0; overflow-y: auto; display: grid; align-content: start; gap: 16px; padding: 28px max(28px, calc((100% - 720px) / 2)); scrollbar-width: thin; }
+.create-canvas-card { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 20px; align-items: center; padding: 20px; border-radius: 14px; corner-shape: squircle; background: var(--panel-solid); box-shadow: inset 0 0 0 1px var(--line); }
+.create-canvas-icon { position: relative; display: grid; place-items: center; width: 72px; height: 72px; overflow: hidden; border-radius: 16px; corner-shape: squircle; background: var(--soft); box-shadow: inset 0 0 0 1px var(--soft-line); color: var(--accent); }
+/* 有封面（融合第 5 步）：换成封面的缩略图，大一号。 */
+.create-canvas-icon[data-cover='true'] { width: 96px; height: 96px; background: var(--panel-hover); box-shadow: inset 0 0 0 1px var(--line); }
+.create-canvas-icon > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.create-canvas-copy { display: grid; gap: 6px; min-width: 0; }
+.create-canvas-copy > strong { overflow: hidden; font-size: 17px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.create-canvas-copy > span { color: var(--text-2); font-size: 13px; }
+.create-canvas-copy > small { color: var(--text-3); font-size: 12px; line-height: 1.6; }
+.create-canvas-actions { display: flex; gap: 8px; margin: 8px 0 4px; }
+.create-quiet { margin: 0; color: var(--text-3); font-size: 12px; line-height: 1.6; }
+/* 这个项目里做出来的：小标题一行，下面的格子跟作品库用同一套。 */
+.create-canvas-works { display: grid; align-content: start; gap: 12px; }
+.create-canvas-works > header { display: flex; align-items: baseline; gap: 8px; }
+.create-canvas-works > header > strong { font-size: 13.5px; font-weight: 600; }
+.create-canvas-works > header > span { color: var(--text-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.create-canvas-works .create-library-empty { padding: 24px 16px; }
+
+/* 作品库（融合第 3 步）：筛选和搜索一排，下面一格一格的缩略图，自己滚。 */
+.create-library { flex: 1; min-height: 0; overflow-y: auto; display: grid; align-content: start; gap: 14px; padding: 16px 24px 24px; scrollbar-width: thin; }
+.create-library-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; }
+.create-library-tools .xm-search { flex: 1; min-width: 180px; max-width: 280px; margin-left: auto; }
+.create-library-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 14px 12px; }
+.create-library-tile { display: grid; gap: 6px; min-width: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.create-library-thumb { position: relative; display: grid; place-items: center; aspect-ratio: 1; overflow: hidden; border-radius: 10px; corner-shape: squircle; background: var(--panel-hover); box-shadow: inset 0 0 0 1px var(--line); color: var(--text-3); transition: box-shadow var(--duration-fast) var(--ease-standard); }
+.create-library-thumb > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.create-library-thumb > b { position: absolute; left: 6px; bottom: 6px; display: inline-flex; align-items: center; gap: 3px; padding: 2px 6px; border-radius: 6px; background: rgb(0 0 0 / .62); color: #fff; font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.create-library-thumb > i { position: absolute; top: 6px; right: 6px; display: grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--text); color: var(--bg); font-size: 11px; font-style: normal; font-weight: 600; }
+.create-library-tile:hover .create-library-thumb, .create-library-tile:focus-visible .create-library-thumb { box-shadow: inset 0 0 0 1px var(--soft-line), 0 0 0 2px var(--soft); }
+.create-library-tile:focus-visible { outline: none; }
+.create-library-tile[aria-pressed='true'] .create-library-thumb { box-shadow: 0 0 0 2px var(--gold); }
+.create-library-tile > small { overflow: hidden; color: var(--text-3); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.create-library-more { display: flex; justify-content: center; }
+.create-library-empty { display: grid; justify-items: center; gap: 10px; padding: 48px 16px; color: var(--text-3); font-size: 13px; text-align: center; }
+.create-library-empty > p { margin: 0; }
+/* 点开一件：大图或能直接放的视频。 */
+/* 大图和视频最高多少：窗口矮的时候要让出弹窗的顶边（--dialog-top，弹窗自己定的）和标题、出处、按钮那几行（合起来约 240），
+   不然这一块被弹窗压矮，画面上下被裁掉，视频的进度条就看不到了。估得不够时这一块不压矮（flex: none），弹窗里自己滚。 */
+.create-library-media { --create-library-media-max: min(56vh, 480px, max(120px, calc(100vh - var(--dialog-top, 110px) - 240px))); display: grid; place-items: center; flex: none; min-height: 160px; border-radius: 10px; background: var(--panel-hover); overflow: hidden; }
+.create-library-media > img, .create-library-media > video { display: block; max-width: 100%; max-height: var(--create-library-media-max); }
+/* 视频的大小按它自己的宽高比定（LibraryDetail 写的 --create-library-player-ratio，没写时 16:9），不跟着缩略图走：
+   只限最宽最高时，按播放之前它照缩略图的大小排，画面只有一小块。 */
+.create-library-media > video { width: min(100%, calc(var(--create-library-media-max) * var(--create-library-player-ratio, 16 / 9))); aspect-ratio: var(--create-library-player-ratio, 16 / 9); }
+.create-library-media > p { margin: 0; padding: 24px; color: var(--text-3); font-size: 13px; text-align: center; }
+.create-library-origin { display: flex; margin-top: 10px; }
+/* 选择框里的那一份：框自己滚。 */
+.create-library-picker { display: grid; align-content: start; gap: 14px; min-height: 240px; }
+.create-library-picker .create-library-grid { grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); }

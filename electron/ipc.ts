@@ -32,6 +32,8 @@ import type { AiChatService } from './ai-chat-service'
 import type { AiImageService } from './ai-image-service'
 import type { AiAudioAssetStore } from './ai-audio-asset-store'
 import type { AiVideoAssetStore } from './ai-video-asset-store'
+import type { AiMediaAssetService, AiMediaLibraryPage } from './ai-media-asset-service'
+import type { CanvasAccountLibraryQuery } from './canvas-project-asset-manager'
 import type { AiVideoService } from './ai-video-service'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type {
@@ -41,6 +43,7 @@ import type {
   WindowCapabilities,
   AppUninstallRequest,
   AppUninstallResult,
+  CanvasProjectListEntry,
 } from './ipc-contract'
 import { ipcChannelPolicies, type IpcInvokeChannel } from './ipc-channel-policy'
 import type { DiagnosticsReport, DiagnosticsRunOptions } from './diagnostics'
@@ -55,6 +58,7 @@ import type { InvoicePortalWindowController } from './invoice-portal-window'
 import type { PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import type { AiChatHistoryStore } from './ai-chat-history-store'
+import type { VideoStudioProjectStore } from './video-studio-project-store'
 import type { ChatHistoryFlush } from './chat-history-flush'
 import type { ChatAttachmentService } from './ai-chat-attachments'
 import type { ChatTextFileService } from './ai-chat-text-files'
@@ -71,6 +75,7 @@ import { createIpcHandlerContext, type TrustedIpcHandler } from './ipc/handlers/
 import { registerSystemHandlers } from './ipc/handlers/system'
 import { registerConfigHandlers } from './ipc/handlers/config'
 import { registerExternalClientHandlers } from './ipc/handlers/external-clients'
+import { registerAntigravityHandlers } from './ipc/handlers/antigravity'
 import { registerLaunchHandlers } from './ipc/handlers/launch'
 import { registerToolHandlers } from './ipc/handlers/tools'
 import { registerWindowHandlers } from './ipc/handlers/window'
@@ -88,12 +93,27 @@ import { registerAccountBillingHandlers } from './ipc/handlers/account-billing'
 import { registerAccountUsageHandlers } from './ipc/handlers/account-usage'
 import { registerAccountKeyHandlers } from './ipc/handlers/account-keys'
 import { registerAiChatHandlers } from './ipc/handlers/ai-chat'
+import { registerAiLibraryHandlers } from './ipc/handlers/ai-library'
 import { registerAiVideoHandlers } from './ipc/handlers/ai-video'
 import { registerDataTransferHandlers } from './ipc/handlers/data-transfer'
+import type { AccountWorksTransfer } from './data-transfer-works'
+import type { CanvasProjectImageIntake } from './canvas-project-image-intake'
 import { registerCodexRemoteHandlers } from './ipc/handlers/codex-remote'
 import { registerCodexRemoteWeixinHandlers } from './ipc/handlers/codex-remote-weixin'
 
 export type AppWindowMode = 'onboarding' | 'dashboard'
+
+/**
+ * 当前账号的作品按编号在哪一处（融合第 5 步）：AI 作品文件夹，或者某个画布项目自己的文件夹。主窗口只拿它来列、来读，
+ * 实现是 canvas-project-asset-manager.ts 的 listLibrary / holderOf。
+ */
+export interface AccountAssetLookup {
+  listLibrary(userId: number, query: CanvasAccountLibraryQuery): Promise<AiMediaLibraryPage>
+  holderOf(userId: number, kind: 'image' | 'video', assetId: string): Promise<{
+    images: Pick<AiAssetStore, 'copy' | 'saveAs' | 'contextMenu'>
+    videos: Pick<AiVideoAssetStore, 'readOwned' | 'resolveOwnedFilePath' | 'saveAs'>
+  }>
+}
 
 export interface IpcRegistrationOptions {
   realmAccounts?: import('./realm-account-service').RealmAccountService
@@ -103,7 +123,7 @@ export interface IpcRegistrationOptions {
   // 解析各 CLI 配置目录用的根路径（Codex 认 CODEX_HOME）。省略 = 按当前进程
   // 环境推一份，和 system-service 默认拿到的那份一致（旧行为）。
   providerRoots?: ProviderConfigRoots
-  // Windows 上「新建一个项目文件夹」优先建在它下面（starter-workspace.ts，被云盘同步时退到
+  // Windows 上「新建项目文件夹」优先建在它下面（starter-workspace.ts，被云盘同步时退到
   // 主目录；macOS 一律建在主目录）；
   // main.ts 传系统「文档」目录（app.getPath('documents')）。省略 = 主目录下的 Documents。
   documentsDirectory?: () => string
@@ -116,16 +136,16 @@ export interface IpcRegistrationOptions {
   // 当前账号的 AI 作品实际存在哪（「文档」不让写时是主目录下的 XingmangAI）；检查页
   // 「打开文件夹」用。main.ts 传启动时定下的位置；省略 = 这颗按钮打不开 AI 作品那一个。
   aiOutputDirectory?: () => string
-  // 「搬到新电脑」和「导出这段对话」的保存框默认落在「下载」（D16）；main.ts 传 app.getPath('downloads')。
+  // 「迁移到新电脑」和「导出这段对话」的保存框默认落在「下载」（D16）；main.ts 传 app.getPath('downloads')。
   // 省略 = 主目录下的 Downloads。
   downloadsDirectory?: () => string
-  // 「搬到新电脑」带上的「匿名使用统计」（X-3）：这台电脑上存着的样子，没碰过 = 开；系统界面设置读不出来
+  // 「迁移到新电脑」带上的「匿名使用统计」（X-3）：这台电脑上存着的样子，没碰过 = 开；系统界面设置读不出来
   // 给 null。省略 = 导出不带、导入不碰这一项（测试与旧调用方）。
   readAnonymousUsagePreference?: () => boolean | null
   sessionsService: CodexSessionsService
   providerSessionsService: ProviderSessionsService
   backupStore: ConfigBackupStore
-  /** 「设置 › 备份迁移 › 星芒占用的空间」（storage-usage-service.ts）；省略 = 那两条通道报「还不能算」。 */
+  /** 「设置 › 备份迁移 › 星芒占用空间」（storage-usage-service.ts）；省略 = 那两条通道报「还不能算」。 */
   storageUsage?: StorageUsageService
   diagnosticsService: {
     run(options?: DiagnosticsRunOptions): Promise<DiagnosticsReport>
@@ -135,7 +155,7 @@ export interface IpcRegistrationOptions {
     exportLatest(): string
     /** 检查页「清掉这条旧设置」；缺省 = stale-proxy-environment.ts 的真实现。 */
     clearStaleProxy?(): Promise<StaleProxyClearResult>
-    /** 检查页「挪开这份设置」「删掉这几项设置」；缺省 = 不支持，点了报一句中文（旧行为无此按钮）。 */
+    /** 检查页「停用此设置」「删除这些设置」；缺省 = 不支持，点了报一句中文（旧行为无此按钮）。 */
     fix?(kind: DiagnosticFixKind): Promise<DiagnosticFixResult>
     /** 反馈报告「最近一次自检」那段有没有结果；缺省 = 不知道，预览报告时不提醒先去检查。 */
     hasSelfCheckResult?(): boolean
@@ -143,6 +163,8 @@ export interface IpcRegistrationOptions {
   runtimeLog: RuntimeLogStore
   extensionService: CodexExtensionService
   providerExtensionService: ProviderExtensionService
+  /** 技能「从压缩包导入」解开放在哪（main.ts 传数据文件夹下的 skill-archives）；省略 = 那条通道报暂时不能用。 */
+  skillArchiveDirectory?: string
   // Defaults to a real client talking to the production New-Api instance
   // when the host app does not supply one; tests inject a stub the same way
   // they do for other services. Typed as the backend-agnostic
@@ -211,8 +233,13 @@ export interface IpcRegistrationOptions {
    */
   confirmUpdateInstall?(): Promise<boolean>
   /**
+   * 「立即重启」电脑（带 askIfWorking）前问一句「创作」里还有没有会被停下的事（D10 那一问）：false = 客户点了
+   * 「等待完成」，这次不重启。不传 = 不问（测试与旧调用方）。
+   */
+  confirmWindowsRestart?(): Promise<boolean>
+  /**
    * Mac 上「卸载星芒」。backupCliConfigs 由这里给：备份要用本模块里的账号上下文，和
-   * 「修好它」同一份。不传 = 这台电脑不支持在星芒里卸载。
+   * 「立即修复」同一份。不传 = 这台电脑不支持在星芒里卸载。
    */
   uninstallApp?(request: AppUninstallRequest, backupCliConfigs: () => Promise<void>): Promise<AppUninstallResult>
   takeExternalDeepLink?(target: WebContents): ExternalDeepLink | null
@@ -245,8 +272,13 @@ export interface IpcRegistrationOptions {
   // has to depend on canvas-window.ts's full surface just to delegate one
   // button click.
   openCanvasWindow(): Promise<void>
-  // Same delegation for the canvas home page's read-only library (「看全部作品」).
-  openCanvasAssetLibrary(): Promise<void>
+  // 「创作」左边那一列里的画布项目（融合第 1 步）：列出当前账号的项目、把画布开在其中一个上。同样只是转交，
+  // 认账号、认编号、换项目前的关闭确认都在 canvas-window.ts。缺省（早于它的测试）= 报「未就绪」。
+  listCanvasProjects?(): Promise<CanvasProjectListEntry[]>
+  openCanvasProject?(projectId: unknown): Promise<boolean>
+  // 「添加到画布」（融合第 5 步的「放进画布」）：把当前账号的一张图抄一份进他选的画布项目的素材库。认图、认项目、
+  // 怎么抄都在 canvas-project-image-intake.ts；入参先由处理器按字段白名单认过。缺省 = 报「暂时无法添加」。
+  addImageToCanvasProject?: CanvasProjectImageIntake
   // Backing store for the "记住密码" credential (account-credential-store.ts,
   // safeStorage-encrypted). Optional the same way accountService is: main.ts
   // always passes the real store; when absent (tests that predate it), the
@@ -284,6 +316,8 @@ export interface IpcRegistrationOptions {
   imageService?: AiImageService
   aiAssets?: AiAssetStore
   chatHistory?: AiChatHistoryStore
+  // 视频的分镜一条一个文件（总单 #79，video-studio-project-store.ts）。出片交给服务端之前先等它写完。
+  videoStudioProjects?: VideoStudioProjectStore
   // 退出前问聊天页要的那一次存盘，回执交给它（chat-history-flush.ts）。缺省 = 回执不理。
   chatHistoryFlush?: Pick<ChatHistoryFlush, 'acknowledge'>
   chatAttachments?: ChatAttachmentService
@@ -292,8 +326,16 @@ export interface IpcRegistrationOptions {
   // 视频剪辑页出视频片段；片段和拼好的成片都放进这个全局作品库（画布的全局素材也是它）。
   videoService?: Pick<AiVideoService, 'generate' | 'resumeRequest' | 'cancel' | 'cancelSender' | 'cancelAll'>
   videoAssets?: Pick<AiVideoAssetStore, 'readOwned' | 'storeComposed' | 'resolveOwnedFilePath' | 'saveAs'>
+  // 「创作 › 作品库」列当前账号做过的图片和视频（融合第 3 步）。只用它不读文件的那一个列法；改名、删除这些主窗口不碰。
+  mediaAssets?: Pick<AiMediaAssetService, 'listOwnedLibrary'>
+  // 融合第 5 步：画布项目自己文件夹里生成的图和视频也算当前账号的作品。作品库把它们一起列出来；另存、复制、
+  // 用播放器打开、读片段时按编号先找 AI 作品文件夹、再找各个项目文件夹，哪一处都照那一处的库自己的检查。
+  // 只有读，没有往项目文件夹里写的。缺省 = 只认 AI 作品文件夹（第 3 步的样子）。
+  accountAssets?: AccountAssetLookup
   // 视频剪辑的配乐：客户选的歌存进这个作品库的音频那一格，拼片时再按编号读回来。
   audioAssets?: Pick<AiAudioAssetStore, 'storeLocalFile' | 'readOwned'>
+  // 「迁移到新电脑」带上当前账号作品库里的作品（「搬作品改」）：量多大、导出、导入都在它里面，路径不出主进程。
+  worksTransfer?: AccountWorksTransfer
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot
   // Bundled 星芒AI skill: login copies the template into user skill roots and
   // writes the image-group key into config.json. Optional so existing IPC
@@ -422,6 +464,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerSystemHandlers(ctx)
   const disposeConfig = registerConfigHandlers(ctx)
   registerExternalClientHandlers(ctx)
+  const disposeAntigravity = registerAntigravityHandlers(ctx)
   registerLaunchHandlers(ctx)
   registerToolHandlers(ctx)
   registerWindowHandlers(ctx)
@@ -440,12 +483,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerAccountKeyHandlers(ctx)
   registerAiChatHandlers(ctx)
   registerAiVideoHandlers(ctx)
+  registerAiLibraryHandlers(ctx)
   registerDataTransferHandlers(ctx)
   registerCodexRemoteHandlers(ctx)
   registerCodexRemoteWeixinHandlers(ctx)
 
   return () => {
     disposeConfig()
+    disposeAntigravity()
     disposeRuntimeLog()
     ctx.sensitiveClipboard.dispose()
     unsubscribeUpdates()

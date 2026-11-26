@@ -22,12 +22,12 @@ interface StorageRowDefinition {
 
 /** 六行，按页面上的顺序（决定单 D100，yoyo 2026-11-11 回「空间页改」）。 */
 export const storageRows: readonly StorageRowDefinition[] = [
-  { part: 'works', icon: Image, title: 'AI 作品', description: '聊天、画布、视频剪辑里生成的图片、视频和音频。' },
-  { part: 'thumbnails', icon: Images, title: '作品缩略图', description: '作品库里的小图。删掉以后，看作品库时会重新生成。' },
-  { part: 'chat-history', icon: MessageSquare, title: '聊天记录', description: '换电脑时可以用上面的「导出设置和聊天记录」带走。' },
-  { part: 'logs', icon: FileText, title: '运行日志', description: '给客服查问题用的。' },
+  { part: 'works', icon: Image, title: 'AI 作品', description: '创作中生成的图片、视频和音频。' },
+  { part: 'thumbnails', icon: Images, title: '作品缩略图', description: '作品库中的缩略图，删除后查看作品库时将重新生成。' },
+  { part: 'chat-history', icon: MessageSquare, title: '聊天记录', description: '更换电脑时，可通过上方「导出设置和聊天记录」迁移。' },
+  { part: 'logs', icon: FileText, title: '运行日志', description: '供客服排查问题使用。' },
   { part: 'backups', icon: Archive, title: '工具配置备份', description: null },
-  { part: 'downloads', icon: Download, title: '装工具时下载的文件', description: '装和更新命令行工具时下载下来的文件。删掉以后，下次装会重新下载。' },
+  { part: 'downloads', icon: Download, title: '安装工具时下载的文件', description: '安装和更新命令行工具时下载的文件，删除后下次安装时将重新下载。' },
 ]
 
 /** 「约 820 KB」「约 35 MB」「约 2.1 GB」：KB、MB 取整，GB 留一位小数；进位到下一级时换单位，不写「约 1024 KB」。 */
@@ -42,29 +42,29 @@ export function storageSizeText(bytes: number): string {
 
 /** 每一行右边：还在算、没算出来，或者大小。 */
 export function storageRowValue(report: StorageUsagePartReport | undefined): string {
-  if (!report) return '正在算…'
-  return report.bytes === null ? '没算出来' : storageSizeText(report.bytes)
+  if (!report) return '正在计算…'
+  return report.bytes === null ? '无法计算' : storageSizeText(report.bytes)
 }
 
 /** 最上面那一行的合计：六行都回来了才加，没算出来的那几行不算在里面；一行都没算出来就说没算出来。 */
 export function storageTotalText(reports: StorageReports): string {
   const values = storageRows.map((row) => reports[row.part])
-  if (values.some((report) => !report)) return '正在算…'
+  if (values.some((report) => !report)) return '正在计算…'
   const known = values.flatMap((report) => (report && report.bytes !== null ? [report.bytes] : []))
-  if (!known.length) return '没算出来'
-  return `一共${storageSizeText(known.reduce((sum, bytes) => sum + bytes, 0))}`
+  if (!known.length) return '无法计算'
+  return `共${storageSizeText(known.reduce((sum, bytes) => sum + bytes, 0))}`
 }
 
 export function storageRowDescription(row: StorageRowDefinition, report: StorageUsagePartReport | undefined): string | null {
   if (row.part !== 'backups') return row.description
-  return typeof report?.backupCount === 'number' ? `改工具配置之前自动存的旧配置，一共 ${report.backupCount} 份。` : null
+  return typeof report?.backupCount === 'number' ? `修改工具配置前自动保存的配置，共 ${report.backupCount} 份。` : null
 }
 
 /** 清完的提示条，三个「清理」共用；有文件被占着没删掉时换成另一句。 */
 export function storageCleanedText(result: StorageCleanResult): string {
   return result.kept > 0
-    ? `有些文件正被占用，没删掉，腾出${storageSizeText(result.freedBytes)}。关掉正在用的工具后可以再清一次。`
-    : `已清理，腾出${storageSizeText(result.freedBytes)}。`
+    ? `部分文件正被占用，未能删除，已释放${storageSizeText(result.freedBytes)}。关闭正在使用的工具后可再次清理。`
+    : `已清理，释放${storageSizeText(result.freedBytes)}。`
 }
 
 export interface StorageCardViewProps {
@@ -109,7 +109,7 @@ function rowActions(part: StorageUsagePart, report: StorageUsagePartReport | und
     const nothingToClean = typeof count === 'number' && count <= retainedBackups
     return (
       <>
-        {nothingToClean && <DisabledNote text={`只有最近 ${retainedBackups} 份，不用清理`} />}
+        {nothingToClean && <DisabledNote text={`仅保留最近 ${retainedBackups} 份，无需清理`} />}
         <CleanButton target="backups" label="清理旧备份" busy={busy} disabled={typeof count !== 'number' || nothingToClean} onClick={props.onAskBackupCleanup} />
       </>
     )
@@ -118,7 +118,7 @@ function rowActions(part: StorageUsagePart, report: StorageUsagePartReport | und
     const installing = report?.installing === true
     return (
       <>
-        {installing && <DisabledNote text="正在装工具，装完再清理" />}
+        {installing && <DisabledNote text="正在安装工具，请在安装完成后清理" />}
         <CleanButton target="downloads" label="清理" busy={busy} disabled={!report || installing} onClick={() => props.onClean('downloads')} />
       </>
     )
@@ -131,8 +131,8 @@ function rowActions(part: StorageUsagePart, report: StorageUsagePartReport | und
 export function StorageCardView(props: StorageCardViewProps) {
   return (
     <Card
-      title="星芒占用的空间"
-      meta="星芒在这台电脑上存了哪些东西、各占多少。清理只删能重新生成或重新下载的东西，作品和聊天记录不会动。"
+      title="星芒占用空间"
+      meta="星芒在本机保存的内容及占用空间。清理仅删除可重新生成或重新下载的内容，作品和聊天记录不受影响。"
       padding="none"
       testId="settings-storage"
     >
@@ -157,7 +157,7 @@ export function StorageCardView(props: StorageCardViewProps) {
 }
 
 /**
- * 设置 › 备份迁移最下面的「星芒占用的空间」（决定单 D100）。挂上时（客户点开这一组）六行各问一次主进程，
+ * 设置 › 备份迁移最下面的「星芒占用空间」（决定单 D100）。挂上时（客户点开这一组）六行各问一次主进程，
  * 快的先出来；不在后台常驻算。从别的页回来时再算一次。清理完只重算那一行。
  */
 export function StorageCard({ api, active, onBackupsCleaned }: {
@@ -173,7 +173,7 @@ export function StorageCard({ api, active, onBackupsCleaned }: {
   const operation = useOperation()
   const toast = useToast()
   const inspect = useCallback((part: StorageUsagePart, current: () => boolean) => {
-    // 包一层：桥上缺这个方法（旧主进程）时同步抛的错也落到「没算出来」，不让整页崩。
+    // 包一层：桥上缺这个方法（旧主进程）时同步抛的错也落到「无法计算」，不让整页崩。
     void Promise.resolve()
       .then(() => api.inspectStorageUsage(part))
       .catch((): StorageUsagePartReport => ({ bytes: null }))
@@ -247,7 +247,7 @@ export function StorageCard({ api, active, onBackupsCleaned }: {
           </>
         }
       >
-        <p>只留最近 {retainedBackups} 份，更早的 {Math.max(0, backupCount - retainedBackups)} 份删掉。最近这 {retainedBackups} 份照样能在上面的「工具配置备份」里恢复。</p>
+        <p>将保留最近 {retainedBackups} 份，删除更早的 {Math.max(0, backupCount - retainedBackups)} 份。保留的备份仍可在上方「工具配置备份」中恢复。</p>
         <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </>

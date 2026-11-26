@@ -11,10 +11,10 @@
  * 星芒画图登记、信任文件夹读不懂时多半只进日志，照旧用原来那句。
  */
 export function describeConfigReset(tool: string, problem: string): string {
-  return `${problem}，星芒没有改动它。在首页 ${tool} 的卡片上点「…」里的「配置…」，选「当前账号」，再展开最下面的「高级」点「重置为初始状态」：会先备份原来的文件（在「设置 › 备份迁移」里能找回），再重新生成。`
+  return `${problem}，星芒未改动该文件。请在首页 ${tool} 卡片的「…」中点击「配置…」，选择「当前账号」，展开最下方的「高级」并点击「重置为初始状态」：将先备份原文件（可在「设置 › 备份迁移」中找回），再重新生成。`
 }
 
 /** 配置文件本身写错了字。TOML 带行号（tomlErrorLocation 的「（第 N 行附近）」），只报行号，不带原文（I13）。 */
 export function describeBrokenConfig(tool: string, location = ''): string {
-  return describeConfigReset(tool, `${tool} 的配置文件里有写错的地方${location}`)
+  return describeConfigReset(tool, `${tool} 的配置文件内容有误${location}`)
 }

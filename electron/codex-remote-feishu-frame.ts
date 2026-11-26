@@ -106,12 +106,12 @@ class FrameReader {
       if ((byte & 0x80) === 0) return BigInt.asUintN(64, result)
       shift += 7n
     }
-    throw new Error('飞书消息帧里的数字过长')
+    throw new Error('飞书消息帧中的数值过长')
   }
 
   lengthDelimited(): Uint8Array {
     const length = this.varint()
-    if (length > BigInt(this.bytes.length - this.offset)) throw new Error('飞书消息帧长度不对')
+    if (length > BigInt(this.bytes.length - this.offset)) throw new Error('飞书消息帧长度不正确')
     const start = this.offset
     this.offset += Number(length)
     return this.bytes.subarray(start, this.offset)
@@ -132,7 +132,7 @@ class FrameReader {
         this.advance(4)
         return
       default:
-        throw new Error('飞书消息帧里有认不出的字段')
+        throw new Error('飞书消息帧中包含无法识别的字段')
     }
   }
 
@@ -174,7 +174,7 @@ export function decodeFeishuFrame(bytes: Uint8Array): FeishuFrame {
     else if (field === 3 && wireType === 0) frame.service = toInt32(reader.varint())
     else if (field === 4 && wireType === 0) frame.method = toInt32(reader.varint())
     else if (field === 5 && wireType === 2) {
-      if (frame.headers.length >= maxFeishuFrameHeaders) throw new Error('飞书消息帧的头太多')
+      if (frame.headers.length >= maxFeishuFrameHeaders) throw new Error('飞书消息帧的头部字段过多')
       frame.headers.push(decodeHeader(reader.lengthDelimited()))
     } else if (field === 6 && wireType === 2) frame.payloadEncoding = textDecoder.decode(reader.lengthDelimited())
     else if (field === 7 && wireType === 2) frame.payloadType = textDecoder.decode(reader.lengthDelimited())

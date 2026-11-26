@@ -1,10 +1,7 @@
-## 用户
-
-- Codex 对话太大、星芒正在帮你换线路时你换了账号或者把 Codex 换成官方账号，不会再收到给上一个账号的提示。
-
 ## 开发
 
-- 0.2.25 总单第 48 项第三条（11-18 复核 R29-03，原见 `docs/audits/2026-10-29/findings.md`）：`electron/codex-payload-limit.ts`
+- 给客户看的那句并进了 `r29-01-codex-payload-catch-up.md`（0.2.25 更新说明统一改为正式书面口吻、同类并条，复查第三轮第 8 条）。
+- 0.2.25 总单第 48 项第三条（11-18 复核 R29-03）：`electron/codex-payload-limit.ts`
   的 `createCodexPayloadLimitService` 认出 413 以后要等两步：查线路 2、换线（`holdDirect`），再让 Codex 的配置跟过去、提示重开
   （`followCodex`）。等的时候客户换了账号、退出了、换了站，或者把 Codex 换成官方账号，结果回来照样让 Codex 跟、照样弹提示，
   提示的是上一个人的事。

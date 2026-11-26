@@ -263,7 +263,7 @@ export function createNetworkRoutes(options: NetworkRoutesOptions) {
     relayRouting,
     sessionFetch,
     resolveSystemProxy,
-    // 检查页「别的代理软件」经系统代理、直接连各连一次星芒，比出是不是代理软件挡的路。
+    // 检查页「其他代理软件」经系统代理、直接连各连一次星芒，比出是不是代理软件挡的路。
     systemProxyFetch,
     siteDirectFetch,
     proxyBypass,
@@ -287,16 +287,16 @@ export function createNetworkRoutes(options: NetworkRoutesOptions) {
 export type NetworkRoutes = ReturnType<typeof createNetworkRoutes>
 
 export interface ToolRouteFollowingOptions {
-  systemService: Pick<SystemService, 'followToolRoutes'>
+  systemService: Pick<SystemService, 'followToolRoutes' | 'antigravity'>
   readAccountSiteId: () => string
 }
 
 /** 系统服务建好以后才开始跟工具线路：换了线路要它把工具配置里的地址改过去。 */
 export function startToolRouteFollowing(
-  routes: Pick<NetworkRoutes, 'toolRouteController' | 'toolRouteStatusBoard' | 'notifyRelayRouteChanged' | 'recheckRoutes'>,
+  routes: Pick<NetworkRoutes, 'relayRouteController' | 'toolRouteController' | 'toolRouteStatusBoard' | 'notifyRelayRouteChanged' | 'recheckRoutes'>,
   options: ToolRouteFollowingOptions,
 ) {
-  const { toolRouteController, toolRouteStatusBoard, notifyRelayRouteChanged, recheckRoutes } = routes
+  const { relayRouteController, toolRouteController, toolRouteStatusBoard, notifyRelayRouteChanged, recheckRoutes } = routes
   const { systemService, readAccountSiteId } = options
   // 星芒账号的工具线路换了：主进程把四个工具配置里的地址定点改过去（xm 三线路 C9）。历史账号照旧
   // 由界面收到应用线路那声以后走同步 Key。只有因为连不上换的（没通、劫持、服务端整体故障）才可能提示
@@ -310,8 +310,15 @@ export function startToolRouteFollowing(
       // Codex 对话太大换的线路由 codex-payload-limit.ts 那边自己提示重开，只说 Codex，这里不说「连不上换了」。
       const reason = snapshot.lastChange?.reason
       void systemService.followToolRoutes?.({ reason: 'route-changed', fault: reason !== 'recovered' && reason !== 'payload-too-large' })
+      // Antigravity 不是 ProviderId，followToolRoutes 不管它，星芒账号的它跟的也是这条工具线路（复查 A 第 1 轮第 3 条）。
+      if (readAccountSiteId() === 'solov') void systemService.antigravity?.follow('route-changed')
     }
     if (lineChanged || readAccountSiteId() === 'solov') notifyRelayRouteChanged()
+  })
+  // 历史账号的工具跟的是应用线路：命令行工具由界面收到换线那声以后整份写入跟过去，Antigravity 的设置在主进程里，
+  // 这里替它跟。只看当前账号那个站。
+  const unsubscribeApplicationRoutes = relayRouteController.subscribe((siteId) => {
+    if (siteId === 'solov-api' && readAccountSiteId() === 'solov-api') void systemService.antigravity?.follow('route-changed')
   })
   toolRouteController.start()
   // 唤醒、网络恢复、点「重新检测」都马上查一轮工具线路（需求 5.1.4）和管理工具自己的应用线路（#1053：
@@ -327,5 +334,9 @@ export function startToolRouteFollowing(
     routeOnline = online
   }, 15_000)
   routeOnlineTimer.unref?.()
-  return { unsubscribeToolRoutes, onRouteResume, routeOnlineTimer }
+  function unsubscribeRouteFollowing(): void {
+    unsubscribeToolRoutes()
+    unsubscribeApplicationRoutes()
+  }
+  return { unsubscribeToolRoutes: unsubscribeRouteFollowing, onRouteResume, routeOnlineTimer }
 }

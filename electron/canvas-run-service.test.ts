@@ -163,7 +163,7 @@ describe('createCanvasRunService', () => {
       service = openService()
       const switchedBack = imageOf(await run(service, projectId, project(first)))
       expect(switchedBack?.state).toBe('failed')
-      expect(switchedBack?.errorMessage).toContain('找不到你选中的这张图当初的生成记录')
+      expect(switchedBack?.errorMessage).toContain('未找到所选图片的生成记录')
       expect(switchedBack?.attempts).toEqual([])
       expect(image).toHaveBeenCalledTimes(2)
 
@@ -361,7 +361,7 @@ describe('createCanvasRunService', () => {
     await vi.waitFor(() => expect(release).toBeDefined())
     const completion = { runId: handle.runId, operationId: 'attempt-1', kind: 'frame' as const, outcome: 'failed' as const }
 
-    const refusal = '这一帧不在等待中，可能已经超时或运行已停止'
+    const refusal = '该帧不在等待中，可能已超时或运行已停止'
     await expect(service.completePreparation(7, 11, completion)).rejects.toThrow(refusal)
     await expect(service.completePreparation(8, 10, completion)).rejects.toThrow(refusal)
     await expect(service.completePreparation(7, 10, { ...completion, runId: 'run-other' })).rejects.toThrow(refusal)
@@ -421,7 +421,7 @@ describe('createCanvasRunService', () => {
     expect((await service.listRuns(7))[0]).not.toHaveProperty('imagePreparations')
     expect(await service.getRun(7, 'run-image')).not.toHaveProperty('imagePreparations')
     await expect(service.completePreparation(7, 10, { runId: 'run-image', operationId: 'attempt', kind: 'image', outcome: 'failed' }))
-      .rejects.toThrow('这次图片处理不在等待中，可能已经超时或运行已停止')
+      .rejects.toThrow('本次图片处理不在等待中，可能已超时或运行已停止')
   })
 
   it('lets sibling generate nodes run together and only locks the overlapping ones', async () => {
@@ -527,7 +527,7 @@ describe('createCanvasRunService', () => {
     })
     await expect(service.start({
       userId: 7, ownerId: 9, graphRevision: computeCanvasGraphRevision(graph), graph, scope: { kind: 'all' },
-    })).rejects.toThrow('这次运行最多要生成 3 次，一次运行最多 2 次（一次出几张的按张数算），请分几次运行')
+    })).rejects.toThrow('本次运行最多需生成 3 次，单次运行上限为 2 次（单次生成多张时按张数计算），请分多次运行')
     expect(image).not.toHaveBeenCalled()
   })
 
@@ -553,7 +553,7 @@ describe('createCanvasRunService', () => {
     })
     const four = single(4)
     await expect(service.start({ userId: 7, ownerId: 9, graphRevision: computeCanvasGraphRevision(four), graph: four, scope: { kind: 'all' } }))
-      .rejects.toThrow('这次运行最多要生成 4 次，一次运行最多 3 次')
+      .rejects.toThrow('本次运行最多需生成 4 次，单次运行上限为 3 次')
     expect(image).not.toHaveBeenCalled()
     const three = single(3)
     const handle = await service.start({ userId: 7, ownerId: 9, graphRevision: computeCanvasGraphRevision(three), graph: three, scope: { kind: 'all' } })
@@ -596,11 +596,11 @@ describe('createCanvasRunService', () => {
       const graphRevision = computeCanvasGraphRevision(graph)
 
       await expect(service.start({ userId: 7, ownerId: 9, graphRevision, graph, scope: { kind: 'all' } }))
-        .rejects.toThrow('桌面版暂不支持，本次没有提交任何付费请求')
+        .rejects.toThrow('桌面版暂不支持，本次未提交任何付费请求')
       await expect(service.start({ userId: 7, ownerId: 9, graphRevision, graph, scope: { kind: 'to-node', nodeId: 'image' } }))
-        .rejects.toThrow('「联网搜索」桌面版暂不支持，本次没有提交任何付费请求')
+        .rejects.toThrow('「联网搜索」桌面版暂不支持，本次未提交任何付费请求')
       await expect(service.start({ userId: 7, ownerId: 9, graphRevision, graph, scope: { kind: 'selection', nodeIds: ['audio'] } }))
-        .rejects.toThrow('「生成音频设置」桌面版暂不支持，本次没有提交任何付费请求')
+        .rejects.toThrow('「生成音频设置」桌面版暂不支持，本次未提交任何付费请求')
       expect(text).not.toHaveBeenCalled()
       expect(image).not.toHaveBeenCalled()
       expect(video).not.toHaveBeenCalled()

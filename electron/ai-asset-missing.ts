@@ -11,9 +11,9 @@
  * 所以这里不许 import 任何东西。
  */
 export const missingAiAssetMessages = {
-  image: '这张图已经不在电脑上了，可能被移走或删掉了。',
-  video: '这段视频已经不在电脑上了，可能被移走或删掉了。',
-  audio: '这段音频已经不在电脑上了，可能被移走或删掉了。',
+  image: '该图片已不在本机，可能已被移动或删除。',
+  video: '该视频已不在本机，可能已被移动或删除。',
+  audio: '该音频已不在本机，可能已被移动或删除。',
 } as const
 
 export type MissingAiAssetKind = keyof typeof missingAiAssetMessages

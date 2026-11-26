@@ -15,8 +15,8 @@
 export type ConfigWriteBlocker = 'adminOwned' | 'readOnly'
 
 export const configWriteBlockerReasons: Readonly<Record<ConfigWriteBlocker, string>> = {
-  adminOwned: '这个工具的设置文件夹归电脑管理员所有',
-  readOnly: '这个文件被设成了只读',
+  adminOwned: '该工具的设置文件夹归电脑管理员所有',
+  readOnly: '该文件已被设为只读',
 }
 
 const blockers: readonly ConfigWriteBlocker[] = ['adminOwned', 'readOnly']
@@ -26,7 +26,7 @@ export function configWriteBlockerMessage(blocker: ConfigWriteBlocker, code: str
   return `${configWriteBlockerReasons[blocker]}${code ? `（错误码 ${code}）` : ''}`
 }
 
-/** 从包了几层的报错里（「改用当前账号没有完成：……已恢复到切换前的配置。」）认出是哪一种；都不是就是 null。 */
+/** 从包了几层的报错里（「改用当前账号未完成：……已恢复到切换前的配置。」）认出是哪一种；都不是就是 null。 */
 export function configWriteBlockerIn(message: string): ConfigWriteBlocker | null {
   return blockers.find((blocker) => message.includes(configWriteBlockerReasons[blocker])) ?? null
 }

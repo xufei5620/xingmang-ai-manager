@@ -6,6 +6,7 @@ import {
   conversationFileName,
   dataTransferBusyMessage,
   dataTransferFileName,
+  dataTransferFolderName,
   dataTransferInvalidMessage,
   dataTransferReadFailureMessage,
   MAX_DATA_TRANSFER_BYTES,
@@ -67,7 +68,7 @@ describe('data transfer file', () => {
 
   it('asks for an update when the file comes from a newer format', () => {
     const valid = JSON.parse(buildDataTransferFile(settings(), { conversations: [] }, new Date()))
-    expect(() => parseDataTransferFile(JSON.stringify({ ...valid, version: 2 }))).toThrow('更新到最新版')
+    expect(() => parseDataTransferFile(JSON.stringify({ ...valid, version: 2 }))).toThrow('更新至最新版本')
   })
 
   it('reads a file that Notepad saved with a byte order mark', () => {
@@ -81,7 +82,7 @@ describe('data transfer file', () => {
   })
 
   it('tells a file another program holds apart from one that cannot be imported', () => {
-    // X-7：被杀毒软件扫着、没权限读，以前也说「不是星芒导出的，或者已经损坏」。
+    // X-7：被杀毒软件扫着、没权限读，以前也说「并非由星芒导出，或者已经损坏」。
     for (const code of ['EBUSY', 'EPERM', 'EACCES']) {
       expect(dataTransferReadFailureMessage(Object.assign(new Error(`${code}: open`), { code }))).toBe(dataTransferBusyMessage)
     }
@@ -105,7 +106,7 @@ describe('data transfer file', () => {
   })
 
   it('validates the export request from the renderer', () => {
-    expect(parseDataTransferExportInput({ conversations: [{ id: 'a' }] })).toEqual({ conversations: [{ id: 'a' }], phrases: [] })
+    expect(parseDataTransferExportInput({ conversations: [{ id: 'a' }] })).toEqual({ conversations: [{ id: 'a' }], phrases: [], videoProjects: [] })
     expect(() => parseDataTransferExportInput(null)).toThrow()
     expect(() => parseDataTransferExportInput({ conversations: [1] })).toThrow()
     expect(parseDataTransferExportInput({ conversations: Array.from({ length: 200 }, () => ({})) }).conversations).toHaveLength(200)
@@ -153,11 +154,79 @@ describe('data transfer file', () => {
     }
   })
 
+  // 第三轮复查第 7 条：「给 AI 的长期嘱咐」以前不跟着走。
+  it('carries the standing instructions, and leaves them out when none were written or the stored ones are broken', () => {
+    const raw = buildDataTransferFile(settings({ standingInstructions: '回答请尽量简洁。\n我从事外贸行业。' }), { conversations: [] }, new Date())
+    expect(JSON.parse(raw).settings.standingInstructions).toBe('回答请尽量简洁。\n我从事外贸行业。')
+    expect(parseDataTransferFile(raw).standingInstructions).toBe('回答请尽量简洁。\n我从事外贸行业。')
+    // 手改坏了的（带控制字符、带星芒自己的标记）不带：带了新电脑那边会整份拒收。
+    for (const standingInstructions of [undefined, '', '带\u0007响铃', '星芒AI管理工具：给 AI 的长期嘱咐（开始）']) {
+      const without = buildDataTransferFile(settings({ standingInstructions }), { conversations: [] }, new Date())
+      expect(JSON.parse(without).settings).not.toHaveProperty('standingInstructions')
+      expect(parseDataTransferFile(without)).not.toHaveProperty('standingInstructions')
+    }
+  })
+
+  it('reads the standing instructions the way the settings page would save them, and rejects the whole file when they are off', () => {
+    const valid = JSON.parse(buildDataTransferFile(settings(), { conversations: [] }, new Date()))
+    const read = (standingInstructions: unknown) => parseDataTransferFile(JSON.stringify({ ...valid, settings: { ...valid.settings, standingInstructions } }))
+    expect(read('  回答请尽量简洁。\r\n我从事外贸行业。  ').standingInstructions).toBe('回答请尽量简洁。\n我从事外贸行业。')
+    // 空的当没带：不能借导入把这台电脑上写过的嘱咐清掉。
+    expect(read('   ')).not.toHaveProperty('standingInstructions')
+    for (const standingInstructions of [1, null, {}, ['x'], 'x'.repeat(2001), '带\u0000空字符', '星芒AI管理工具：给 AI 的长期嘱咐']) {
+      expect(() => read(standingInstructions)).toThrow(dataTransferInvalidMessage)
+    }
+  })
+
   it('validates the phrases in the export request from the renderer', () => {
     expect(parseDataTransferExportInput({ conversations: [], phrases: ['回答尽量简短'] }).phrases).toEqual(['回答尽量简短'])
     expect(() => parseDataTransferExportInput({ conversations: [], phrases: 'x' })).toThrow('导出的常用的话格式无效')
     expect(() => parseDataTransferExportInput({ conversations: [], phrases: [1] })).toThrow('导出的常用的话格式无效')
     expect(() => parseDataTransferExportInput({ conversations: [], phrases: Array.from({ length: 31 }, () => 'x') })).toThrow('导出的常用的话格式无效')
+  })
+})
+
+describe('creation in the data transfer file', () => {
+  const video = { key: 'film-1', content: '{"version":1}' }
+  const works = { images: 96, videos: 30, audios: 2, bytes: 3_400_000_000 }
+
+  it('carries the videos and the works count, and leaves both out when there are none', () => {
+    const raw = buildDataTransferFile(settings(), { conversations: [], videoProjects: [video] }, new Date(), undefined, works)
+    expect(JSON.parse(raw).works).toEqual({ folder: '作品', ...works })
+    expect(parseDataTransferFile(raw)).toMatchObject({ videoProjects: [video], works })
+    const plain = buildDataTransferFile(settings(), { conversations: [], videoProjects: [] }, new Date())
+    expect(JSON.parse(plain)).not.toHaveProperty('videoProjects')
+    expect(JSON.parse(plain)).not.toHaveProperty('works')
+    expect(parseDataTransferFile(plain)).toMatchObject({ videoProjects: [] })
+    expect(parseDataTransferFile(plain)).not.toHaveProperty('works')
+  })
+
+  it('carries how many canvas projects went along with the works, and leaves it out when none did', () => {
+    const raw = buildDataTransferFile(settings(), { conversations: [] }, new Date(), undefined, { ...works, canvasProjects: 4 })
+    expect(JSON.parse(raw).works).toEqual({ folder: '作品', ...works, canvasProjects: 4 })
+    expect(parseDataTransferFile(raw).works).toEqual({ ...works, canvasProjects: 4 })
+    expect(parseDataTransferFile(buildDataTransferFile(settings(), { conversations: [] }, new Date(), undefined, works)).works).not.toHaveProperty('canvasProjects')
+    const valid = JSON.parse(raw)
+    for (const canvasProjects of [-1, 1.5, '4', 501]) {
+      expect(() => parseDataTransferFile(JSON.stringify({ ...valid, works: { ...valid.works, canvasProjects } }))).toThrow(dataTransferInvalidMessage)
+    }
+  })
+
+  it('rejects the whole file when a video or the works count is off', () => {
+    const valid = JSON.parse(buildDataTransferFile(settings(), { conversations: [] }, new Date()))
+    for (const videoProjects of [{}, [1], [{ key: '../escape', content: '' }], [{ key: 'a', content: 1 }], [video, video], Array.from({ length: 201 }, (_, index) => ({ key: `v${index}`, content: '' }))]) {
+      expect(() => parseDataTransferFile(JSON.stringify({ ...valid, videoProjects }))).toThrow(dataTransferInvalidMessage)
+    }
+    for (const bad of [null, { ...works }, { folder: '../作品', ...works }, { folder: '作品', ...works, images: -1 }, { folder: '作品', ...works, bytes: 1.5 }, { folder: '作品', ...works, videos: '30' }]) {
+      expect(() => parseDataTransferFile(JSON.stringify({ ...valid, works: bad }))).toThrow(dataTransferInvalidMessage)
+    }
+  })
+
+  it('validates the videos and the works choice in the export request from the renderer', () => {
+    expect(parseDataTransferExportInput({ conversations: [], videoProjects: [video], includeWorks: true })).toEqual({ conversations: [], phrases: [], videoProjects: [video], includeWorks: true })
+    expect(parseDataTransferExportInput({ conversations: [], includeWorks: false })).not.toHaveProperty('includeWorks')
+    expect(() => parseDataTransferExportInput({ conversations: [], includeWorks: 'yes' })).toThrow('导出请求格式无效')
+    expect(() => parseDataTransferExportInput({ conversations: [], videoProjects: [{ key: 'a/b', content: '' }] })).toThrow('导出的视频格式无效')
   })
 })
 
@@ -173,7 +242,7 @@ describe('planPortableSettingsImport', () => {
     })
     expect(plan.settings).toEqual({ version: 2, desktopNotifications: false, uiSkin: 'aurora' })
     expect(plan.conflictingSettings).toEqual({ version: 2, theme: 'light', closeBehavior: 'tray' })
-    expect(plan.conflictLabels).toEqual(['主题', '点关闭按钮时'])
+    expect(plan.conflictLabels).toEqual(['主题', '点击关闭按钮时'])
   })
 
   it('never asks about the skin, which the settings page no longer shows, and keeps one chosen here', () => {
@@ -224,6 +293,25 @@ describe('planPortableSettingsImport', () => {
     expect(planPortableSettingsImport(settings(), {})).toEqual({ settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels: [] })
   })
 
+  it('applies the standing instructions where none were written here, and asks before replacing other ones', () => {
+    expect(planPortableSettingsImport(settings(), {}, undefined, { here: '', incoming: '回答请尽量简洁。' })).toEqual({
+      settings: { version: 2 },
+      conflictingSettings: { version: 2 },
+      conflictLabels: [],
+      standingInstructions: '回答请尽量简洁。',
+    })
+    expect(planPortableSettingsImport(settings({ theme: 'dark' }), { theme: 'light' }, { here: false, incoming: true }, { here: '用中文回答。', incoming: '回答请尽量简洁。' })).toEqual({
+      settings: { version: 2 },
+      conflictingSettings: { version: 2, theme: 'light' },
+      conflictLabels: ['主题', '匿名使用统计', '给 AI 的长期嘱咐'],
+      conflictingAnonymousUsage: true,
+      conflictingStandingInstructions: '回答请尽量简洁。',
+    })
+    for (const standingInstructions of [{ here: '用中文回答。' }, { here: '' }, { here: '用中文回答。', incoming: '用中文回答。' }]) {
+      expect(planPortableSettingsImport(settings(), {}, undefined, standingInstructions)).toEqual({ settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels: [] })
+    }
+  })
+
   it('has nothing to do when the file matches this computer', () => {
     const current = settings({ reducedMotion: true })
     const plan = planPortableSettingsImport(current, buildPortableSettings(current))
@@ -234,6 +322,10 @@ describe('planPortableSettingsImport', () => {
 describe('export file names', () => {
   it('dates the transfer file', () => {
     expect(dataTransferFileName(new Date(2026, 8, 5))).toBe('星芒聊天记录与设置-2026-09-05.json')
+  })
+
+  it('dates the folder an export with works goes into', () => {
+    expect(dataTransferFolderName(new Date(2026, 10, 22))).toBe('星芒数据导出-2026-11-22')
   })
 
   it('keeps conversation titles from naming another directory', () => {

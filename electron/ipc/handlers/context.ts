@@ -176,7 +176,7 @@ export function createIpcHandlerContext(
         // 分不清原来有没有上限：自动签发一律停下说清楚；用户看过密钥页、亲手再点一次，
         // 才清掉坏记录照常签，免得以后每次都卡在这里。
         if (!explicit) {
-          throw new Error('没读到这个工具原来的额度设置，这次没有自动签新密钥。到「个人中心 › 密钥管理」确认一下它的额度，再点「重新写入密钥」就会换上。')
+          throw new Error('未能读取该工具原有的额度设置，本次未自动签发新密钥。请前往「个人中心 › 密钥管理」确认其额度，再点击「重新写入密钥」完成更换。')
         }
         await keyReplacements.reset().catch(() => undefined)
         pending = null
@@ -246,14 +246,14 @@ export function createIpcHandlerContext(
    * 文件夹打开工具写一次信任就挤掉一份，备份页也看不到它（全面检测 Q18）。所以重置前
    * 在备份页那套存储里留一份；留不下就不重置，免得用户以为还找得回来。四个重置入口都
    * 走这里：config:save、选的账号 Key、自动准备的 Key、官方账号（以前只有第一个留）；
-   * 首页「配置文件坏了」的「修好它」走后两个。
+   * 首页「配置文件坏了」的「立即修复」走后两个。
    */
   async function backupBeforeReset(provider: ProviderId): Promise<void> {
     try {
       options.backupStore.create(provider, 'pre-save', undefined, await readBackupAccountContext())
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
-      throw new Error(`没能先备份当前配置，这次没有重置：${reason}`)
+      throw new Error(`未能先备份当前配置，本次未重置：${reason}`)
     }
   }
   const assertAccountSessionUser = (expectedUserId: number): void => {
@@ -286,7 +286,7 @@ export function createIpcHandlerContext(
     return secret
   }
   const codexRemote = (): CodexRemoteService => {
-    if (!options.codexRemote) throw new Error('手机遥控暂未准备好，请稍后再试。')
+    if (!options.codexRemote) throw new Error('遥控暂未准备好，请稍后再试。')
     return options.codexRemote
   }
   return {

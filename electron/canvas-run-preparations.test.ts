@@ -70,7 +70,7 @@ describe('canvas run preparations', () => {
   it('accepts a PNG frame within the web host limits and nothing else', () => {
     expect(assertCanvasFramePng(png(4096, 4096))).toEqual({ width: 4096, height: 4096 })
     expect(() => assertCanvasFramePng(png(4097, 10))).toThrow('视频帧尺寸超过 4096')
-    expect(() => assertCanvasFramePng(jpeg(64, 64))).toThrow('视频帧必须是 PNG 图片')
+    expect(() => assertCanvasFramePng(jpeg(64, 64))).toThrow('视频帧须为 PNG 图片')
     expect(() => assertCanvasFramePng(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'))).toThrow('仅支持 PNG、JPEG 或 WebP')
   })
 
@@ -80,15 +80,15 @@ describe('canvas run preparations', () => {
     const waiting = broker.expect({ runId: 'run-1', userId: 7, preparation, signal: new AbortController().signal, store })
     expect(broker.size()).toBe(1)
 
-    await expect(broker.complete(7, { runId: 'run-2', operationId: 'attempt-1', kind: 'frame', outcome: 'completed', png: png(64, 32) })).rejects.toThrow('这一帧不在等待中')
-    await expect(broker.complete(8, { runId: 'run-1', operationId: 'attempt-1', kind: 'frame', outcome: 'completed', png: png(64, 32) })).rejects.toThrow('这一帧不在等待中')
+    await expect(broker.complete(7, { runId: 'run-2', operationId: 'attempt-1', kind: 'frame', outcome: 'completed', png: png(64, 32) })).rejects.toThrow('该帧不在等待中')
+    await expect(broker.complete(8, { runId: 'run-1', operationId: 'attempt-1', kind: 'frame', outcome: 'completed', png: png(64, 32) })).rejects.toThrow('该帧不在等待中')
     expect(store).not.toHaveBeenCalled()
 
     await broker.complete(7, { runId: 'run-1', operationId: 'attempt-1', kind: 'frame', outcome: 'completed', png: png(64, 32) })
     await expect(waiting).resolves.toEqual(frameAsset)
     expect(store).toHaveBeenCalledTimes(1)
     expect(broker.size()).toBe(0)
-    await expect(broker.complete(7, { runId: 'run-1', operationId: 'attempt-1', kind: 'frame', outcome: 'completed', png: png(64, 32) })).rejects.toThrow('这一帧不在等待中')
+    await expect(broker.complete(7, { runId: 'run-1', operationId: 'attempt-1', kind: 'frame', outcome: 'completed', png: png(64, 32) })).rejects.toThrow('该帧不在等待中')
   })
 
   it('fails the node, without saving, on a bad picture, a page that could not decode, a stop or no answer in time', async () => {
@@ -98,24 +98,24 @@ describe('canvas run preparations', () => {
     const signal = new AbortController().signal
 
     const badPicture = broker.expect({ runId: 'run-1', userId: 7, preparation, signal, store })
-    await expect(broker.complete(7, { runId: 'run-1', operationId: 'attempt-1', kind: 'frame', outcome: 'completed', png: jpeg(8, 8) })).rejects.toThrow('视频帧必须是 PNG 图片')
-    await expect(badPicture).rejects.toThrow('视频帧必须是 PNG 图片')
+    await expect(broker.complete(7, { runId: 'run-1', operationId: 'attempt-1', kind: 'frame', outcome: 'completed', png: jpeg(8, 8) })).rejects.toThrow('视频帧须为 PNG 图片')
+    await expect(badPicture).rejects.toThrow('视频帧须为 PNG 图片')
     // The operation is spent: a second try with a good picture is refused.
-    await expect(broker.complete(7, { runId: 'run-1', operationId: 'attempt-1', kind: 'frame', outcome: 'completed', png: png(8, 8) })).rejects.toThrow('这一帧不在等待中')
+    await expect(broker.complete(7, { runId: 'run-1', operationId: 'attempt-1', kind: 'frame', outcome: 'completed', png: png(8, 8) })).rejects.toThrow('该帧不在等待中')
 
     const undecodable = broker.expect({ runId: 'run-2', userId: 7, preparation, signal, store })
     await broker.complete(7, { runId: 'run-2', operationId: 'attempt-1', kind: 'frame', outcome: 'failed' })
-    await expect(undecodable).rejects.toThrow('视频帧没有抽出来')
+    await expect(undecodable).rejects.toThrow('视频帧提取失败')
 
     const stop = new AbortController()
     const stopped = broker.expect({ runId: 'run-3', userId: 7, preparation, signal: stop.signal, store })
     stop.abort(new Error('运行已取消'))
     await expect(stopped).rejects.toThrow('运行已取消')
-    await expect(broker.complete(7, { runId: 'run-3', operationId: 'attempt-1', kind: 'frame', outcome: 'completed', png: png(8, 8) })).rejects.toThrow('这一帧不在等待中')
+    await expect(broker.complete(7, { runId: 'run-3', operationId: 'attempt-1', kind: 'frame', outcome: 'completed', png: png(8, 8) })).rejects.toThrow('该帧不在等待中')
 
     const unanswered = broker.expect({ runId: 'run-4', userId: 7, preparation, signal, store })
     clock.fire()
-    await expect(unanswered).rejects.toThrow('视频帧没有交回来')
+    await expect(unanswered).rejects.toThrow('未收到视频帧')
     expect(store).not.toHaveBeenCalled()
     expect(broker.size()).toBe(0)
     expect(canvasFramePreparationTimeoutMs).toBe(120_000)
@@ -125,7 +125,7 @@ describe('canvas run preparations', () => {
     const broker = new CanvasRunPreparationBroker({ schedule: manualClock().schedule })
     const signal = new AbortController().signal
     const waiting = broker.expect({ runId: 'run-1', userId: 7, preparation, signal, store: async () => { throw new Error('磁盘写不进去') } })
-    await expect(broker.expect({ runId: 'run-1', userId: 7, preparation, signal, store: async () => frameAsset })).rejects.toThrow('这一帧已经在等待中')
+    await expect(broker.expect({ runId: 'run-1', userId: 7, preparation, signal, store: async () => frameAsset })).rejects.toThrow('该帧已在等待中')
     await expect(broker.complete(7, { runId: 'run-1', operationId: 'attempt-1', kind: 'frame', outcome: 'completed', png: png(8, 8) })).rejects.toThrow('磁盘写不进去')
     await expect(waiting).rejects.toThrow('磁盘写不进去')
     expect(() => new CanvasRunPreparationBroker({ timeoutMs: 0 })).toThrow('配置无效')
@@ -180,9 +180,9 @@ describe('canvas run preparations', () => {
   it('takes only as many PNGs as the node makes, at the size it set unless the page decides it', () => {
     expect(() => assertCanvasImageToolPngs([png(640, 480)], { count: 1, size: { width: 640, height: 480 } })).not.toThrow()
     expect(() => assertCanvasImageToolPngs([png(900, 300)], { count: 1 })).not.toThrow()
-    expect(() => assertCanvasImageToolPngs([png(640, 480), png(640, 480)], { count: 1, size: { width: 640, height: 480 } })).toThrow('图片处理结果的张数跟节点设置不一致')
-    expect(() => assertCanvasImageToolPngs([png(641, 480)], { count: 1, size: { width: 640, height: 480 } })).toThrow('图片处理结果的尺寸跟节点设置不一致')
-    expect(() => assertCanvasImageToolPngs([jpeg(640, 480)], { count: 1 })).toThrow('图片处理结果必须是 PNG 图片')
+    expect(() => assertCanvasImageToolPngs([png(640, 480), png(640, 480)], { count: 1, size: { width: 640, height: 480 } })).toThrow('图片处理结果的张数与节点设置不一致')
+    expect(() => assertCanvasImageToolPngs([png(641, 480)], { count: 1, size: { width: 640, height: 480 } })).toThrow('图片处理结果的尺寸与节点设置不一致')
+    expect(() => assertCanvasImageToolPngs([jpeg(640, 480)], { count: 1 })).toThrow('图片处理结果须为 PNG 图片')
     expect(() => assertCanvasImageToolPngs([png(4097, 8)], { count: 1 })).toThrow('图片处理结果尺寸超过 4096')
     expect(() => assertCanvasImageToolPngs([png(4096, 4096), png(4096, 4096), png(1, 1)], { count: 3 })).toThrow('图片处理结果合计像素超过上限')
   })
@@ -197,26 +197,26 @@ describe('canvas run preparations', () => {
     }
     const store = vi.fn(async (pngs: readonly Buffer[]) => pngs.map((_png, index) => ({ ...frameAsset, assetId: String(index).repeat(43) })))
     const waiting = broker.expectImages({ runId: 'run-1', userId: 7, preparation: imagePreparation, expectation: { count: 1, size: { width: 64, height: 32 } }, signal, store })
-    await expect(broker.complete(7, { runId: 'run-1', operationId: 'attempt-2', kind: 'frame', outcome: 'completed', png: png(64, 32) })).rejects.toThrow('这一帧不在等待中')
-    await expect(broker.complete(8, { runId: 'run-1', operationId: 'attempt-2', kind: 'image', outcome: 'completed', pngs: [png(64, 32)] })).rejects.toThrow('这次图片处理不在等待中')
-    await expect(broker.complete(7, { runId: 'run-1', operationId: 'attempt-2', kind: 'image', outcome: 'completed', pngs: [png(64, 33)] })).rejects.toThrow('尺寸跟节点设置不一致')
-    await expect(waiting).rejects.toThrow('尺寸跟节点设置不一致')
-    await expect(broker.complete(7, { runId: 'run-1', operationId: 'attempt-2', kind: 'image', outcome: 'completed', pngs: [png(64, 32)] })).rejects.toThrow('这次图片处理不在等待中')
+    await expect(broker.complete(7, { runId: 'run-1', operationId: 'attempt-2', kind: 'frame', outcome: 'completed', png: png(64, 32) })).rejects.toThrow('该帧不在等待中')
+    await expect(broker.complete(8, { runId: 'run-1', operationId: 'attempt-2', kind: 'image', outcome: 'completed', pngs: [png(64, 32)] })).rejects.toThrow('本次图片处理不在等待中')
+    await expect(broker.complete(7, { runId: 'run-1', operationId: 'attempt-2', kind: 'image', outcome: 'completed', pngs: [png(64, 33)] })).rejects.toThrow('尺寸与节点设置不一致')
+    await expect(waiting).rejects.toThrow('尺寸与节点设置不一致')
+    await expect(broker.complete(7, { runId: 'run-1', operationId: 'attempt-2', kind: 'image', outcome: 'completed', pngs: [png(64, 32)] })).rejects.toThrow('本次图片处理不在等待中')
     expect(store).not.toHaveBeenCalled()
 
     const again = broker.expectImages({ runId: 'run-2', userId: 7, preparation: { ...imagePreparation, runId: 'run-2' }, expectation: { count: 1 }, signal, store })
-    await expect(broker.expectImages({ runId: 'run-2', userId: 7, preparation: { ...imagePreparation, runId: 'run-2' }, expectation: { count: 1 }, signal, store })).rejects.toThrow('这次图片处理已经在等待中')
+    await expect(broker.expectImages({ runId: 'run-2', userId: 7, preparation: { ...imagePreparation, runId: 'run-2' }, expectation: { count: 1 }, signal, store })).rejects.toThrow('本次图片处理已在等待中')
     await broker.complete(7, { runId: 'run-2', operationId: 'attempt-2', kind: 'image', outcome: 'completed', pngs: [png(64, 32)] })
     await expect(again).resolves.toEqual([{ ...frameAsset, assetId: '0'.repeat(43) }])
     expect(store).toHaveBeenCalledTimes(1)
-    await expect(broker.complete(7, { runId: 'run-2', operationId: 'attempt-2', kind: 'image', outcome: 'completed', pngs: [png(64, 32)] })).rejects.toThrow('这次图片处理不在等待中')
+    await expect(broker.complete(7, { runId: 'run-2', operationId: 'attempt-2', kind: 'image', outcome: 'completed', pngs: [png(64, 32)] })).rejects.toThrow('本次图片处理不在等待中')
 
     const failed = broker.expectImages({ runId: 'run-3', userId: 7, preparation: { ...imagePreparation, runId: 'run-3' }, expectation: { count: 1 }, signal, store })
     await broker.complete(7, { runId: 'run-3', operationId: 'attempt-2', kind: 'image', outcome: 'failed' })
-    await expect(failed).rejects.toThrow('图片处理没有完成：来源图片读不出来，或者这组参数处理不了')
+    await expect(failed).rejects.toThrow('图片处理未完成：来源图片无法读取，或当前参数无法处理')
     const unanswered = broker.expectImages({ runId: 'run-4', userId: 7, preparation: { ...imagePreparation, runId: 'run-4' }, expectation: { count: 1 }, signal, store })
     clock.fire()
-    await expect(unanswered).rejects.toThrow('图片处理结果没有交回来（画布关了或处理超时），请重新运行这个节点')
+    await expect(unanswered).rejects.toThrow('未收到图片处理结果（画布已关闭或处理超时），请重新运行该节点')
     expect(broker.size()).toBe(0)
   })
 

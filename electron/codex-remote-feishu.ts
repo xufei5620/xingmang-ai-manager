@@ -84,18 +84,18 @@ const sendRetryDelaysMs = [1_000, 4_000] as const
 
 /**
  * 渠道停下来时电脑卡片上的三句（0.2.24 D23）。原来把飞书的原话、HTTP 状态码和「长连接」这类词照搬上屏，
- * 客户不知道该重填、该关别处还是找客服；现在只说这三种，卡片按 problem 配「重新填写」「重新连接」「找客服」。
+ * 客户不知道该重填、该关别处还是找客服；现在只说这三种，卡片按 problem 配「重新填写」「重新连接」「联系客服」。
  */
 export const feishuProblemMessages = {
-  credential: '飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。',
-  'connection-limit': '这个飞书应用在别处也连着，先关掉别处再试。',
-  other: '没连上，点「重新连接」再试；还不行点「找客服」。',
+  credential: '飞书应用的 App ID 或 App Secret 不正确，请在飞书开放平台核对后重新填写。',
+  'connection-limit': '该飞书应用已在其他位置连接，请先断开其他连接后重试。',
+  other: '未能建立连接，请点击「重新连接」重试；如问题仍存在，请点击「联系客服」。',
 } as const satisfies Record<RemoteChannelProblem, string>
 
 const needsLoginMessage = feishuProblemMessages.credential
 
 /** 保存凭据时飞书回的不是正常应答，红条上那句（D23 之后单批的「飞书保存改」）。 */
-export const feishuSaveFailedMessage = '飞书凭据没保存上。请核对 App ID 和 App Secret 有没有填错，再点一次「保存」；还不行请找客服。'
+export const feishuSaveFailedMessage = '飞书凭据保存失败。请核对 App ID 和 App Secret 是否填写正确，再次点击「保存」；如仍失败，请联系客服。'
 
 export interface FeishuCredential {
   appId: string
@@ -115,7 +115,7 @@ export class FeishuAuthError extends Error {
  */
 export class FeishuTokenResponseError extends Error {
   constructor(readonly status: number, readonly code: number | null = null) {
-    super(`飞书没有给出访问凭证（HTTP ${status}）`)
+    super(`飞书未返回访问凭证（HTTP ${status}）`)
     this.name = 'FeishuTokenResponseError'
   }
 }
@@ -140,8 +140,8 @@ const imageTooLargeCode = 234037
 export function validateFeishuCredentialInput(appId: unknown, appSecret: unknown): FeishuCredential {
   const id = typeof appId === 'string' ? appId.trim() : ''
   const secret = typeof appSecret === 'string' ? appSecret.trim() : ''
-  if (!appIdPattern.test(id)) throw new Error('App ID 应该是 cli_ 开头的一串字母和数字，请从飞书开放平台的「凭证与基础信息」里复制。')
-  if (!appSecretPattern.test(secret)) throw new Error('App Secret 格式不对，请从飞书开放平台的「凭证与基础信息」里复制。')
+  if (!appIdPattern.test(id)) throw new Error('App ID 应为以 cli_ 开头的字母和数字组合，请从飞书开放平台的「凭证与基础信息」中复制。')
+  if (!appSecretPattern.test(secret)) throw new Error('App Secret 格式不正确，请从飞书开放平台的「凭证与基础信息」中复制。')
   return { appId: id, appSecret: secret }
 }
 
@@ -483,7 +483,7 @@ export function buildFeishuApprovalCard(message: RemoteOutboundApproval, outcome
   })
   return {
     config: { wide_screen_mode: true, update_multi: true },
-    header: { template: 'orange', title: { tag: 'plain_text', content: `需要你同意（第 ${request.approvalId} 条）` } },
+    header: { template: 'orange', title: { tag: 'plain_text', content: `需要您确认（第 ${request.approvalId} 条）` } },
     elements: [
       body,
       { tag: 'action', actions: [button('同意', 'primary', 'accept'), button('拒绝', 'danger', 'decline')] },
@@ -671,6 +671,8 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
   private reconnectTimer: NodeJS.Timeout | null = null
   private handshakeTimer: NodeJS.Timeout | null = null
   private abort: AbortController | null = null
+  /** cancelPendingSends 一次加一（M14）：发消息时记下，等完重发回来变了，就是关遥控时让停的，不再发。 */
+  private sendEpoch = 0
   private readonly fragments = new FeishuFragmentCache()
   private readonly seenEvents = new Set<string>()
   private readonly eventContext: FeishuEventContext = { p2pChats: new Map() }
@@ -702,7 +704,7 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
     if (!this.running) return
     if (!this.credential) {
       this.running = false
-      this.setStatus({ state: 'needs-login', message: '还没填飞书应用的 App ID 和 App Secret。' })
+      this.setStatus({ state: 'needs-login', message: '尚未填写飞书应用的 App ID 和 App Secret。' })
       return
     }
     this.reconnectDelayMs = minReconnectDelayMs
@@ -728,6 +730,10 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
     this.token = null
     this.tokenRequest = null
     if (this.lastStatus.state !== 'stopped') this.setStatus({ state: 'stopped' })
+  }
+
+  cancelPendingSends(): void {
+    this.sendEpoch += 1
   }
 
   async send(peer: RemotePeer, message: RemoteOutbound): Promise<void> {
@@ -800,14 +806,14 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
     const payload = await this.post({ receive_id: peer.userId, msg_type: 'interactive', content: JSON.stringify(card) })
     const data = isRecord(payload.data) ? payload.data : {}
     const messageId = stringField(data.message_id)
-    if (!messageId || !feishuMessageIdPattern.test(messageId)) throw new Error('飞书没有给出这张卡片的编号')
+    if (!messageId || !feishuMessageIdPattern.test(messageId)) throw new Error('飞书未返回该卡片的编号')
     return messageId
   }
 
   /** 原地更新一张发过的卡片（PATCH /open-apis/im/v1/messages/:message_id）。 */
   private async patchCard(handle: string, card: Record<string, unknown>, failureEvent: string): Promise<void> {
-    if (!this.credential) throw new Error('飞书渠道没有在运行')
-    if (!feishuMessageIdPattern.test(handle)) throw new Error('飞书卡片编号不对')
+    if (!this.credential) throw new Error('飞书渠道未运行')
+    if (!feishuMessageIdPattern.test(handle)) throw new Error('飞书卡片编号无效')
     const body = { content: JSON.stringify(card) }
     for (let attempt = 0; ; attempt += 1) {
       const token = await this.tenantToken()
@@ -832,19 +838,25 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
         continue
       }
       this.deps.log('warn', failureEvent, { status: response.status, code })
-      throw new Error(`飞书没有更新这张卡片（错误码 ${code ?? response.status}）`)
+      throw new Error(`飞书未能更新该卡片（错误码 ${code ?? response.status}）`)
     }
   }
 
   /** 发一条消息，交回飞书的应答（发进度卡要从里面取 message_id）。 */
   private async post(message: Record<string, unknown>): Promise<Record<string, unknown>> {
-    if (!this.credential) throw new Error('飞书渠道没有在运行')
+    if (!this.credential) throw new Error('飞书渠道未运行')
     // 一条消息不管重发几次都带同一个 uuid：第一次其实已经发到了、只是回应在路上断了时，飞书一小时内
     // 只认一次，手机上不会出现两条一样的（尤其是审批卡，两张卡同一个编号会让人以为要点两次）。
     const body = { ...message, uuid: randomUUID() }
+    const epoch = this.sendEpoch
     let tokenRefreshed = false
     let retries = 0
     for (;;) {
+      // 电脑上关了遥控（M14）：等着重发、换完令牌要再发的这一条不再发。不然手机上先收到「已关闭」，过几秒又冒出一条。
+      if (epoch !== this.sendEpoch) {
+        this.deps.log('info', 'feishu.send-cancelled', { retry: retries })
+        throw new Error('飞书遥控已关闭，这条消息不再发送')
+      }
       let response: RemoteJsonResponse
       try {
         const token = await this.tenantToken()
@@ -888,7 +900,7 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
         continue
       }
       this.deps.log('warn', 'feishu.send-failed', { status: response.status, code })
-      throw new Error(`飞书没有发出这条消息（错误码 ${code ?? response.status}）`)
+      throw new Error(`飞书未能发送该消息（错误码 ${code ?? response.status}）`)
     }
   }
 
@@ -909,7 +921,7 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
 
   private tenantToken(): Promise<string> {
     const credential = this.credential
-    if (!credential) return Promise.reject(new Error('飞书渠道没有在运行'))
+    if (!credential) return Promise.reject(new Error('飞书渠道未运行'))
     if (this.token && this.token.expiresAt > this.deps.now()) return Promise.resolve(this.token.token)
     if (!this.tokenRequest) {
       const request = requestFeishuTenantToken(this.deps.fetch, credential, this.deps.now())
@@ -952,7 +964,7 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
     if (!this.running || !credential) return
     const generation = ++this.generation
     this.setStatus(this.lastStatus.state === 'connected' || this.lastStatus.message
-      ? { state: 'connecting', message: '连不上飞书，正在重试。' }
+      ? { state: 'connecting', message: '无法连接飞书，正在重试。' }
       : { state: 'connecting' })
     const controller = new AbortController()
     this.abort = controller
@@ -1071,7 +1083,7 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
     const jitter = this.reconnectNonceMs > 0 ? Math.floor((this.options.random ?? Math.random)() * this.reconnectNonceMs) : 0
     const delay = Math.min(maxReconnectDelayMs, this.reconnectDelayMs + jitter)
     this.reconnectDelayMs = Math.min(maxReconnectDelayMs, this.reconnectDelayMs * 2)
-    this.setStatus({ state: 'connecting', message: '连不上飞书，正在重试。' })
+    this.setStatus({ state: 'connecting', message: '无法连接飞书，正在重试。' })
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null
       void this.connect()

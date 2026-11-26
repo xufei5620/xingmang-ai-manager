@@ -69,7 +69,8 @@ import type { AiMediaAssetService } from './ai-media-asset-service'
 import type { CanvasRunService } from './canvas-run-service'
 import { parseCanvasRunPreparationCompletion } from './canvas-run-preparations'
 import type { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
-import { findCanvasWorkflowAssetReferenceNodeIds, type CanvasProjectStore } from './canvas-project-store'
+import { displayCanvasProjectName, findCanvasWorkflowAssetReferenceNodeIds, type CanvasProjectStore, type CanvasStoredProjectSummary } from './canvas-project-store'
+import type { CanvasProjectListEntry } from './ipc-contract'
 import { claimCanvasDefaultProjectFolder, describeCanvasDefaultProjectFolderFailure, releaseCanvasDefaultProjectFolder, releaseCanvasDefaultProjectFolderTree } from './canvas-default-project-folder'
 import { findCanvasRunAssetReferences } from './canvas-asset-references'
 import type { CanvasProjectAssetContext, CanvasProjectAssetManager } from './canvas-project-asset-manager'
@@ -205,6 +206,37 @@ export function importedCanvasProjectName(workflowName: unknown, filePath: strin
   return cleaned(path.basename(filePath).replace(/\.xingcanvas$/i, '')) || '导入的项目'
 }
 
+// 主窗口「创作」那一列最多列这么多个画布项目：没归档的项目本来就封顶 100 个（canvas-project-store.ts）。
+const maximumListedCanvasProjects = 100
+
+/**
+ * What the main window's 「创作」 list gets for the canvas projects: id, name,
+ * last-changed time and the cover's asset id, newest first, archived ones
+ * left out. Project files are written on the canvas page's behalf, so the
+ * name is cut down to one line of plain text again here, the cover id is
+ * checked against the asset id shape, and a time that does not parse sorts
+ * last instead of failing the whole list.
+ */
+export function toCanvasProjectList(projects: readonly Pick<CanvasStoredProjectSummary, 'id' | 'name' | 'updatedAt' | 'archivedAt' | 'previewAsset'>[]): CanvasProjectListEntry[] {
+  const listed: CanvasProjectListEntry[] = []
+  for (const project of projects) {
+    if (project.archivedAt || !/^[a-f0-9-]{36}$/.test(project.id)) continue
+    const updatedAt = Date.parse(project.updatedAt)
+    // 封面（融合第 5 步）：项目中心里那一张，只交出编号和是图片还是视频；音频没有画面，不当封面。
+    const preview = project.previewAsset
+    const cover = preview && (preview.kind === 'image' || preview.kind === 'video') && /^[A-Za-z0-9_-]{43}$/.test(preview.assetId)
+      ? { assetId: preview.assetId, mediaType: preview.kind } : undefined
+    listed.push({ id: project.id, name: displayCanvasProjectName(project.name), updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : 0, ...(cover ? { cover } : {}) })
+  }
+  return listed.sort((left, right) => right.updatedAt - left.updatedAt).slice(0, maximumListedCanvasProjects)
+}
+
+/** The project id the main window names when it asks for a project to be opened (I5). */
+export function parseCanvasProjectListId(value: unknown): string {
+  if (typeof value !== 'string' || !/^[a-f0-9-]{36}$/.test(value)) throw new Error('画布项目标识格式错误')
+  return value
+}
+
 export interface CanvasWindowControllerOptions {
   accountWork?: import('./account-work-gate').AccountWorkGate
   /** Absolute path to the packaged infinite-canvas dist/ directory. */
@@ -279,6 +311,22 @@ export interface CanvasWindowController {
    * project is open.
    */
   openAssetLibrary(): Promise<void>
+  /**
+   * The current account's projects for the main window's 「创作」 list: id, name
+   * and last-changed time of the ones not archived, newest first. Nothing a
+   * project contains leaves this process, and the canvas page learns nothing
+   * from the call.
+   */
+  listProjects(): Promise<CanvasProjectListEntry[]>
+  /**
+   * Shows the canvas on one of the current account's projects (the main
+   * window's 「打开画布」). The id comes from the main window and is only used
+   * once it names a project of this account that is not archived. A canvas
+   * already on that project is focused; one on anything else goes through its
+   * own close confirmation first, and the call resolves false when the user
+   * stayed there. Calls run one at a time, in line with openProjectFile().
+   */
+  openProject(projectId: unknown): Promise<boolean>
   /** Applies the global application theme without exposing the settings record to the canvas renderer. */
   setTheme(theme: AppTheme): void
   setAppearance(appearance: CanvasAppearance): void
@@ -366,10 +414,10 @@ async function probeSandboxedRendererStatus(): Promise<string | null> {
   }
 }
 
-// The canvas's own background before it paints: the main window's light
-// background, and the obsidian one the canvas falls back to in dark.
-export const canvasWindowBackgroundColor = '#0b0c10'
-export const canvasWindowLightBackgroundColor = '#fbfaf6'
+// The canvas's own background before it paints: the --bg of its palette in
+// src/renderer-v2/styles/tokens.css (the data-host="desktop" pair, #1103).
+export const canvasWindowBackgroundColor = '#1f2023'
+export const canvasWindowLightBackgroundColor = '#e7e8eb'
 
 export function canvasWindowBackgroundForTheme(theme: AppTheme): string {
   return theme === 'light' ? canvasWindowLightBackgroundColor : canvasWindowBackgroundColor
@@ -826,7 +874,7 @@ export function createCanvasWindowController(
   // 文件夹名由主进程从名字里去掉不能进文件名的字符，每次新建一个，已经在的文件夹不用（canvas-default-project-folder.ts）。
   registerCanvasHandler(canvasHostCreateProjectInDefaultFolderChannel, async (event, nameInput) => {
     if (!options.projects) throw new Error('项目自动保存能力不可用')
-    if (!options.defaultProjectsDirectory) throw new Error('默认项目文件夹不可用，请点「换个位置创建…」自己选文件夹')
+    if (!options.defaultProjectsDirectory) throw new Error('默认项目文件夹不可用，请点击「换个位置创建…」自行选择文件夹')
     const userId = authenticatedCanvasUserId()
     const pageLoad = canvasPageLoads
     const name = requiredCanvasString(nameInput, '画布项目名称', 128)
@@ -834,7 +882,7 @@ export function createCanvasWindowController(
     try {
       directory = claimCanvasDefaultProjectFolder(options.defaultProjectsDirectory(), name)
     } catch (error) {
-      throw new Error(`没能在「星芒画布」文件夹里建项目（${describeCanvasDefaultProjectFolderFailure(error)}），可以点「换个位置创建…」自己选文件夹`)
+      throw new Error(`无法在「星芒画布」文件夹中创建项目（${describeCanvasDefaultProjectFolderFailure(error)}），您可点击「换个位置创建…」自行选择文件夹`)
     }
     let created: Awaited<ReturnType<CanvasProjectStore['create']>>
     try {
@@ -856,7 +904,7 @@ export function createCanvasWindowController(
     const projectId = requiredCanvasString(projectIdInput, '画布项目标识', 64)
     const project = (await options.projects.list(userId)).find((entry) => entry.id === projectId)
     if (!project) throw new Error('画布项目不存在')
-    if (project.workspaceStatus !== 'missing') throw new Error('项目的工作文件夹还在，不用重新选择')
+    if (project.workspaceStatus !== 'missing') throw new Error('项目的工作文件夹仍然存在，无需重新选择')
     assertCanvasUserUnchanged(userId)
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const dialogOptions: OpenDialogOptions = {
@@ -896,7 +944,7 @@ export function createCanvasWindowController(
     const projectId = requiredCanvasString(projectIdInput, '画布项目标识', 64)
     const project = (await options.projects.list(userId)).find((entry) => entry.id === projectId)
     if (!project) throw new Error('画布项目不存在')
-    if (!project.archivedAt) throw new Error('请先归档这个项目再删除')
+    if (!project.archivedAt) throw new Error('请先归档此项目，再进行删除')
     const folderToTrash = options.trashProjectFolder
       ? canvasProjectFolderToTrash(await options.projects.getWorkspaceDirectory(userId, projectId), options.defaultProjectsDirectory?.())
       : null
@@ -1398,10 +1446,8 @@ export function createCanvasWindowController(
     const workflowContent = requiredCanvasText(contentInput, '画布项目工作流', maximumSavedFileBytes)
     const parsed = parseCanvasProjectWorkflow(workflowContent)
     const context = await activeAssetContext(event.sender.id, userId)
-    const imageStore = context?.images ?? options.aiAssets
-    const sources = await readCanvasProjectAssetSources(parsed.assetIds, (assetId) => imageStore.readOwned(userId, assetId))
-    assertCanvasUserUnchanged(userId)
-    const projectContent = buildCanvasProjectPackage(workflowContent, sources)
+    // #1368 第 14 条：先问存到哪里再读图。原来先把项目里的图全读进内存、打成包才弹保存框，
+    // 图多的项目点了「导出」要干等一会儿才有反应，点了取消也白读一遍。
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const dialogOptions: SaveDialogOptions = {
       title: '画布：导出项目', defaultPath: withCanvasProjectExtension(suggestedName),
@@ -1410,6 +1456,10 @@ export function createCanvasWindowController(
     const result = parentWindow ? await dialog.showSaveDialog(parentWindow, dialogOptions) : await dialog.showSaveDialog(dialogOptions)
     if (result.canceled || !result.filePath) return null
     assertCanvasUserUnchanged(userId)
+    const imageStore = context?.images ?? options.aiAssets
+    const sources = await readCanvasProjectAssetSources(parsed.assetIds, (assetId) => imageStore.readOwned(userId, assetId))
+    assertCanvasUserUnchanged(userId)
+    const projectContent = buildCanvasProjectPackage(workflowContent, sources)
     await writeAtomicSafeUtf8File(result.filePath, projectContent, '画布项目导出文件')
     return { savedPath: result.filePath }
   })
@@ -1491,7 +1541,7 @@ export function createCanvasWindowController(
     try {
       directory = claimCanvasDefaultProjectFolder(projectsDirectory(), pending.projectName)
     } catch (error) {
-      throw new Error(`没能在「星芒画布」文件夹里建项目（${describeCanvasDefaultProjectFolderFailure(error)}），这次没有导入`)
+      throw new Error(`无法在「星芒画布」文件夹中创建项目（${describeCanvasDefaultProjectFolderFailure(error)}），本次未导入`)
     }
     const imported: string[] = []
     const mappings = new Map<string, string>()
@@ -1582,6 +1632,61 @@ export function createCanvasWindowController(
     return next
   }
 
+  // 主窗口「创作」左边那一列（融合第 1 步）。只交出编号、名字和最后改动的时间：名字是画布页面写的，
+  // 存的时候已经卡过长度、不许有控制字符（canvas-project-store.ts 的 normalizedProjectName），这里再收一遍，
+  // 主窗口只把它当文字显示。归档的不列，跟项目中心首页一样；条数照没归档项目的上限封顶。
+  async function listProjects(): Promise<CanvasProjectListEntry[]> {
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    const userId = authenticatedCanvasUserId()
+    const projects = await options.projects.list(userId)
+    assertCanvasUserUnchanged(userId)
+    return toCanvasProjectList(projects)
+  }
+
+  // 主窗口点了某个项目的「打开画布」。画布这边一个新能力都不加：没开着就带 ?project= 开（双击项目文件走的同一条），
+  // 开着的正是这个项目就把窗口拿到前面，开着别的（或者停在项目中心）先走它自己的关闭确认再重新开。
+  // 编号是主窗口给的，先在这个账号的项目表里找到、而且没归档才用（I5）；找不到就报错，不带着它去开窗口。
+  async function openStoredProject(projectIdInput: unknown): Promise<boolean> {
+    if (hostClosed()) throw new Error('画布宿主已关闭')
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    const projectId = parseCanvasProjectListId(projectIdInput)
+    const userId = authenticatedCanvasUserId()
+    const known = (await options.projects.list(userId)).some((project) => project.id === projectId && !project.archivedAt)
+    assertCanvasUserUnchanged(userId)
+    if (!known) throw new Error('未找到该画布项目，可能已在画布中删除或归档')
+    if (pendingOpen) await pendingOpen.catch(() => undefined)
+    if (canvasWindow && !canvasWindow.isDestroyed()) {
+      const active = activeProjects.get(canvasWindow.webContents.id)
+      if (active?.userId === userId && active.projectId === projectId) {
+        await open()
+        return true
+      }
+      if (!await requestClose()) {
+        if (canvasWindow && !canvasWindow.isDestroyed()) await open()
+        return false
+      }
+    }
+    if (hostClosed()) return false
+    assertCanvasUserUnchanged(userId)
+    if (pendingOpen) await pendingOpen.catch(() => undefined)
+    if (canvasWindow && !canvasWindow.isDestroyed()) {
+      // 关掉那一会儿里又从别处打开了画布：不再关它一次，项目就在项目中心里。
+      await open()
+      return true
+    }
+    pendingOpen = createWindow({ projectId }).finally(() => {
+      pendingOpen = null
+    })
+    await pendingOpen
+    return true
+  }
+
+  function openProject(projectId: unknown): Promise<boolean> {
+    const next = projectFileQueue.then(() => openStoredProject(projectId))
+    projectFileQueue = next.catch(() => undefined)
+    return next
+  }
+
   const unsubscribeRunEvents = options.canvasRuns.subscribe(({ event, userId, ownerId }) => {
     if (!canvasWindow || canvasWindow.isDestroyed()) return
     if (canvasWindow.webContents.id !== ownerId) return
@@ -1667,7 +1772,7 @@ export function createCanvasWindowController(
     })
     canvasCrashRecovery = crashRecovery
     // 画布卡死（页面死循环、长任务）不会崩，render-process-gone 不来，窗口只是不动，点 × 也只是白等关闭确认。
-    // 跟主窗口一样弹「界面没有响应」，字是 yoyo 2026-11-11 照决定单第六节批的（崩溃恢复.md KR-2）。
+    // 跟主窗口一样弹「界面无响应」，字是 yoyo 2026-11-11 照决定单第六节批的（崩溃恢复.md KR-2）。
     // 选「重新加载」先结束卡住的进程：只换地址的话，新页面还得那个卡住的进程来接（Electron 文档
     // forcefullyCrashRenderer 一节）。进程没了走下面的 render-process-gone，在那里重新加载，
     // 不记成画布崩了一次，也不占自动重载的次数。
@@ -1675,8 +1780,8 @@ export function createCanvasWindowController(
     const responsiveness = createWindowResponsivenessGuard({
       prompt: async (signal) => {
         const result = await dialog.showMessageBox(window, {
-          type: 'warning', title: '界面没有响应', message: '无限画布暂时没有响应。',
-          detail: '可以再等一会儿，画布通常会自己恢复。重新加载只会重启画布，正在进行的安装、下载和已保存的设置都不受影响，但画布上还没保存的改动会丢失。',
+          type: 'warning', title: '界面无响应', message: '无限画布暂时无响应。',
+          detail: '可稍候片刻，画布通常会自动恢复。重新加载仅会重启画布，正在进行的安装、下载和已保存的设置均不受影响，但画布上尚未保存的改动将丢失。',
           buttons: ['继续等待', '重新加载'], defaultId: 0, cancelId: 0, signal,
         })
         return result.response === 1 ? 'reload' : 'wait'
@@ -1826,7 +1931,7 @@ export function createCanvasWindowController(
       rendererUnavailable = true
       if (pendingClose?.window === window) finishPendingClose(false, '画布渲染进程已退出，无法确认项目保存')
       if (endedForHangReload) {
-        // 用户在「界面没有响应」里点了重新加载，进程是这边结束的，不是崩溃。
+        // 用户在「界面无响应」里点了重新加载，进程是这边结束的，不是崩溃。
         endedForHangReload = false
         options.runtimeLog.log('warn', 'canvas', 'process.ended-for-reload', '已结束卡住的画布界面进程，重新加载', {
           reason: details.reason,
@@ -1914,6 +2019,8 @@ export function createCanvasWindowController(
     open,
     openProjectFile,
     openAssetLibrary,
+    listProjects,
+    openProject,
     setTheme(theme) {
       currentTheme = theme
       currentAppearance = { ...currentAppearance, theme }

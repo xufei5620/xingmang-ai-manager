@@ -45,7 +45,7 @@ export const accountProfileAnchor = 'edit-profile'
 export const accountSwitchAnchor = 'switch-account'
 export const accountSwitchKeywords = ['换账号', '切账号', '换号'] as const
 /**
- * 密钥管理最下面「用在别的软件里」那张卡（Q1）：首页工具区最后一格、顶部搜索「接口地址」落到这里。
+ * 密钥管理最下面「在其他软件中使用」那张卡（Q1）：首页工具区最后一格、顶部搜索「接口地址」落到这里。
  */
 export const otherAppsAnchor = 'other-apps'
 /**
@@ -63,7 +63,7 @@ export const accountSections = [
   { value: 'change-password', tab: 'security', label: '修改密码', keywords: ['改密码', '密码'] },
   { value: 'remember-password', tab: 'security', label: '记住密码', keywords: [] },
   { value: 'devices', tab: 'security', label: '登录设备', keywords: ['设备', '下线', '其他电脑', '登录记录'], gated: true },
-  { value: otherAppsAnchor, tab: 'keys', label: '用在别的软件里', keywords: ['接口地址', 'API 地址', 'API 域名', 'Base URL', 'baseURL', '别的软件', '其他软件', '第三方软件', 'Cherry Studio', 'Chatbox', '沉浸式翻译'], gated: true },
+  { value: otherAppsAnchor, tab: 'keys', label: '在其他软件中使用', keywords: ['用在别的软件里', '接口地址', 'API 地址', 'API 域名', 'Base URL', 'baseURL', '别的软件', '其他软件', '第三方软件', 'Cherry Studio', 'Chatbox', '沉浸式翻译'], gated: true },
 ] as const satisfies ReadonlyArray<{ value: string; tab: AccountTabValue; label: string; keywords: readonly string[]; gated?: boolean }>
 export type AccountSectionValue = (typeof accountSections)[number]['value']
 /** 外面点名要去的地方：一个页签，或者页签里的一处落点。 */
@@ -123,8 +123,8 @@ export const settingsSections = [
   { value: 'display', group: 'appearance', label: '辅助与显示' },
   { value: 'routes', group: 'network', label: '连接线路' },
   { value: 'download', group: 'network', label: '下载与连接' },
-  { value: 'reminders', group: 'notifications', label: '提醒哪些事' },
-  { value: 'transfer', group: 'backup', label: '搬到新电脑' },
+  { value: 'reminders', group: 'notifications', label: '提醒事项' },
+  { value: 'transfer', group: 'backup', label: '迁移到新电脑' },
 ] as const satisfies ReadonlyArray<{ value: string; group: SettingsGroupId; label: string }>
 export type SettingsSectionId = (typeof settingsSections)[number]['value']
 export const scopeOptions = [
@@ -136,14 +136,14 @@ export const scopeOptions = [
 ]
 export const updateLabels = {
   disabled: '当前环境暂不提供自动更新',
-  idle: '检查有没有新版本',
+  idle: '检查是否有新版本',
   checking: '正在检查新版本…',
   available: '发现新版本',
   'not-available': '已是最新版本',
   downloading: '正在下载更新…',
   downloaded: '更新已下载',
   cancelled: '下载已取消',
-  error: '更新没有完成',
+  error: '更新未完成',
 } as const
 /**
  * 更新失败分三步说。只报一句「更新没有完成」时，断网点一次「检查更新」也会被
@@ -156,7 +156,7 @@ export const updateFailureLabels = {
   install: { title: '安装更新失败', retry: '重新安装' },
 } as const
 // 旧版本的快照没有 failedStep。说不清是哪一步，就别编一个步骤名出来。
-export const updateFailureFallback = { title: '更新没有完成', retry: '重新下载' } as const
+export const updateFailureFallback = { title: '更新未完成', retry: '重新下载' } as const
 export function updateFailureLabel(step: UpdateFailedStep | null | undefined) {
   return step ? updateFailureLabels[step] : updateFailureFallback
 }
@@ -167,8 +167,8 @@ export function updateFailureLabel(step: UpdateFailedStep | null | undefined) {
  */
 type UpdateOfferState = Pick<UpdateSnapshot, 'phase' | 'currentVersion' | 'availableVersion' | 'rollback' | 'currentVersionWithdrawn' | 'diskShortfall' | 'installMethod'>
 export function updateCardTitle(update: UpdateOfferState): string {
-  if (update.rollback && update.phase === 'available') return '建议退回稳定版本'
-  if (update.currentVersionWithdrawn && (update.phase === 'not-available' || update.phase === 'idle')) return '这个版本有已知问题'
+  if (update.rollback && update.phase === 'available') return '建议回退至稳定版本'
+  if (update.currentVersionWithdrawn && (update.phase === 'not-available' || update.phase === 'idle')) return '当前版本存在已知问题'
   return updateLabels[update.phase]
 }
 /** 「有新版本 v{y}」写哪一版。退回旧版本不是新版本，那时不这么写。 */
@@ -177,7 +177,7 @@ export function updateNewVersion(update: Pick<UpdateSnapshot, 'currentVersion' |
   return update.availableVersion
 }
 /**
- * 人就在「设置 › 版本更新」时，「正在下载更新」「下载更新失败」「新版本 X 可以安装」这三种气泡说的是
+ * 人就在「设置 › 版本更新」时，「正在下载更新」「下载更新失败」「新版本 X 可安装」这三种气泡说的是
  * 版本卡上写着的同一件事，不弹；离开那一组照旧弹。别的几种（「这个版本有已知问题」等）照旧。
  */
 export function updateBubbleRepeatsUpdatesPage(update: UpdateOfferState & Pick<UpdateSnapshot, 'error' | 'failedStep'>): boolean {
@@ -188,9 +188,9 @@ export function updateBubbleRepeatsUpdatesPage(update: UpdateOfferState & Pick<U
 export function updateBubbleTitle(update: UpdateOfferState): string {
   if (update.phase === 'downloaded') return '更新已下载'
   if (update.phase === 'downloading') return '正在下载更新'
-  if (update.phase === 'available' && update.diskShortfall) return '新版本先不下载'
-  if (update.phase === 'available') return update.rollback ? `建议退回 ${update.availableVersion}` : `新版本 ${update.availableVersion} 可以安装`
-  return '这个版本有已知问题'
+  if (update.phase === 'available' && update.diskShortfall) return '新版本暂不下载'
+  if (update.phase === 'available') return update.rollback ? `建议回退至 ${update.availableVersion}` : `新版本 ${update.availableVersion} 可安装`
+  return '当前版本存在已知问题'
 }
 /**
  * Windows 上账号不在管理员组（update.installNeedsAdminPassword）：下好的新版本不自动装，首页气泡
@@ -198,25 +198,25 @@ export function updateBubbleTitle(update: UpdateOfferState): string {
  * 要一致。
  */
 export const standardAccountUpdateNotice = {
-  title: '这台电脑的账号不是管理员，装更新时要输入管理员密码',
-  body: '让有管理员账号的人点一次「重启并安装」，或者找客服。',
+  title: '当前系统账号不是管理员，安装更新时需要输入管理员密码',
+  body: '请由管理员账号点击「重启并安装」，或联系客服。',
 } as const;
 export const standardAccountUpdateText = `${standardAccountUpdateNotice.title}。${standardAccountUpdateNotice.body}`;
 // Mac 上能趁电脑闲着自己装的（update.idleInstall）：「下好了」那个气泡多说这一句。主进程 desktop-notifications.ts 的
 // idleInstallNoticeTail 是同一句，两边字面量要一致。
-export const idleInstallBubbleTail = '你不用电脑时星芒也会自己装好。';
+export const idleInstallBubbleTail = '电脑空闲时星芒也会自动安装。';
 // 提示气泡的正文。自动更新开着时直接告诉用户接下来会怎样，不用他再点进「版本更新」。
 // 交给系统安装器的版本（Linux）从不自己装，下好了就请他点一下。
 export function autoUpdateBubbleBody(phase: UpdateOfferState['phase'], autoUpdate: boolean, installMethod?: UpdateOfferState['installMethod'], installNeedsAdminPassword?: boolean, idleInstall?: boolean): string {
   if (installMethod === 'system-installer') {
-    if (phase === 'downloaded') return '已经下好了，到「设置 › 版本更新」点「安装新版本」就能装上。';
-    return autoUpdate ? '正在后台下载，下好后到「设置 › 版本更新」点「安装新版本」。' : '查看更新内容和安装状态。';
+    if (phase === 'downloaded') return '已下载完成，请前往「设置 › 版本更新」点击「安装新版本」。';
+    return autoUpdate ? '正在后台下载，下载完成后请前往「设置 › 版本更新」点击「安装新版本」。' : '查看更新内容和安装状态。';
   }
   if (phase === 'downloaded' && installNeedsAdminPassword) return standardAccountUpdateText;
   if (!autoUpdate) return '查看更新内容和安装状态。';
-  if (phase === 'downloaded') return `已经下好了，可以现在装，也可以关掉软件或下次打开时自动装上。${idleInstall ? idleInstallBubbleTail : ''}`;
-  if (installNeedsAdminPassword) return '正在后台下载；这台电脑装更新时要输入管理员密码，下好后不会自动装上。';
-  return '正在后台下载，下好后关掉软件或下次打开时自动装上。';
+  if (phase === 'downloaded') return `已下载完成，可立即安装，也可在关闭软件或下次启动时自动安装。${idleInstall ? idleInstallBubbleTail : ''}`;
+  if (installNeedsAdminPassword) return '正在后台下载；本机安装更新需要输入管理员密码，下载完成后不会自动安装。';
+  return '正在后台下载，下载完成后将在关闭软件或下次启动时自动安装。';
 }
 /**
  * 磁盘空间不够、这一轮没下更新时的那句。和系统通知读同一份说法（disk-space-copy.ts）；
@@ -244,13 +244,13 @@ function oneDecimal(value: number): string {
  * 每秒都在变；几秒就好的直接说「马上就好」。
  */
 export function formatDownloadRemaining(seconds: number): string {
-  if (seconds <= 10) return '马上就好';
-  if (seconds < 60) return `大约还要 ${Math.min(50, Math.ceil(seconds / 10) * 10)} 秒`;
+  if (seconds <= 10) return '即将完成';
+  if (seconds < 60) return `预计还需 ${Math.min(50, Math.ceil(seconds / 10) * 10)} 秒`;
   const minutes = Math.ceil(seconds / 60);
-  if (minutes < 60) return `大约还要 ${minutes} 分钟`;
+  if (minutes < 60) return `预计还需 ${minutes} 分钟`;
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
-  return rest ? `大约还要 ${hours} 小时 ${rest} 分钟` : `大约还要 ${hours} 小时`;
+  return rest ? `预计还需 ${hours} 小时 ${rest} 分钟` : `预计还需 ${hours} 小时`;
 }
 /**
  * 进度条下面那行：「已下载 38 MB / 共 112 MB · 每秒 1.8 MB · 大约还要 1 分钟」。
@@ -276,8 +276,8 @@ export function updateDownloadDetail(progress: UpdateSnapshot['progress'] | null
  * 账号不是管理员的 Windows 电脑要输管理员密码，都不能说会自己装上。
  */
 export function autoUpdateSettingDescription(installMethod?: UpdateOfferState['installMethod'], installNeedsAdminPassword?: boolean): string {
-  if (installMethod === 'system-installer') return '下好后提醒你点安装';
-  return installNeedsAdminPassword ? '下好后要输入管理员密码才能装' : '下好后在你关掉星芒时装上';
+  if (installMethod === 'system-installer') return '下载完成后提醒您安装';
+  return installNeedsAdminPassword ? '下载完成后需输入管理员密码安装' : '下载完成后在关闭星芒时安装';
 }
 /**
  * 版本卡右上角的小标签：「有新版本 v{y}」「已下载，重启后生效」，其余照旧用 updateCardTitle。
@@ -314,7 +314,7 @@ export function updateSidebarEntry(update: (UpdateOfferState & Pick<UpdateSnapsh
     const systemInstaller = update.installMethod === 'system-installer';
     return {
       label: systemInstaller ? '安装新版本' : '重启并安装新版',
-      title: `${named}已经下好，点一下装上${systemInstaller ? '' : '，装好自动打开'}`,
+      title: `${named}已下载，点击即可安装${systemInstaller ? '' : '，安装完成后自动打开'}`,
       install: true,
     };
   }
@@ -329,12 +329,12 @@ export function updateSidebarEntry(update: (UpdateOfferState & Pick<UpdateSnapsh
   }
   return null;
 }
-export const updateInstallNote = '装之前先保存工具里没做完的东西。有工具正在安装时，不会打断它，会先问你或者等下次再装。';
+export const updateInstallNote = '安装前请保存工具中未完成的工作。如有工具正在安装，不会中断该安装，将先询问您或推迟到下次安装。';
 export function withdrawnVersionAdvice(update: UpdateOfferState): string {
   const next = update.availableVersion
-  if (next && update.rollback) return `发布者撤回了 ${update.currentVersion}。建议装回 ${next}：先下载，再点「${updateInstallActionLabel(update.installMethod)}」。`
-  if (next) return `发布者撤回了 ${update.currentVersion}，修好的 ${next} 已经可以装了，建议尽快更新。`
-  return `发布者撤回了 ${update.currentVersion}。修好的版本准备好后，这里会提示你更新。`
+  if (next && update.rollback) return `发布者已撤回 ${update.currentVersion}。建议回退至 ${next}：请先下载，再点击「${updateInstallActionLabel(update.installMethod)}」。`
+  if (next) return `发布者已撤回 ${update.currentVersion}，修复后的 ${next} 已可安装，建议尽快更新。`
+  return `发布者已撤回 ${update.currentVersion}。修复版本就绪后，此处将提示您更新。`
 }
 export const keyStates = {
   1: { label: '有效', tone: 'ok' },
@@ -428,11 +428,11 @@ export interface NotificationOption {
 export const notificationOptions: readonly NotificationOption[] = [
   { value: 'balance', label: '余额不足', description: '余额低于 $5 时提醒' },
   { value: 'spend', label: '花费突然变多', description: '一小时内花费超过平时 5 倍且至少 $5 时提醒' },
-  { value: 'cliTurn', label: '终端里的 AI 做完或在等你' },
-  { value: 'cliTrouble', label: '终端里没回上' },
+  { value: 'cliTurn', label: '终端中的 AI 已完成或等待确认' },
+  { value: 'cliTrouble', label: '终端中的 AI 未能回复' },
   { value: 'install', label: '安装和更新结果' },
   { value: 'cliUpdate', label: '工具有新版本' },
-  { value: 'task', label: '后台任务做完' },
+  { value: 'task', label: '后台任务已完成' },
   { value: 'announcement', label: '公告与优惠' },
   { value: 'acceleration', label: '加速提醒' },
 ]
@@ -470,24 +470,24 @@ export const settingsItems: readonly SettingsItem[] = [
   { id: 'language', group: 'appearance', section: 'text-scale', label: '界面语言', keywords: ['中文'] },
   { id: 'high-contrast', group: 'appearance', section: 'display', label: '高对比度', keywords: ['看不清'] },
   { id: 'reduced-motion', group: 'appearance', section: 'display', label: '减少动画', keywords: ['动效'] },
-  { id: 'hardware-acceleration', group: 'appearance', section: 'display', label: '用显卡加速显示', keywords: ['黑屏', '花屏', '闪烁', '闪退', '显卡'] },
+  { id: 'hardware-acceleration', group: 'appearance', section: 'display', label: '使用显卡加速显示', keywords: ['用显卡加速显示', '黑屏', '花屏', '闪烁', '闪退', '显卡'] },
   { id: 'restore-appearance', group: 'appearance', section: 'display', label: '恢复默认外观', keywords: ['重置', '默认'] },
   { id: 'launch-at-login', group: 'startup', label: '开机自动启动', keywords: ['开机', '自启'] },
-  { id: 'close-behavior', group: 'startup', label: '点关闭按钮时', keywords: ['托盘', '最小化', '关闭'] },
+  { id: 'close-behavior', group: 'startup', label: '点击关闭按钮时', keywords: ['点关闭按钮时', '托盘', '最小化', '关闭'] },
   { id: 'startup-diagnostics', group: 'startup', label: '启动时检查环境', keywords: [] },
   { id: 'workspace', group: 'tools', label: '工作文件夹', keywords: ['工作文件夹', '项目文件夹', '默认文件夹'] },
   // Claude Code 的写文件、改文件只在打开的那个文件夹里做（Fable 第二轮 Q6），默认关。
-  { id: 'claude-write-boundary', group: 'tools', label: '只让 Claude Code 改项目文件夹里的文件', keywords: ['文件夹外面', '乱改文件', '改错文件', '写文件', '权限'] },
+  { id: 'claude-write-boundary', group: 'tools', label: '仅允许 Claude Code 修改项目文件夹内的文件', keywords: ['只让 Claude Code 改项目文件夹里的文件', '文件夹外面', '乱改文件', '改错文件', '写文件', '权限'] },
   // 提交代码、发 PR 时不带 Claude 的署名（同类对比 备选 6），默认关。
   { id: 'claude-commit-attribution', group: 'tools', label: 'Claude Code 提交代码时不署名', keywords: ['署名', 'Co-Authored-By', 'commit', 'git', 'PR', '提交记录'] },
-  { id: 'latest-cli', group: 'tools', label: '命令行工具总是装最新版', keywords: ['最新版', '推荐版本'] },
+  // 一段话写进三家工具各自的全局说明里星芒那一段（总单 Q4 C5），客户自己写的不动，换回官方账号也照样有效。
+  { id: 'standing-instructions', group: 'tools', label: '给 AI 的长期嘱咐', keywords: ['嘱咐', '长期', '每次都', '记住', '全局说明', '规矩', 'CLAUDE.md', 'AGENTS.md', '提示词', '说话方式'] },
+  { id: 'latest-cli', group: 'tools', label: '命令行工具始终安装最新版本', keywords: ['总是装最新版', '最新版', '推荐版本'] },
   { id: 'install-location', group: 'tools', label: '安装位置', keywords: ['装在哪'] },
   { id: 'terminal', group: 'tools', label: '终端', keywords: ['命令行'] },
-  // 在飞书或微信里私聊机器人让电脑上的 Codex 干活（features/settings/codex-remote）。
-  { id: 'codex-remote', group: 'tools', label: '手机遥控 Codex', keywords: ['遥控', '手机', '飞书', '微信', 'ClawBot', '机器人', '远程', '配对'], card: true },
   { id: 'acceleration', group: 'network', label: '网络加速', keywords: ['加速', '游戏', '延迟', '卡顿', '免费时长', '加速线路'], when: 'acceleration', card: true },
   ...connectionRouteSettings.map((route): SettingsItem => ({ id: route.id, group: 'network', section: 'routes', label: route.label, keywords: ['线路', '线路1', '线路2', '直连', '洛杉矶', 'CF', '备用', '重启', '连不上'] })),
-  { id: 'tool-route-restart-hints', group: 'network', section: 'routes', label: '换线路后提醒我重开工具', keywords: ['线路', '重开', '需重开生效'] },
+  { id: 'tool-route-restart-hints', group: 'network', section: 'routes', label: '切换线路后提醒重新打开工具', keywords: ['换线路后提醒我重开工具', '线路', '重开', '需重开生效'] },
   { id: 'mirror', group: 'network', section: 'download', label: '下载来源', keywords: ['镜像', '下载慢', '国内', '官方源'] },
   { id: 'proxy', group: 'network', section: 'download', label: '连接方式', keywords: ['网络连接', '代理', 'VPN', '梯子'] },
   { id: 'network-check', group: 'network', section: 'download', label: '网络检查', keywords: [] },
@@ -504,11 +504,11 @@ export const settingsItems: readonly SettingsItem[] = [
   })),
   { id: 'backups', group: 'backup', label: '工具配置备份', keywords: ['备份', '恢复', '还原', '找回配置', '立即备份'], card: true },
   // 没登录时只能导设置，那一行写「导出设置」（页面上换）；这里的标题给顶部搜索用。
-  { id: 'transfer', group: 'backup', section: 'transfer', label: '导出设置和聊天记录', keywords: ['导出', '换电脑', '新电脑', '迁移', '聊天记录', '搬到新电脑'] },
+  { id: 'transfer', group: 'backup', section: 'transfer', label: '导出设置和聊天记录', keywords: ['导出', '换电脑', '新电脑', '迁移', '聊天记录', '搬到新电脑', '作品', '视频'] },
   { id: 'transfer-import', group: 'backup', section: 'transfer', label: '从文件导入', keywords: ['导入', '换电脑', '新电脑', '迁移', '搬到新电脑'] },
   // 星芒自己占了多少地方、能清哪些（决定单 D100，「空间页改」）。「C盘满了」是批过的「C 盘满了」不带空格的写法：
   // 搜索按空格拆词，客户多半不打那个空格。
-  { id: 'storage', group: 'backup', label: '星芒占用的空间', keywords: ['空间', '磁盘', '清理', '占用', 'C 盘满了', 'C盘满了', '内存不够'], card: true },
+  { id: 'storage', group: 'backup', label: '星芒占用空间', keywords: ['星芒占用的空间', '空间', '磁盘', '清理', '占用', 'C 盘满了', 'C盘满了', '内存不够'], card: true },
   { id: 'crash-reporting', group: 'privacy', label: '自动发送错误报告', keywords: [] },
   { id: 'usage-stats', group: 'privacy', label: '匿名使用统计', keywords: [] },
   { id: 'logs', group: 'privacy', label: '运行日志', keywords: ['日志', '报告'] },

@@ -110,8 +110,8 @@ describe('resolveStarterWorkspaceContainer', () => {
   })
 
   it('refuses a parent it cannot place', () => {
-    expect(() => resolveStarterWorkspaceContainer('', 'win32')).toThrow('找不到可以放项目的文件夹')
-    expect(() => resolveStarterWorkspaceContainer('Documents', 'darwin')).toThrow('找不到可以放项目的文件夹')
+    expect(() => resolveStarterWorkspaceContainer('', 'win32')).toThrow('未找到可存放项目的文件夹')
+    expect(() => resolveStarterWorkspaceContainer('Documents', 'darwin')).toThrow('未找到可存放项目的文件夹')
   })
 })
 
@@ -173,7 +173,7 @@ describe('createStarterWorkspace', () => {
     fs.mkdirSync(container)
     for (let index = 1; index <= 99; index += 1) fs.mkdirSync(path.join(container, buildStarterWorkspaceName(index)))
 
-    expect(() => createStarterWorkspace(documents, context())).toThrow('同名文件夹太多了')
+    expect(() => createStarterWorkspace(documents, context())).toThrow('中同名文件夹过多')
   })
 
   it('refuses to create a folder the sensitive-workspace guard would flag', () => {
@@ -181,14 +181,14 @@ describe('createStarterWorkspace', () => {
     // 敏感名单」这一条，并确认判定在动磁盘之前。
     const guardedHome = { platform: process.platform, home: path.join(documents, starterWorkspaceContainerName, 'my-project') }
 
-    expect(() => createStarterWorkspace(documents, guardedHome)).toThrow('这个位置不适合放项目')
+    expect(() => createStarterWorkspace(documents, guardedHome)).toThrow('该位置不适合存放项目')
     expect(fs.existsSync(path.join(documents, starterWorkspaceContainerName))).toBe(false)
   })
 
   it('does not create a parent folder the system reported but never made', () => {
     const missing = path.join(home, 'Missing Documents')
 
-    expect(() => createStarterWorkspace(missing, context())).toThrow('找不到可以放项目的文件夹')
+    expect(() => createStarterWorkspace(missing, context())).toThrow('未找到可存放项目的文件夹')
     expect(fs.existsSync(missing)).toBe(false)
   })
 

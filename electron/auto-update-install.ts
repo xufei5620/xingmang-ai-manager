@@ -407,18 +407,18 @@ export interface AutoInstallNotice {
  * （D11，yoyo 2026-11-10 批）。缺省 = 平时的说法。
  */
 export function buildAutoInstallNotice(version: string, moment: AutoInstallMoment, platform: NodeJS.Platform, elevated = false, rollback = false): AutoInstallNotice {
-  const consent = platform === 'win32' && !elevated ? 'Windows 弹出授权窗口时请点「是」。' : ''
+  const consent = platform === 'win32' && !elevated ? 'Windows 弹出授权窗口时，请点击「是」。' : ''
   const keychain = platform === 'darwin' ? macKeychainUpdateHint : ''
   if (moment === 'quit') {
     return rollback
-      ? { title: `正在换回星芒AI的 ${version} 版`, body: `正在换回 ${version} 版，装好会自动打开。${consent}${keychain}` }
-      : { title: '正在安装星芒AI新版本', body: `正在装新版 ${version}，装好会自动打开。${consent}${keychain}` }
+      ? { title: `正在回退至星芒AI ${version} 版`, body: `正在回退至 ${version} 版，安装完成后将自动打开。${consent}${keychain}` }
+      : { title: '正在安装星芒AI新版本', body: `正在安装新版 ${version}，安装完成后将自动打开。${consent}${keychain}` }
   }
   return {
-    title: '星芒AI马上更新',
+    title: '星芒AI即将更新',
     body: rollback
-      ? `上次下好的 ${version} 版几秒后开始安装，软件会先关掉，装好自动打开。${consent}${keychain}`
-      : `上次下好的新版 ${version} 几秒后开始安装，软件会先关掉，装好自动打开。${consent}${keychain}`,
+      ? `已下载的 ${version} 版将在几秒后开始安装，软件将先关闭，安装完成后自动打开。${consent}${keychain}`
+      : `已下载的新版 ${version} 将在几秒后开始安装，软件将先关闭，安装完成后自动打开。${consent}${keychain}`,
   }
 }
 
@@ -443,18 +443,18 @@ export function quitInstallPrompt(version: string | null, installMethod: UpdateI
   if (installMethod === 'system-installer') {
     return {
       message: rollbackVersion
-        ? `建议退回的 ${rollbackVersion} 版已经下好，现在装上吗？`
-        : version ? `新版本 ${version} 已经下载好，现在装上吗？` : '新版本已经下载好，现在装上吗？',
-      detail: '星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码就行。装好后从应用菜单重新打开星芒。现在不装也行，下次退出时再问你。',
-      buttons: ['关掉并安装', '先退出，下次再装'],
+        ? `建议回退的 ${rollbackVersion} 版已下载，是否立即安装？`
+        : version ? `新版本 ${version} 已下载，是否立即安装？` : '新版本已下载，是否立即安装？',
+      detail: '星芒将先关闭，再打开系统安装窗口：请在其中点击「安装」并输入开机密码。安装完成后，请从应用菜单重新打开星芒。如暂不安装，下次退出时将再次询问。',
+      buttons: ['关闭并安装', '退出，下次再安装'],
     }
   }
   return {
     message: rollbackVersion
-      ? `建议退回的 ${rollbackVersion} 版已经下好，顺手装上吗？`
-      : version ? `新版本 ${version} 已经下载好，顺手装上吗？` : '新版本已经下载好，顺手装上吗？',
-    detail: `安装很快，装完会自动打开。${platform === 'darwin' ? macKeychainUpdateHint : ''}现在不装也行，更新会一直留着，下次退出时再问你。`,
-    buttons: ['安装并退出', '先退出，下次再装'],
+      ? `建议回退的 ${rollbackVersion} 版已下载，是否一并安装？`
+      : version ? `新版本 ${version} 已下载，是否一并安装？` : '新版本已下载，是否一并安装？',
+    detail: `安装耗时很短，完成后将自动打开。${platform === 'darwin' ? macKeychainUpdateHint : ''}如暂不安装，更新将保留，下次退出时将再次询问。`,
+    buttons: ['安装并退出', '退出，下次再安装'],
   }
 }
 
@@ -465,10 +465,10 @@ export function quitInstallPrompt(version: string | null, installMethod: UpdateI
  * 「建议退回的 X 版」，跟同一页上那句的说法一致（D11）。缺省或 null = 平时的说法。
  */
 export function previousAutoInstallFailureMessage(platform: NodeJS.Platform, rollbackVersion?: string | null): string {
-  const subject = rollbackVersion ? `建议退回的 ${rollbackVersion} 版` : '新版本'
+  const subject = rollbackVersion ? `建议回退的 ${rollbackVersion} 版` : '新版本'
   return platform === 'win32'
-    ? `${subject}上次没装上：Windows 的授权窗口被关掉了，或者安装程序没起来。点「重新安装」再试一次，授权窗口弹出来时点「是」。`
-    : `${subject}上次没装上，安装程序没起来。点「重新安装」再试一次。`
+    ? `${subject}上次安装失败：Windows 授权窗口被关闭，或安装程序未能启动。请点击「重新安装」重试，授权窗口弹出时请点击「是」。`
+    : `${subject}上次安装失败，安装程序未能启动。请点击「重新安装」重试。`
 }
 
 export interface PendingUpdateStore {

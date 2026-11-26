@@ -27,18 +27,18 @@ describe('renderer-v2 status bar environment', () => {
 
   it('lists every runtime on hover and says which ones are missing', () => {
     const runtimes = { node: installed('v24.0.0'), python: missing, git: installed('2.43.0') }
-    expect(environmentRuntimeSummary(runtimes)).toBe('Node.js v24.0.0 · Python 没装 · Git 2.43.0')
-    expect(buildEnvironmentStatus({ warn: 0, fail: 0, error: 0 }, runtimes).detail).toBe('Node.js v24.0.0 · Python 没装 · Git 2.43.0')
+    expect(environmentRuntimeSummary(runtimes)).toBe('Node.js v24.0.0 · Python 未安装 · Git 2.43.0')
+    expect(buildEnvironmentStatus({ warn: 0, fail: 0, error: 0 }, runtimes).detail).toBe('Node.js v24.0.0 · Python 未安装 · Git 2.43.0')
   })
 
   it('names the Node.js version on its own for the status bar', () => {
     expect(buildEnvironmentStatus(null, { node: installed('v24.0.0'), python: missing, git: missing }).node).toBe('Node.js v24.0.0')
-    expect(buildEnvironmentStatus(null, { node: missing, python: missing, git: missing }).node).toBe('Node.js 没装')
+    expect(buildEnvironmentStatus(null, { node: missing, python: missing, git: missing }).node).toBe('Node.js 未安装')
   })
 
   it('does not call a runtime missing when its probe failed', () => {
     expect(environmentRuntimeSummary({ node: { installed: false, version: null, detectionFailed: true }, python: missing, git: missing }))
-      .toBe('Node.js 检测失败 · Python 没装 · Git 没装')
+      .toBe('Node.js 检测失败 · Python 未安装 · Git 未安装')
   })
 })
 

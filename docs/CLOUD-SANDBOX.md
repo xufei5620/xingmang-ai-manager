@@ -44,6 +44,7 @@ npm run selfcheck                                # 提 PR 前的四道自查，�
 - `/opt/pw-browsers/chromium` 是容器自己放的链接，指向当前那个带版本号的目录（11-11 验）。**不要把带版本号的路径写进脚本或存好的指令里**，镜像一换就过期。
 - 不要跑 `npx playwright install`（容器设了 `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`），也不要自己在 `/opt/pw-browsers` 下造软链去凑版本号。
 - 不要为了让它过而改测试。门槛和别处一样：0 失败。
+- **11-24 的容器带的是 Chrome for Testing 158.0.8127.36，有三条浏览器用例在 main（`69455f4`）上同样红**，不是改动弄的：`e2e/maintenance-layout.test.mjs` 的 `Maintenance actions use the content column and wrap at narrow widths` 和 `src/renderer-v2/testing/app-check.mjs` 的 `full App preserves the fixed desktop columns…`（都是取到的对齐值是 `flow-start`、断言要 `flex-start`），以及 app-check 的 `a video opened from the library is laid out at its own shape…`（放视频时页面崩了，`Target crashed`）。拿 main 的 worktree 单跑同样三条红就是这个环境问题，PR 里注明、以 CI 上 Playwright 自己那份 Chromium 的结果为准；别的用例红照旧当回归查。
 
 ## 3. 跑测试时别踩的
 
@@ -51,7 +52,11 @@ npm run selfcheck                                # 提 PR 前的四道自查，�
 - **在新开的 worktree 里把主目录的 `node_modules` 软链过来省安装，有两个坑。**（沿用 11-09；`.gitignore` 那一行 11-11 验）
   1. 根 `.gitignore` 写的是 `node_modules/`（带斜杠），只挡目录、不挡软链，`git add -A` 会把这个链接提交进去。先往 `.git/info/exclude` 加一行 `/node_modules`，提交前 `git show --stat` 扫一眼。已经提交进去的那个提交别再挑回（`cherry-pick`、`merge`）主目录：git 会把主目录里真的 `node_modules` 删掉，换成一个指向它自己的坏链接，整个依赖就没了（11-11 踩过）。要挑，先在 worktree 里 `git rm --cached node_modules` 补一个提交，再连它一起挑；挑的时候加 `-n`、事后再 `git reset -- node_modules` 来不及，目录在挑的那一下就删了。真删了：从另一个装好的 worktree 把 `node_modules` 搬回来（锁文件一样才行），不然重新 `npm ci`。
   2. `tooling/legacy-renderer/node_modules` 也要链（它是 npm workspace，装着 React 18 的类型）。漏了 `npm run typecheck` 会在 legacy 的 `src/components/ui/*` 报一串类型错，不是代码问题。
+  3. 链过来的依赖在 `npm test` 里会让 `scripts/renderer-single-copy.test.cjs` 红两条（`the root dev server resolves the shared packages…`、`every browser fixture server resolves the shared packages…`），报 `react resolved to <主目录>/node_modules/react/index.js`：这两条要求 React 从本目录那份解析，链接解析到了主目录，也不是代码问题。要四道全绿的结论，回主目录（或真装过依赖的目录）重跑 `npm test`。（11-21）
+- **改界面字，`npm run selfcheck` 过了还要另跑一次 `npm run test:ui`**（11-21 踩过，#2063）。四道自查不含它，CI 的 linux-test 跑。`e2e/` 下除 `v2-business`、`v2-local-avatar`、`announcement-native-visual`、`canvas-close` 以外的 `*-fixture.tsx` 渲染的都是冻结的旧界面（`src/components/`、`src/App`），断言的是旧界面的字：改新界面的字时别跟着改这些用例，旧界面那边的字照旧。命令是 `XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium npm run test:ui`，两三分钟。
 - **别用 `pkill -f <脚本名>` 收拾卡住的命令。** 命令行里带这串字的 shell 自己也会被杀掉。用进程号杀。（沿用 10-03）
+- **停 `npm run selfcheck` 要停 `scripts/self-check.cjs` 那个进程，停外面那层没用**（11-21 踩过）。后台命令到时被收掉、或者杀掉 `npm run selfcheck` 那一层，里面的 `node scripts/self-check.cjs` 照样跑完四道，还往原来那个日志文件里写；这时再开一遍，两遍的输出搅在同一个文件里，汇总看不出是哪一遍的，三遍同时跑浏览器套件还冒出过跟改动无关的红（`ui/browser-check.mjs` 那条 busy Dialog 就这样红过一次，单跑是绿的）。重开之前先 `pgrep -fa scripts/self-check.cjs` 看有没有剩下的，按进程号杀掉它和它下面的 `vitest`、`node --test`。后台跑要给够时间：四道一遍在 4 核容器里一个多小时，后台命令的时限给满两小时，不然跑到第四道就被收掉。
+- **要截整个新界面（首页、工具卡、错误框）**（11-21 验）：`src/renderer-v2/testing/app.html` 渲染的是完整的 `App`（首页也在），`app-check.mjs` 用的就是它。在草稿目录写个 Playwright 脚本，照 `app-check.mjs` 的 `before` 用 `e2e/harness.mjs` 的 `createFixtureServer` 起服务、打开 `…/src/renderer-v2/testing/app.html?<夹具参数>`，参数的意思在 `app-fixture.tsx` 里找 `query.get` / `query.has`。比上一条临时造夹具省事，要的状态夹具里没有，就给 `app-fixture.tsx` 加一个参数，连同一条用例一起提交。暗色要在地址上加 `&theme=dark`：夹具的主题读的是这个参数，Playwright 的 `colorScheme: 'dark'` 不管用，截出来照样是亮的（11-26 踩过）。
 - **`npm test` 和 `npm run test:v2` 可以在同一个目录里同时后台跑**，没冒过假红。（沿用 11-09）
 - **容器里没有 zsh**（11-11 验），`electron/macos-platform.test.ts` 里真跑 zsh 的那批用例会自动跳过，不算失败。想让它们在容器里真跑，`apt-get install -y zsh`。（沿用 11-10）
 - **只在 Mac 上跑的用例（`it.runIf(process.platform === 'darwin')`）可以先在容器里粗跑一遍**（11-19 验）。写一个 setup 文件，里面只有 `Object.defineProperty(process, 'platform', { value: 'darwin' })`；再写一个 vitest 配置，`root` 指向仓库、`include` 列要跑的测试文件、`setupFiles` 指向它。两个文件都放仓库外面（草稿目录），配置里别 `import 'vitest/config'`（仓库外解析不到），直接 `export default ({ root, test: { … } })`，再 `npx vitest run --config <那个配置>`。`electron/macos-grok.test.ts`、`tool-installation.test.ts`、`macos-codex.test.ts` 这样跑 134 条全过。它只对注入了假 `codesign` 的用例有意义，真去调 `/usr/bin/codesign`、`open` 的过不了也不该当真；结论以 PR 上 Mac 作业为准，PR 里写明是这样跑的。
@@ -61,7 +66,7 @@ npm run selfcheck                                # 提 PR 前的四道自查，�
 
 ## 4. Electron 二进制装不上时
 
-11-11 `node scripts/ci-ensure-electron-binary.cjs` 一次成功。它以前在容器里经代理失败过（报 undici 的 `AssertionError: assert(!this.paused)`，重试也一样）。再碰到时，用 curl 把压缩包下到 Electron 的缓存里，再让安装脚本接着装（沿用 10-03，11-11 没重演）：
+11-11 `node scripts/ci-ensure-electron-binary.cjs` 一次成功。它以前在容器里经代理失败过（报 undici 的 `AssertionError: assert(!this.paused)`，重试也一样）。再碰到时，用 curl 把压缩包下到 Electron 的缓存里，再让安装脚本接着装（沿用 10-03，11-11 没重演；11-21 又报了两次，脚本自己的第 3 次重试成功，先等它重试完再走下面这条）：
 
 ```bash
 V=$(node -p "require('./node_modules/electron/package.json').version")
@@ -123,6 +128,7 @@ npm run verify:app -- --help                      # 全部选项和步骤写法
 - 账号站（星芒账号、历史账号，两条线路都在）是 `e2e/verify-app-fixture.cjs` 里的假接口，余额用 `--balance` 调；别的网站一律不连，CLI 的更新检测会报「连不上」，这是故意的。假接口没答的请求列在报告里，那一屏显示「读不到」是夹具缺路由，不是产品的毛病。
 - 每到一页（或 `shot:`、`look:`）存一张 `NN-名字.png` 和同名 `.txt`。`.txt` 是整页的字，滚出屏幕的部分也在，核字用它比看图准。结尾写 `report.md`（贴进真机要点的「机器能核」那段，见 `docs/COLLABORATION.md` §7.6）、`steps.json` 和这次的运行日志。默认放 `output/verify-app/<时间>`，`--out` 改位置。
 - 步骤没过、页面报错（`pageerror`）都算没过，命令退出码是 1；截图照样留着，最后一张是没过那一刻。
+- AI 作品文件夹不在它那个临时沙箱里：没打包的客户端把它放在仓库的 `output/`（`electron/ai-output-location.ts`，不入 git），跑完不清。假账号站不出图，平时那里是空的；自己另写脚本往里存了东西（融合第 5 步在主进程里替画布存过图），跑完删掉 `output/user-*` 和 `output/realms/`，不然下一次的作品库里会多出上一次的图。画布项目的工作文件夹在沙箱的假主目录里，随沙箱清掉。
 - 下面四个坑它都处理了。自己另写脚本时照它的写法，或者直接在它上面加步骤。
 
 它做不到的：原生对话框（选文件、保存）、系统通知和托盘菜单的样子、`title` 悬停提示的样子（`hover:` 只把提示的字记下来）、真网络、真装 CLI、真付款。这些留在真机要点的「必须真机」那段。另外工具检测照容器自己的 PATH 来：容器自带一份 Claude Code，首页会显示它装着（版本旧）。

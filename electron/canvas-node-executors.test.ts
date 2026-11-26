@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createCanvasNodeExecutors, selectCanvasRouterInputs } from './canvas-node-executors'
+import { createCanvasNodeExecutors, dramaParseTooLongMessage, selectCanvasRouterInputs } from './canvas-node-executors'
+import { AiAnswerCutOffError, aiAnswerCutOffMessages } from './ai-answer-cut-off'
 import { executeCanvasRun } from './canvas-run-engine'
 import type { CanvasImageTransformRecipe, CanvasRunAsset, CanvasRunGraph } from './canvas-run-contract'
 import type { AiRelayBillingObserver } from './ai-operation-progress'
@@ -716,7 +717,7 @@ describe('createCanvasNodeExecutors', () => {
     // A size the desktop would not send exactly, or a source without its pixel size, costs nothing.
     edit.mockClear()
     await expect(executors['image-edit']!({ ...base, inputs: { images: [{ ...source, width: 1000, height: 1000 }] }, node: node({ commerceTask: { ...materialB, upscale: 1 } }) }))
-      .rejects.toThrow('当前模型无法精确输出派生尺寸 1000x1000；请更换原图、请求倍率或模型。这个型号的宽和高都要是 16 的倍数，并在 256 到 4096 之间')
+      .rejects.toThrow('当前模型无法精确输出派生尺寸 1000x1000；请更换原图、请求倍率或模型。该型号的宽和高均须为 16 的倍数，且在 256 到 4096 之间')
     await expect(executors['image-edit']!({ ...base, inputs: { images: [{ kind: 'image', assetId: source.assetId, localUrl: source.localUrl }] }, node: node({ commerceTask: materialB }) }))
       .rejects.toThrow('材质优化 B 需要核对原图的实际像素尺寸')
     expect(edit).not.toHaveBeenCalled()
@@ -750,13 +751,13 @@ describe('createCanvasNodeExecutors', () => {
     expect(edit).toHaveBeenCalledTimes(1)
     // The same picture under another id is refused before anything is paid.
     await expect(executors['image-edit']!({ ...base, sceneSourceChecks: ['exterior'], inputs: { images: [picture('a'), picture('c')] }, node: exterior }))
-      .rejects.toThrow('原图与参考图内容相同，请选择内容不同的两张图片；当前没有提交生成请求')
+      .rejects.toThrow('原图与参考图内容相同，请选择内容不同的两张图片；当前未提交生成请求')
     const storyboard = { ...exterior, data: { ...exterior.data, exteriorTask: undefined, storyboardTask: { version: 1 as const, kind: 'storyboard' as const, automaticPlot: true, style: 'cinematic' as const, panels: 4 as const } } }
     await expect(executors['image-edit']!({ ...base, sceneSourceChecks: ['storyboard'], inputs: { images: [picture('c'), picture('a')] }, node: storyboard }))
-      .rejects.toThrow('故事板输入图片内容相同，请选择内容不同的图片；当前没有提交生成请求')
+      .rejects.toThrow('故事板输入图片内容相同，请选择内容不同的图片；当前未提交生成请求')
     const analysis = { id: 't', kind: 'text-generate' as const, definitionVersion: 1, data: { prompt: '分析', model: 'gpt-5.5', group: 'GPT', imageReferenceOrder: two } }
     await expect(executors['text-generate']!({ ...base, sceneSourceChecks: ['exterior'], inputs: { images: [picture('a'), picture('c')] }, node: analysis }))
-      .rejects.toThrow('原图与参考图内容相同，请选择内容不同的两张图片；当前没有提交生成请求')
+      .rejects.toThrow('原图与参考图内容相同，请选择内容不同的两张图片；当前未提交生成请求')
     expect(edit).toHaveBeenCalledTimes(1)
     expect(completeOnce).not.toHaveBeenCalled()
     await executors['text-generate']!({ ...base, sceneSourceChecks: ['exterior'], inputs: { images: [picture('a'), picture('b')] }, node: analysis })
@@ -764,7 +765,7 @@ describe('createCanvasNodeExecutors', () => {
     // Without a reader those nodes are refused, never run unchecked.
     const unchecked = createCanvasNodeExecutors({ imageService: { generate: vi.fn(), edit, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) } })
     await expect(unchecked['image-edit']!({ ...base, sceneSourceChecks: ['exterior'], inputs: { images: [picture('a'), picture('b')] }, node: exterior }))
-      .rejects.toThrow('室外参考图内容核对服务暂时不可用，当前没有提交生成请求')
+      .rejects.toThrow('室外参考图内容核对服务暂时不可用，当前未提交生成请求')
     expect(edit).toHaveBeenCalledTimes(1)
   })
 
@@ -839,6 +840,51 @@ describe('createCanvasNodeExecutors', () => {
       inputs: { text: '虞晚斜倚锦榻' },
       signal: new AbortController().signal,
     })).rejects.toThrow('剧本解析失败：无法连接 AI 服务，请检查网络后重试')
+    expect(completeOnce).toHaveBeenCalledOnce()
+  })
+
+  it('does not pay for a second drama parse when the first answer was cut off at the output cap', async () => {
+    const completeOnce = vi.fn().mockRejectedValue(new AiAnswerCutOffError('length'))
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    await expect(executors['drama-parse']!({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+      node: { id: 'parse', kind: 'drama-parse', definitionVersion: 1, data: { prompt: '', model: 'gemini-3.7-flash', group: 'Gemini' } },
+      inputs: { text: '虞晚斜倚锦榻' },
+      signal: new AbortController().signal,
+    })).rejects.toThrow(dramaParseTooLongMessage)
+    expect(completeOnce).toHaveBeenCalledOnce()
+  })
+
+  it('says a filtered drama parse answer was stopped by the content check, without retrying', async () => {
+    const completeOnce = vi.fn().mockRejectedValue(new AiAnswerCutOffError('filtered'))
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    await expect(executors['drama-parse']!({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+      node: { id: 'parse', kind: 'drama-parse', definitionVersion: 1, data: { prompt: '', model: 'gemini-3.7-flash', group: 'Gemini' } },
+      inputs: { text: '虞晚斜倚锦榻' },
+      signal: new AbortController().signal,
+    })).rejects.toThrow(`剧本解析失败：${aiAnswerCutOffMessages.filtered}`)
+    expect(completeOnce).toHaveBeenCalledOnce()
+  })
+
+  it('fails a text node whose answer was cut off instead of keeping half of it as the result', async () => {
+    const completeOnce = vi.fn().mockRejectedValue(new AiAnswerCutOffError('length'))
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    await expect(executors['text-generate']!({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+      node: { id: 'write', kind: 'text-generate', definitionVersion: 1, data: { prompt: '写长文', model: 'gpt-5.5', group: 'GPT' } },
+      inputs: {},
+      signal: new AbortController().signal,
+    })).rejects.toThrow(aiAnswerCutOffMessages.length)
     expect(completeOnce).toHaveBeenCalledOnce()
   })
 
@@ -937,7 +983,7 @@ describe('canvas frame-extract executor', () => {
       .rejects.toThrow('当前不会提交付费请求')
 
     const frames: CanvasFrameExtraction = {
-      assertDecodableVideo: vi.fn(async () => { throw new Error('视频超过 32 MB，画布抽不了这一帧') }),
+      assertDecodableVideo: vi.fn(async () => { throw new Error('视频超过 32 MB，画布无法提取该帧') }),
       waitForFrame: vi.fn(async () => frameAsset),
     }
     const executor = createCanvasNodeExecutors({ imageService, frames })['frame-extract']!
@@ -946,7 +992,7 @@ describe('canvas frame-extract executor', () => {
     await expect(executor({ ...base, node: frameNode, inputs: {}, signal: new AbortController().signal, reportFramePreparation: report }))
       .rejects.toThrow('请先给视频抽帧节点连接一段视频')
     await expect(executor({ ...base, node: frameNode, inputs: { video: videoAsset }, signal: new AbortController().signal, reportFramePreparation: report }))
-      .rejects.toThrow('视频超过 32 MB，画布抽不了这一帧')
+      .rejects.toThrow('视频超过 32 MB，画布无法提取该帧')
     expect(frames.assertDecodableVideo).toHaveBeenCalledWith(7, videoAsset.assetId)
     expect(frames.waitForFrame).not.toHaveBeenCalled()
     expect(report).not.toHaveBeenCalled()
@@ -979,8 +1025,8 @@ describe('canvas frame-extract executor', () => {
     const failing = executor({ ...base, node: { ...frameNode, data: { prompt: '', model: '' } }, inputs: { video: videoAsset }, signal: new AbortController().signal, reportFramePreparation: report })
     await vi.waitFor(() => expect(report).toHaveBeenCalledTimes(3))
     expect(report.mock.calls[2]).toEqual([{ ...preparation, timestampSeconds: 0 }, true])
-    refuse(new Error('视频帧没有抽出来：视频读不出来，或者时间点不在视频里'))
-    await expect(failing).rejects.toThrow('视频帧没有抽出来')
+    refuse(new Error('视频帧提取失败：视频无法读取，或时间点超出视频范围'))
+    await expect(failing).rejects.toThrow('视频帧提取失败')
     expect(report.mock.calls[3]).toEqual([{ ...preparation, timestampSeconds: 0 }, false])
   })
 
@@ -1137,7 +1183,7 @@ describe('canvas image-tool executors', () => {
     await vi.waitFor(() => expect(tools.waitForImages).toHaveBeenCalledTimes(3))
     expect(vi.mocked(tools.waitForImages).mock.calls[2][0].preparation).toMatchObject({ sourceAssetIds: [], layerGroupsVersion: 1 })
 
-    vi.mocked(tools.assertSources).mockRejectedValueOnce(new Error('图片处理的来源图片超过 20 MB，请换一张小一点的图'))
+    vi.mocked(tools.assertSources).mockRejectedValueOnce(new Error('图片处理的来源图片超过 20 MB，请更换较小的图片'))
     await expect(executors['image-crop']!({ ...base, node: toolNode('image-crop', { kind: 'crop' }), inputs: inputs('A'), signal: new AbortController().signal, reportImagePreparation: report }))
       .rejects.toThrow('图片处理的来源图片超过 20 MB')
     expect(tools.waitForImages).toHaveBeenCalledTimes(3)

@@ -1,10 +1,14 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RemoteChannelDependencies, RemoteChannelStatus, RemoteInbound } from './codex-remote-channel'
 import { createWeixinRemoteChannel, nextWeixinBackoffMs, toWeixinRemoteInbound } from './codex-remote-weixin'
 import type { WeixinInboundMessage } from './codex-remote-weixin-api'
 import { encodeWeixinCredential } from './codex-remote-weixin-credential'
 
 const owner = 'owner@im.wechat'
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 function credentialText(ownerUserId: string | null = owner): string {
   return encodeWeixinCredential({ version: 1, token: 'tok', botId: 'b1@im.bot', origin: 'https://ilinkai.weixin.qq.com', ownerUserId })
@@ -131,7 +135,7 @@ describe('createWeixinRemoteChannel', () => {
     const statuses: RemoteChannelStatus[] = []
     const channel = createWeixinRemoteChannel(dependencies, { botAgent: 'XingmangAI/test' })
     await channel.start({ onInbound: () => undefined, onStatus: (status) => statuses.push(status) })
-    expect(statuses).toEqual([{ state: 'needs-login', message: '还没用微信扫码登录' }])
+    expect(statuses).toEqual([{ state: 'needs-login', message: '尚未使用微信扫码登录' }])
     expect(requests).toHaveLength(0)
     expect(channel.capabilities).toEqual({ approvalButtons: false, maxTextLength: 4000 })
   })
@@ -261,9 +265,52 @@ describe('createWeixinRemoteChannel', () => {
     await vi.waitFor(() => expect(pollCount).toBe(3))
     expect(sleeps).toEqual([2_000])
     expect(statuses.map((status) => status.state)).toEqual(['connecting', 'error', 'connected'])
-    expect(statuses[1].message).toBe('连不上微信，正在重试')
+    expect(statuses[1].message).toBe('无法连接微信，正在重试')
     // 还在自己重试，不算停下（YKS-12）：防睡照样挡着，网络回来了才连得回去。
     expect(statuses[1].halted).toBeUndefined()
+    await channel.stop()
+  })
+
+  // M10：网断成请求一直不回的样子时，长轮询只是在本机等到超时，从没收到过微信的回应，卡片也不能变绿。
+  it('does not show connected while every long poll only times out locally, and recovers on a real answer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let pollCount = 0
+    const { dependencies, logs } = harness(credentialText(), (url) => {
+      if (url.includes('/msg/notify')) return jsonResponse({ ret: 0 })
+      pollCount += 1
+      return pollCount === 3 ? jsonResponse({ ret: 0, msgs: [] }) : blockUntilAborted()
+    })
+    const statuses: RemoteChannelStatus[] = []
+    const channel = createWeixinRemoteChannel(dependencies, { botAgent: 'XingmangAI/test' })
+    await channel.start({ onInbound: () => undefined, onStatus: (status) => statuses.push(status) })
+    await vi.waitFor(() => expect(pollCount).toBe(1))
+    // The first poll waits 35 s plus 10 s of grace before giving up locally.
+    await vi.advanceTimersByTimeAsync(45_000)
+    await vi.waitFor(() => expect(pollCount).toBe(2))
+    expect(statuses.map((status) => status.state)).toEqual(['connecting'])
+    await vi.advanceTimersByTimeAsync(45_000)
+    await vi.waitFor(() => expect(pollCount).toBe(4))
+    expect(statuses).toEqual([{ state: 'connecting' }, { state: 'error', message: '无法连接微信，正在重试' }, { state: 'connected' }])
+    expect(logs.filter((event) => event === 'weixin-poll-timeout')).toHaveLength(2)
+    await channel.stop()
+  })
+
+  it('keeps the error it reported when the next long poll only times out locally', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let pollCount = 0
+    const { dependencies } = harness(credentialText(), (url) => {
+      if (url.includes('/msg/notify')) return jsonResponse({ ret: 0 })
+      pollCount += 1
+      if (pollCount === 1) throw new TypeError('fetch failed')
+      return blockUntilAborted()
+    })
+    const statuses: RemoteChannelStatus[] = []
+    const channel = createWeixinRemoteChannel(dependencies, { botAgent: 'XingmangAI/test', sleep: async () => undefined })
+    await channel.start({ onInbound: () => undefined, onStatus: (status) => statuses.push(status) })
+    await vi.waitFor(() => expect(pollCount).toBe(2))
+    await vi.advanceTimersByTimeAsync(45_000)
+    await vi.waitFor(() => expect(pollCount).toBe(3))
+    expect(statuses.map((status) => status.state)).toEqual(['connecting', 'error'])
     await channel.stop()
   })
 
@@ -282,16 +329,16 @@ describe('createWeixinRemoteChannel', () => {
     await channel.send({ channel: 'weixin', userId: owner }, {
       kind: 'approval',
       request: { approvalId: '1', nonce: 'nonce-of-one', kind: 'command', summary: 'npm test' },
-      text: 'Codex 想运行：npm test\n回「同意 1」或「拒绝 1」',
+      text: 'Codex 想运行：npm test\n请回复「同意 1」或「拒绝 1」',
     }, 'ctx')
     const msg = requests[0].body.msg as { item_list: Array<{ text_item: { text: string } }> }
-    expect(msg.item_list[0].text_item.text).toBe('Codex 想运行：npm test\n回「同意 1」或「拒绝 1」')
+    expect(msg.item_list[0].text_item.text).toBe('Codex 想运行：npm test\n请回复「同意 1」或「拒绝 1」')
   })
 
   it('never sends to anyone but the scanning user', async () => {
     const { dependencies, requests } = harness(credentialText(), () => jsonResponse({ ret: 0 }))
     const channel = createWeixinRemoteChannel(dependencies, { botAgent: 'XingmangAI/test' })
-    await expect(channel.send({ channel: 'weixin', userId: 'stranger@im.wechat' }, { kind: 'text', text: 'x' })).rejects.toThrow('扫码登录的那个微信')
+    await expect(channel.send({ channel: 'weixin', userId: 'stranger@im.wechat' }, { kind: 'text', text: 'x' })).rejects.toThrow('扫码登录的微信账号')
     expect(requests).toHaveLength(0)
   })
 
@@ -303,6 +350,32 @@ describe('createWeixinRemoteChannel', () => {
     const channel = createWeixinRemoteChannel(dependencies, { botAgent: 'XingmangAI/test', sleep: async () => undefined })
     await channel.send({ channel: 'weixin', userId: owner }, { kind: 'text', text: 'x' }, 'ctx')
     expect(requests).toHaveLength(2)
+  })
+
+  // M14：电脑上关了遥控，正等着重发的那条不再发；之后交给它的（道别那句）照常发。
+  it('drops a send that is waiting to retry once the remote is being closed, and still sends the next one', async () => {
+    const { dependencies, requests, logs } = harness(credentialText(), (_url, _body, index) => {
+      if (index === 0) throw new TypeError('fetch failed')
+      return jsonResponse({ ret: 0 })
+    })
+    let asleep!: () => void
+    const sleepStarted = new Promise<void>((resolve) => { asleep = resolve })
+    const channel = createWeixinRemoteChannel(dependencies, {
+      botAgent: 'XingmangAI/test',
+      sleep: (_milliseconds, signal) => new Promise((resolve) => {
+        asleep()
+        signal.addEventListener('abort', () => resolve(), { once: true })
+      }),
+    })
+    const pending = channel.send({ channel: 'weixin', userId: owner }, { kind: 'text', text: '做完了' }, 'ctx')
+    await sleepStarted
+    channel.cancelPendingSends?.()
+    await expect(pending).rejects.toThrow()
+    await channel.send({ channel: 'weixin', userId: owner }, { kind: 'text', text: '遥控已在电脑上关闭。' }, 'ctx')
+    expect(requests).toHaveLength(2)
+    const msg = requests[1].body.msg as { item_list: Array<{ text_item: { text: string } }> }
+    expect(msg.item_list[0].text_item.text).toBe('遥控已在电脑上关闭。')
+    expect(logs).toContain('weixin-send-cancelled')
   })
 
   it('can be stopped repeatedly and before it ever started', async () => {

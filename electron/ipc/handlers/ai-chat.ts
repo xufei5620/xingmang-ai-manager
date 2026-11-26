@@ -64,25 +64,31 @@ export function registerAiChatHandlers(ctx: IpcHandlerContext): void {
       mayStillComplete: imageCanceled.mayStillComplete,
     }
   })
-  registerTrustedHandler('chat:copy-asset', (_event, assetId: unknown) => {
+  // 这张图在哪个库里（融合第 5 步）：对话里出的、发的都在 AI 作品文件夹；从作品库拿来「基于此图继续编辑」的
+  // 可能是画布项目文件夹里的。两处都没有时还是问 AI 作品文件夹，报的还是它原来那句话。
+  const imageStoreOf = async (userId: number, assetId: string) => {
     if (!options.aiAssets) throw new Error('AI 图片服务未就绪')
-    return options.aiAssets.copy(currentChatUserId(), requiredString(assetId, 'AI 图片资产标识', 160))
+    return options.accountAssets ? (await options.accountAssets.holderOf(userId, 'image', assetId)).images : options.aiAssets
+  }
+  registerTrustedHandler('chat:copy-asset', async (_event, assetId: unknown) => {
+    if (!options.aiAssets) throw new Error('AI 图片服务未就绪')
+    const userId = currentChatUserId()
+    const id = requiredString(assetId, 'AI 图片资产标识', 160)
+    return (await imageStoreOf(userId, id)).copy(userId, id)
   })
   registerTrustedHandler('chat:save-asset', async (_event, assetId: unknown) => {
     if (!options.aiAssets) throw new Error('AI 图片服务未就绪')
-    return {
-      saved: await options.aiAssets.saveAs(
-        currentChatUserId(),
-        requiredString(assetId, 'AI 图片资产标识', 160),
-      ),
-    }
+    const userId = currentChatUserId()
+    const id = requiredString(assetId, 'AI 图片资产标识', 160)
+    return { saved: await (await imageStoreOf(userId, id)).saveAs(userId, id) }
   })
-  registerTrustedHandler('chat:asset-menu', (_event, assetId: unknown) => {
+  registerTrustedHandler('chat:asset-menu', async (_event, assetId: unknown) => {
     if (!options.aiAssets) throw new Error('AI 图片服务未就绪')
     const userId = currentChatUserId()
-    return options.aiAssets.contextMenu(
+    const id = requiredString(assetId, 'AI 图片资产标识', 160)
+    return (await imageStoreOf(userId, id)).contextMenu(
       userId,
-      requiredString(assetId, 'AI 图片资产标识', 160),
+      id,
       () => {
         if (currentChatUserId() !== userId) throw new Error('账号已切换，请重新打开图片菜单')
       },

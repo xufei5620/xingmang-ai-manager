@@ -1,6 +1,13 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import {
+  antigravityDesktopArtifactOrigin,
+  antigravityDesktopFeedOrigin,
+  buildAntigravityDesktopFeedUrl,
+  maximumAntigravityDesktopArtifactBytes,
+  parseAntigravityDesktopFeed,
+} from './antigravity-desktop-release'
 import { readBoundedResponseText } from './bounded-response'
 import { CommandRunnerError, type CommandResult } from './command-runner'
 import {
@@ -63,15 +70,15 @@ import { ensureTrustedDirectory } from './trusted-temp'
  * on first launch is the one step 3 has already made, and keeping it would put the
  * "downloaded from the Internet" prompt in front of an app the toolbox just verified.
  *
- * Codex 桌面端、Claude Desktop 和 OpenCode 先从星芒自己的存储桶下同一个官方包（desktop-package-bucket.ts，
- * yoyo 2026-10-10；OpenCode 是 2026-10-14）。那一路换掉的只是第 1 步：清单里的大小和 SHA-256 绑住下载（Claude 的 PKG 展开前
+ * Codex 桌面端、Claude Desktop、OpenCode 和 Antigravity 先从星芒自己的存储桶下同一个官方包（desktop-package-bucket.ts，
+ * yoyo 2026-10-10；OpenCode 是 2026-10-14，Antigravity 是 0.2.25 复查第 1 轮第 2 条）。那一路换掉的只是第 1 步：清单里的大小和 SHA-256 绑住下载（Claude 的 PKG 展开前
  * 还要先核安装包签名），解开以后照样过第 2、3 步才放进「应用程序」；哪一步没过都删掉，照旧问官方。
  */
 
 export type MacosDesktopArchitecture = 'arm64' | 'x64'
 
-/** 能一键装的：首页「桌面客户端」那几行，加上 Codex 桌面端。 */
-export type MacosDesktopAppId = ExternalToolId | 'codexDesktop'
+/** 能一键装的：首页「桌面客户端」那几行，加上 Codex 桌面端和 Antigravity 桌面端。 */
+export type MacosDesktopAppId = ExternalToolId | 'codexDesktop' | 'antigravityDesktop'
 
 export interface MacosDesktopRelease {
   version: string
@@ -155,7 +162,7 @@ export interface InstallMacosDesktopAppOptions {
    * 官方原版。只换说法，照样不装、不动它。
    */
   detectionUnfinished?: { message: string, rejectedPaths: readonly string[] }
-  /** 先从星芒自己的存储桶下（只有 Codex 桌面端、Claude Desktop 和 OpenCode 有）。缺省 = 不走桶，直接问官方。 */
+  /** 先从星芒自己的存储桶下（只有 Codex 桌面端、Claude Desktop、OpenCode 和 Antigravity 有）。缺省 = 不走桶，直接问官方。 */
   bucket?: DesktopBucketOptions
   /**
    * 问官方那一路（版本信息加安装包）包进临时加速线路；存储桶那一路国内直连，不包。缺省直接下。
@@ -349,6 +356,24 @@ function allowsChatgptUrl(url: URL): boolean {
 
 const openCodeFeedUrl = 'https://github.com/anomalyco/opencode/releases/latest/download/latest-mac.yml'
 
+/**
+ * Antigravity 桌面端自己更新时读的那份（antigravity-desktop-release.ts）：按芯片一份，只列一个 zip，
+ * 地址必须正好是按它写的版本和构建号拼出来的那一个，大小也写着。SHA-512 不在这里对：这条路下载时
+ * 只算 SHA-256，Mac 上认的是解开以后的 Developer ID 签名和 Gatekeeper，同 OpenCode、Codex 桌面端。
+ */
+function selectAntigravityRelease(feed: unknown, context: MacosDesktopFeedContext): MacosDesktopRelease | null {
+  if (typeof feed !== 'string') return null
+  const release = parseAntigravityDesktopFeed(feed, context.architecture === 'arm64' ? 'macos-arm64' : 'macos-x64')
+  return release ? { version: release.version, url: release.url, bytes: release.bytes } : null
+}
+
+/** 版本信息和安装包各在一个固定的主机上，2026-11-23 实测两边都不跳转、不带查询串。 */
+function allowsAntigravityUrl(url: URL): boolean {
+  if (url.search) return false
+  if (url.origin === antigravityDesktopFeedOrigin) return /^\/manifest\/latest-(?:x64|arm64)-mac\.yml$/.test(url.pathname)
+  return url.origin === antigravityDesktopArtifactOrigin && url.pathname.startsWith('/antigravity-public/antigravity-hub/')
+}
+
 const sources: Partial<Record<MacosDesktopAppId, MacosDesktopAppSource>> = {
   // Checked 2026-10-02 by downloading v1.18.34 for both architectures: the feed below
   // and the package names it lists, the redirect to release-assets.githubusercontent.com,
@@ -414,6 +439,28 @@ const sources: Partial<Record<MacosDesktopAppId, MacosDesktopAppSource>> = {
     allowsUrl: allowsChatgptUrl,
     // OpenAI 旧版的聊天程序也叫 ChatGPT.app（Homebrew 的 chatgpt 已改指这个新包）。
     legacyApplication: { bundleIdentifiers: ['com.openai.chat'], message: macosLegacyChatgptMessage },
+  },
+  // Checked 2026-11-23 on a GitHub macOS runner with 2.34.0 (build 5887025308631040) for both
+  // chips: each feed answers without a redirect and lists one zip on storage.googleapis.com, served
+  // as application/zip without a redirect and matching the feed's size and SHA-512. /usr/bin/tar
+  // unpacks it to exactly Antigravity.app (thin x86_64 or thin arm64, 14 framework symlinks, no
+  // hard links), bundle com.google.antigravity with LSMinimumSystemVersion 13.0; the pinned
+  // requirement below accepts it and Gatekeeper reports "Notarized Developer ID", Google LLC
+  // (EQHXZ8M8AV).
+  antigravityDesktop: {
+    name: 'Antigravity',
+    applicationName: 'Antigravity',
+    bundleIdentifier: 'com.google.antigravity',
+    teamIdentifier: 'EQHXZ8M8AV',
+    feedUrl: (context) => buildAntigravityDesktopFeedUrl(context.architecture === 'arm64' ? 'macos-arm64' : 'macos-x64'),
+    feedFormat: 'yaml',
+    archiveFormat: 'zip',
+    // 2.34.0 is 212 MB on Apple silicon and 223 MB on Intel.
+    maximumArchiveBytes: maximumAntigravityDesktopArtifactBytes,
+    selectRelease: selectAntigravityRelease,
+    allowsUrl: allowsAntigravityUrl,
+    // 星芒的 x64 版靠 Rosetta 跑在 Apple 芯片上时，照样装 arm64 那个。
+    packageForHardware: true,
   },
 }
 
@@ -924,12 +971,13 @@ function runDirectly<T>(operation: () => Promise<T>): Promise<T> {
 
 /**
  * 存储桶里有这台 Mac 能用的那个官方包时，它在桶里叫什么。Codex 按芯片各一个 zip，Claude 是通用 PKG，
- * OpenCode 按芯片各一个 GitHub 上那个 .app.tar.gz。
+ * OpenCode 按芯片各一个 GitHub 上那个 .app.tar.gz，Antigravity 按芯片各一个谷歌那个 zip。
  */
 export function macosDesktopBucketPackageId(tool: MacosDesktopAppId, architecture: MacosDesktopArchitecture): DesktopBucketPackageId | null {
   if (tool === 'codexDesktop') return architecture === 'arm64' ? 'codex-macos-arm64' : 'codex-macos-x64'
   if (tool === 'claudeDesktop') return 'claude-macos-universal'
   if (tool === 'opencode') return architecture === 'arm64' ? 'opencode-macos-arm64' : 'opencode-macos-x64'
+  if (tool === 'antigravityDesktop') return architecture === 'arm64' ? 'antigravity-macos-arm64' : 'antigravity-macos-x64'
   return null
 }
 
@@ -1069,7 +1117,7 @@ async function unpackFromBucket(
       ...(options.wait ? { resumeOptions: { wait: options.wait } } : {}),
       onProgress: ({ percent, resuming }) => report(
         'downloading',
-        resuming ? `网络断了一下，正在接着下载 ${source.name} ${release.version}` : downloading,
+        resuming ? `网络曾短暂中断，正在继续下载 ${source.name} ${release.version}` : downloading,
         Math.min(99, percent),
       ),
       probeAlternative: allowStale
@@ -1078,7 +1126,7 @@ async function unpackFromBucket(
         // 桶太慢时先比一比官方那一路，确实更快才换（#1061 第 6 条）。
         : (probeSignal) => measureMacosDesktopVendorSpeed(options.tool, context, options.fetch, probeSignal),
     })
-    report('checking', '正在检查下载下来的安装包是不是完整的官方版')
+    report('checking', '正在校验下载的安装包是否为完整的官方版本')
     options.signal?.throwIfAborted()
     const extractDirectory = path.posix.join(workDirectory, 'extract')
     await fs.promises.mkdir(extractDirectory, { mode: 0o700 })
@@ -1157,14 +1205,14 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
       },
       onResume: (transferred, total) => {
         reported = Math.min(99, Math.floor(transferred / total * 100))
-        report('downloading', `网络断了一下，正在接着下载 ${source.name} ${release.version}`, reported)
+        report('downloading', `网络曾短暂中断，正在继续下载 ${source.name} ${release.version}`, reported)
       },
       ...(options.signal ? { signal: options.signal } : {}),
       ...(options.wait ? { wait: options.wait } : {}),
     })
 
     stage = 'verify'
-    report('checking', '正在检查下载下来的安装包是不是完整的官方版')
+    report('checking', '正在校验下载的安装包是否为完整的官方版本')
     // 短了说明没下完（服务器没给长度时下载那一步看不出来），照网络问题说。
     if (release.bytes !== undefined && downloaded.size !== release.bytes) {
       throw new MacosDesktopInstallError(macosDesktopDownloadFailedMessage(source.name), `安装包是 ${downloaded.size} 字节，官方版本信息写的是 ${release.bytes}`)
@@ -1221,8 +1269,9 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
     }
     stage = 'download'
     const stagingDirectory = staging
-    // 先从星芒自己的存储桶下；没走通再问官方，只有问官方那一路接加速线路。
-    const fromBucket = await unpackFromBucket(source, architecture, context, stagingDirectory, options, readSystemVersion, report, false)
+    // 先从星芒自己的存储桶下；没走通再问官方，只有问官方那一路接加速线路。桶里按芯片分的包和官方那一路一样按
+    // 这台 Mac 的芯片挑（context.architecture，packageForHardware），没设它的那几家这就是星芒自己的芯片。
+    const fromBucket = await unpackFromBucket(source, context.architecture, context, stagingDirectory, options, readSystemVersion, report, false)
     let unpacked: { version: string, bundle: string }
     if (fromBucket !== null && fromBucket !== 'stale') {
       unpacked = fromBucket
@@ -1233,7 +1282,7 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
         // 桶只是清单过期才没用上的：官方那一路也没走通（国内多半连不上），回头用桶里那一版，不进下载线路。
         // 它也没装成就照旧报官方那一路的错。客户点的取消、盘写满了不回头：换一路也一样。
         if (fromBucket !== 'stale' || options.signal?.aborted || isDiskFull(error)) throw error
-        const fromStaleBucket = await unpackFromBucket(source, architecture, context, stagingDirectory, options, readSystemVersion, report, true)
+        const fromStaleBucket = await unpackFromBucket(source, context.architecture, context, stagingDirectory, options, readSystemVersion, report, true)
         if (fromStaleBucket === null || fromStaleBucket === 'stale') throw error
         unpacked = fromStaleBucket
       }
@@ -1246,13 +1295,13 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
       if (compareMacosDesktopVersions(unpacked.version, replace.installedVersion) !== 1) {
         return { version: replace.installedVersion, path: destination, unchanged: true }
       }
-      report('installing', '正在放进「应用程序」')
+      report('installing', '正在放入「应用程序」')
       // 下载期间它自己升到了不比这版低的版本：同样什么都不动，报它现在的版本。
       const current = await replaceBundle(source, unpacked.bundle, unpacked.version, destination, options.runProcess, replace, options.signal)
       if (current) return { version: current, path: destination, unchanged: true }
       return { version: unpacked.version, path: destination }
     }
-    report('installing', '正在放进「应用程序」')
+    report('installing', '正在放入「应用程序」')
     await placeBundle(source, unpacked.bundle, destination, options.runProcess)
     return { version: unpacked.version, path: destination }
   } catch (error) {

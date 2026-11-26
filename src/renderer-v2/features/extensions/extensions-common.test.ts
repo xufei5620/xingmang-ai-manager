@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mcpCopyChoices, mcpCopyOffered, mcpNameTakenIn, parseHttpHeaders } from './extensions-common'
+import { mcpCopyOffered, mcpNameTakenIn, parseHttpHeaders } from './extensions-common'
 import type { V2Bridge } from '../../types'
 
 type Snapshot = Awaited<ReturnType<V2Bridge['listProviderExtensions']>>
@@ -41,7 +41,7 @@ describe('parseHttpHeaders', () => {
 
   it('explains the format when a line has no name, an empty value or a bad name', () => {
     for (const text of ['Bearer abc', 'Authorization:', 'Bad Name: x', '-H: x', '{"X": 1}', '{oops']) {
-      expect(() => parseHttpHeaders(text)).toThrow('请求头每行写一个，格式是「名称: 值」')
+      expect(() => parseHttpHeaders(text)).toThrow('请求头每行一个，格式为「名称: 值」')
     }
   })
 })
@@ -80,18 +80,5 @@ describe('mcpCopyOffered', () => {
     expect(mcpCopyOffered('claude', { ...item, operations: { ...item.operations, uninstall: false } })).toBe(false)
     expect(mcpCopyOffered('claude', { ...item, installed: false })).toBe(false)
     expect(mcpCopyOffered('claude', { ...item, kind: 'skill' })).toBe(false)
-  })
-})
-
-describe('mcpCopyChoices', () => {
-  it('lists every other tool and greys out the ones that already have the name or are not installed', () => {
-    expect(mcpCopyChoices('claude', undefined, ['codex']).map(({ id, note }) => [id, note])).toEqual([
-      ['codex', '已添加'],
-      ['grok', null],
-    ])
-    expect(mcpCopyChoices('codex', ['codex', 'claude'], []).map(({ id, note }) => [id, note])).toEqual([
-      ['claude', null],
-      ['grok', '未安装'],
-    ])
   })
 })

@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
+import fc from 'fast-check'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { disposeStagedDarwinCliRecords } from './darwin-cli-staging'
 import { DarwinCliProvenanceError } from './macos-code-signing'
@@ -11,7 +12,7 @@ import {
   cliLaunchArgv,
   createNpmGlobalRootLookup,
   cliResumeLastArgv,
-  isCodexSessionUuid,
+  isCliSessionUuid,
   codexSupportsNoDaemon,
   cliUninstallCapability,
   nativeInstallBinDirectories,
@@ -364,7 +365,7 @@ describe('CLI installation resolution', () => {
     // 原先点名 Developer ID 的那一层原样留在 cause 里，排查时还看得到。
     const error = await command.catch((reason: unknown) => reason)
     expect(error).toBeInstanceOf(UnrecognizedDarwinCliError)
-    expect((error as Error).message).toContain('用星芒装一份')
+    expect((error as Error).message).toContain('使用星芒安装')
     expect((error as Error).cause).toBeInstanceOf(DarwinCliProvenanceError)
     expect(((error as Error).cause as Error).message).toContain('Developer ID')
   })
@@ -433,7 +434,7 @@ describe('CLI installation resolution', () => {
     }).catch((reason: unknown) => reason)
 
     expect(error).toBeInstanceOf(UnrecognizedDarwinCliError)
-    expect((error as Error).message).toBe('这一份不是星芒装的，星芒核对不了它是不是官方原版，为了安全没有打开。到首页点「用星芒装一份」，装好就能打开。')
+    expect((error as Error).message).toBe('该工具并非由星芒安装，星芒无法核对其是否为官方原版，为安全起见未打开。请在首页点击「使用星芒安装」，安装完成后即可打开。')
     expect(runCommand).not.toHaveBeenCalled()
   })
 
@@ -1375,18 +1376,34 @@ describe('resume-last launch arguments', () => {
       .toEqual([...entry, 'resume', '--last'])
   })
 
-  it('ignores a session id for a new conversation and for the other three tools', () => {
+  // 0.2.25 S1：记录页上点哪条接哪条，Claude Code 和 Grok CLI 也按编号接（推荐版 --help 核过）。
+  it('resumes a verified Claude Code or Grok CLI record by id with --resume', () => {
+    const entry = ['/managed/cli.js']
+
+    expect(cliLaunchArgv('claude', entry, 'resumeLast', { resumeSessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' }))
+      .toEqual([...entry, '--resume', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b'])
+    expect(cliLaunchArgv('grok', entry, 'resumeLast', { resumeSessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' }))
+      .toEqual([...entry, '--resume', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b'])
+    expect(cliLaunchArgv('claude', entry, 'resumeLast', { resumeSessionId: null })).toEqual([...entry, '--continue'])
+    expect(cliLaunchArgv('grok', entry, 'resumeLast', { resumeSessionId: null })).toEqual([...entry, '--continue'])
+  })
+
+  it('ignores a session id for a new conversation and for the retired Gemini CLI', () => {
     const entry = ['/managed/cli.js']
 
     expect(cliLaunchArgv('codex', entry, 'new', { resumeSessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })).toEqual(entry)
-    expect(cliLaunchArgv('claude', entry, 'resumeLast', { resumeSessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })).toEqual([...entry, '--continue'])
+    expect(cliLaunchArgv('claude', entry, 'new', { resumeSessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })).toEqual(entry)
+    expect(cliLaunchArgv('gemini', entry, 'resumeLast', { resumeSessionId: '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b' })).toEqual([...entry, '--resume', 'latest'])
   })
 
-  it('refuses a Codex session id that is not a bare UUID', () => {
-    for (const bad of ['--last', 'codex:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b', '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b --yolo', '../../etc', '']) {
-      expect(() => cliLaunchArgv('codex', [], 'resumeLast', { resumeSessionId: bad })).toThrow('会话 ID 格式错误')
+  // claude 和 grok 的 --resume 收到不是编号的字会当成搜索词或标题去找，所以三家都只放 UUID。
+  it('refuses a session id that is not a bare UUID for every tool that resumes by id', () => {
+    for (const provider of ['codex', 'claude', 'grok'] as const) {
+      for (const bad of ['--last', `${provider}:0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b`, '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b --yolo', '../../etc', '', '--dangerously-skip-permissions']) {
+        expect(() => cliLaunchArgv(provider, [], 'resumeLast', { resumeSessionId: bad })).toThrow('会话 ID 格式错误')
+      }
     }
-    expect(isCodexSessionUuid('0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b'.toUpperCase())).toBe(true)
+    expect(isCliSessionUuid('0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b'.toUpperCase())).toBe(true)
   })
 
   it('leaves the entry argv untouched for a new conversation', () => {
@@ -1494,5 +1511,28 @@ describe('native CLI install discovery', () => {
     })
     expect(classifyCliInstallDisplaySource(installation!, { env, platform: process.platform }))
       .toBe('native')
+  })
+})
+
+describe('cliLaunchArgv with random inputs', () => {
+  // The promise: whatever session id reaches the argv builder, a resumed launch
+  // either refuses it or appends exactly one fixed flag pair whose value is a
+  // bare UUID. Nothing the renderer could have influenced becomes a flag of its own.
+  it('never lets anything but a bare UUID follow the resume flag', () => {
+    const entry = ['/managed/cli.js']
+    const uuid = fc.uuid()
+    const anything = fc.oneof(fc.string(), fc.string({ unit: 'binary' }), uuid.map((value) => `--${value}`), uuid.map((value) => `${value} --yolo`))
+    fc.assert(fc.property(fc.constantFrom(...(['codex', 'claude', 'grok'] as const)), fc.oneof(uuid, anything), (provider, sessionId) => {
+      let argv: string[]
+      try {
+        argv = cliLaunchArgv(provider, entry, 'resumeLast', { resumeSessionId: sessionId })
+      } catch (error) {
+        expect((error as Error).message).toBe('会话 ID 格式错误')
+        expect(isCliSessionUuid(sessionId)).toBe(false)
+        return
+      }
+      expect(isCliSessionUuid(sessionId)).toBe(true)
+      expect(argv).toEqual([...entry, ...(provider === 'codex' ? ['resume'] : ['--resume']), sessionId])
+    }))
   })
 })

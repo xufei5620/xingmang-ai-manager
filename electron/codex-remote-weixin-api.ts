@@ -40,7 +40,7 @@ export const weixinVerifyPinBusinessData = Buffer.from(JSON.stringify({ verify_p
 
 export const weixinTextLimit = 4000
 
-export const weixinConfirmedWithoutLoginMessage = '扫码成功了，但微信没有给回登录信息，请重新扫码'
+export const weixinConfirmedWithoutLoginMessage = '扫码成功，但微信未返回登录信息，请重新扫码'
 
 const qrRequestTimeoutMs = 15_000
 // 扫码状态是长轮询，服务端最多压 35 秒才回。
@@ -142,6 +142,11 @@ export interface WeixinUpdates {
   nextLongPollMs: number
   /** 这次回应里 Date 头的时间（毫秒），拿来估电脑上的时间准不准；没有或等超时了不填。 */
   serverTime?: number
+  /**
+   * 本机等到超时也没等来回音，这一批是空的不是因为微信说没消息（M10）。网断成请求一直不回的样子时就是这样，
+   * 不能拿它当连上了的证据。
+   */
+  timedOut?: true
 }
 
 /**
@@ -287,10 +292,10 @@ function assertIlinkSuccess(payload: Record<string, unknown>, label: string): vo
   const ret = optionalInteger(payload.ret) ?? 0
   const errcode = optionalInteger(payload.errcode) ?? 0
   if (ret === weixinSessionExpiredCode || errcode === weixinSessionExpiredCode) {
-    throw new WeixinIlinkError('微信这边的登录已经过期，请在电脑上重新扫码', 'session-expired', weixinSessionExpiredCode)
+    throw new WeixinIlinkError('微信登录已失效，请在电脑端重新扫码', 'session-expired', weixinSessionExpiredCode)
   }
   if (ret === weixinStaleContextCode) {
-    throw new WeixinIlinkError(`${label}失败：这次对话已过期`, 'stale-context', ret)
+    throw new WeixinIlinkError(`${label}失败：本次对话已过期`, 'stale-context', ret)
   }
   if (ret !== 0 || errcode !== 0) {
     throw new WeixinIlinkError(`${label}失败（${ret !== 0 ? ret : errcode}）`, 'rejected', ret !== 0 ? ret : errcode)
@@ -299,13 +304,13 @@ function assertIlinkSuccess(payload: Record<string, unknown>, label: string): vo
 
 function payloadRecord(response: { status: number; ok: boolean; payload: unknown }, label: string): Record<string, unknown> {
   if (response.status === 401 || response.status === 403) {
-    throw new WeixinIlinkError('微信拒绝了这次登录，请在电脑上重新扫码', 'refused', response.status)
+    throw new WeixinIlinkError('微信拒绝了本次登录，请在电脑端重新扫码', 'refused', response.status)
   }
   if (!response.ok) {
     throw new WeixinIlinkError(`${label}失败，微信服务返回 HTTP ${response.status}`, 'rejected', response.status)
   }
   if (!isRecord(response.payload)) {
-    throw new WeixinIlinkError(`${label}失败，微信服务的回应看不懂`, 'invalid-response')
+    throw new WeixinIlinkError(`${label}失败，无法识别微信服务的响应`, 'invalid-response')
   }
   return response.payload
 }
@@ -327,7 +332,7 @@ export async function fetchWeixinLoginQrCode(context: WeixinIlinkContext, knownT
   const payload = payloadRecord(response, '获取微信二维码')
   const qrcode = optionalString(payload.qrcode, 512)
   const content = optionalString(payload.qrcode_img_content, 2048)
-  if (!qrcode || !content) throw new WeixinIlinkError('获取微信二维码失败，微信服务的回应看不懂', 'invalid-response')
+  if (!qrcode || !content) throw new WeixinIlinkError('获取微信二维码失败，无法识别微信服务的响应', 'invalid-response')
   return { qrcode, content }
 }
 
@@ -399,7 +404,7 @@ export async function pollWeixinLoginStatus(
       }
     }
     default:
-      throw new WeixinIlinkError('查询扫码结果失败，微信服务的回应看不懂', 'invalid-response')
+      throw new WeixinIlinkError('查询扫码结果失败，无法识别微信服务的响应', 'invalid-response')
   }
 }
 
@@ -511,12 +516,12 @@ export async function fetchWeixinUpdates(
     })
   } catch (error) {
     if (error instanceof RemoteHttpError && error.reason === 'timeout') {
-      return { messages: [], cursor, nextLongPollMs: longPollMs }
+      return { messages: [], cursor, nextLongPollMs: longPollMs, timedOut: true }
     }
     throw error
   }
-  const payload = payloadRecord(response, '收微信消息')
-  assertIlinkSuccess(payload, '收微信消息')
+  const payload = payloadRecord(response, '接收微信消息')
+  assertIlinkSuccess(payload, '接收微信消息')
   const nextCursor = typeof payload.get_updates_buf === 'string' && payload.get_updates_buf.length <= 64 * 1024
     ? payload.get_updates_buf
     : cursor
@@ -609,7 +614,7 @@ export async function sendWeixinText(
     signal: context.signal,
     parseJson: parseWeixinJson,
   })
-  assertIlinkSuccess(payloadRecord(response, '发微信消息'), '发微信消息')
+  assertIlinkSuccess(payloadRecord(response, '发送微信消息'), '发送微信消息')
 }
 
 /** 告诉微信这台开始收 / 不再收消息。腾讯插件启停时都发，失败不影响收发。 */

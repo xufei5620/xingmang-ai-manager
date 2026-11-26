@@ -1,7 +1,7 @@
 // @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
 
 import type { AppSettings, AppSettingsUpdate, AppTheme as StoredAppTheme } from './app-settings'
-import type { AiChatStreamErrorCode as MainAiChatStreamErrorCode } from './ai-chat-service'
+import type { AiAnswerCutOff, AiChatStreamErrorCode as MainAiChatStreamErrorCode } from './ai-chat-service'
 import type { MiniMaxVideoAspectRatio, MiniMaxVideoMode, MiniMaxVideoResolution } from './ai-chat-protocol'
 import type { VideoStudioPlan, VideoStudioPlanRequest } from './video-studio-plan'
 export type { VideoStudioPlan, VideoStudioPlanAspect, VideoStudioPlanShot } from './video-studio-plan'
@@ -21,18 +21,21 @@ import type {
 import type { ProviderId as CatalogProviderId } from './catalog'
 import type { StorageCleanResult, StorageCleanTarget, StorageUsagePart, StorageUsagePartReport } from './storage-usage'
 export type { StorageCleanResult, StorageCleanTarget, StorageUsagePart, StorageUsagePartReport } from './storage-usage'
-import type { CodexRemoteSnapshot, RemoteChannelId, RemoteIdleCloseHours } from './codex-remote-channel'
+import type { CodexRemoteConversationList, CodexRemoteSnapshot, RemoteChannelId, RemoteIdleCloseHours, RemotePermission } from './codex-remote-channel'
 export type {
   CodexRemoteBoundPeerSnapshot,
   CodexRemoteChannelSnapshot,
   CodexRemoteLastRequestSnapshot,
   CodexRemotePairingSnapshot,
+  CodexRemoteConversationItem,
+  CodexRemoteConversationList,
   CodexRemoteSnapshot,
   CodexRemoteTaskState,
   RemoteChannelId,
   RemoteChannelState,
   RemoteChannelStatus,
   RemoteIdleCloseHours,
+  RemotePermission,
 } from './codex-remote-channel'
 import type { CliLaunchMode as MainCliLaunchMode } from './tool-installation'
 import type {
@@ -41,6 +44,8 @@ import type {
 export type { ExternalToolConfigOptions, ExternalToolConfigSaveResult, ExternalToolId } from './external-tool-config'
 import type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientInstallProgress, ExternalClientLaunchProgress, ExternalClientLaunchResult } from './external-client-contract'
 import type { ExternalClientCheckResult } from './external-client-connection'
+import type { AntigravityDesktopLaunchResult, AntigravityInstallResult, AntigravityProgress, AntigravityStatus, AntigravityTarget } from './antigravity-service'
+export type { AntigravityDesktopLaunchResult, AntigravityInstallResult, AntigravityProgress, AntigravityStatus, AntigravityTarget } from './antigravity-service'
 export type { ExternalClientCheckResult } from './external-client-connection'
 export type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress, ExternalClientLaunchProgress, ExternalClientLaunchResult } from './external-client-contract'
 import type {
@@ -58,17 +63,15 @@ import type {
   RepositoryContext as CodexRepositoryContext,
   SkillDto,
 } from './codex-extensions'
+import type { StandingInstructionsSaveResult } from './standing-instructions'
+import type { SkillArchiveExtraction } from './skill-archive'
 import type {
   ProviderExtensionMutation,
   ProviderExtensionsSnapshot,
   ProviderMcpHealthReport,
 } from './provider-extensions'
 import type {
-  CodexSessionDetail,
-  CodexSessionExportResult,
-  CodexSessionListQuery,
   CodexSessionMutationResult,
-  CodexSessionPage,
   CodexSessionSummary,
   SessionArchiveFilter as CodexSessionArchiveFilter,
 } from './codex-sessions'
@@ -340,15 +343,21 @@ export interface UpdateInstallOptions {
    */
   askIfInstalling?: boolean
 }
+/** `runtime:restart-windows` 的可选参数。缺省 = 旧行为：不问，直接发重启。 */
+export interface WindowsRestartOptions {
+  /**
+   * 「创作」里还有对话在回复、视频在合成，或画布在生成时，先问重启装更新前那一句（D10）。
+   * 新界面的重启框都带它；旧回滚界面不带，照旧直接重启。
+   */
+  askIfWorking?: boolean
+}
+/** postponed = 客户在那一问里点了「等待完成」，这次没发重启。 */
+export interface WindowsRestartResult { postponed?: true }
 export type InstalledRelease = MainInstalledRelease
 export type UpdateSnapshot = MainUpdateSnapshot
 export type SessionArchiveFilter = CodexSessionArchiveFilter
-export type SessionListQuery = CodexSessionListQuery
 export type SessionSummary = CodexSessionSummary
-export type SessionPageResult = CodexSessionPage
-export type SessionDetailResult = CodexSessionDetail
 export type SessionMutationResult = CodexSessionMutationResult
-export type SessionExportResult = CodexSessionExportResult
 export type MultiProviderSessionProvider = ProviderSessionProvider
 export type MultiProviderSessionListQuery = ProviderSessionListQuery
 export type MultiProviderSessionSummary = ProviderSessionSummary
@@ -689,11 +698,13 @@ export interface AiChatTextFile {
 }
 
 export type AiChatErrorCode = MainAiChatStreamErrorCode
+export type AiChatCutOff = AiAnswerCutOff
 
 export type AiChatStreamEvent =
   | { requestId: string; type: 'content'; content: string }
   | { requestId: string; type: 'reasoning'; content: string }
-  | { requestId: string; type: 'complete' }
+  /** cutOff：回答没写完就停了（到了长度上限 / 被内容审核拦下），已经出来的字照留；缺省 = 正常说完。 */
+  | { requestId: string; type: 'complete'; cutOff?: AiChatCutOff }
   | { requestId: string; type: 'canceled'; mayStillComplete?: boolean }
   | { requestId: string; type: 'error'; code?: AiChatErrorCode; message: string }
 
@@ -728,6 +739,107 @@ export interface AiChatHistoryFlushRequest {
   requestId: string
 }
 
+/** 一条视频（分镜、设置、片段编号）一份文件；key 由渲染层分配，只含字母、数字、_ 和 -。 */
+export interface VideoStudioProjectFile {
+  key: string
+  content: string
+}
+
+export interface VideoStudioProjectsSnapshot {
+  /** null = 这个账号的视频草稿还没从旧的本机存储（localStorage）抄过来，或者从没做过视频。 */
+  index: string | null
+  /** 这个账号存着的每一条视频。内容主进程不看，渲染层自己认；认不出的那一条它自己跳过。 */
+  projects: VideoStudioProjectFile[]
+}
+
+export interface VideoStudioProjectsWrite {
+  scope: string
+  /** 只在把旧草稿抄过来的那一次带：写在这一次的每一条视频之后。缺省 = 不动索引。 */
+  index?: string
+  /** 这次改过、要重写的那几条。 */
+  put: VideoStudioProjectFile[]
+  /** 客户删掉的那几条。不在这里的文件一个都不删。 */
+  remove: string[]
+}
+
+/** 主窗口「创作」左边那一列里的一个画布项目：编号、名字、时间和封面的编号，项目文件本身不出主进程。 */
+export interface CanvasProjectListEntry {
+  id: string
+  name: string
+  /** 最后改动的时间（毫秒）。 */
+  updatedAt: number
+  /** 项目中心里那张封面（画布上头一个出了结果的节点，融合第 5 步）。没有结果、或者头一个是音频时没有这一项。 */
+  cover?: { assetId: string; mediaType: 'image' | 'video' }
+}
+
+/**
+ * 主窗口「创作 › 作品库」要的一页（融合第 3 步）：当前账号做过的图片和视频，新的在前。视频剪辑的配乐、
+ * 画布回收站里的不列。主进程只列目录和名字，不读图片和视频本身。第 5 步起画布项目里生成的也列进来
+ * （项目有自己文件夹的列那个文件夹里的，导入的素材不列；已归档的项目、文件夹暂时够不着的项目不列）。
+ */
+export interface AiLibraryListInput {
+  offset?: number
+  limit?: number
+  /** film：只看 filmAssetIds 里点名的那几段视频；clip：视频里除了它们以外的；video：两样都算。 */
+  kind?: 'all' | 'image' | 'video' | 'clip' | 'film'
+  /** 按客户给作品起的名字、记着的那句描述和标签找。 */
+  search?: string
+  /** 哪几段视频是成片。作品库的文件上没有这个记号，由记着每条视频的页面点名；不是这个账号的编号对不上任何东西。 */
+  filmAssetIds?: string[]
+  /**
+   * 页面自己先搜到的那几个编号：对话和视频里写的那句话记在它们各自的记录里，不在作品库里。只在带了 search 时有用，
+   * 只拿来跟这个账号自己的目录比，多列不出别人的东西。
+   */
+  matchedAssetIds?: string[]
+  /** 只看这一个画布项目里的作品（「创作」里点开一个画布项目时用，融合第 5 步）。不是这个账号没归档的项目就什么都列不出。 */
+  canvasProjectId?: string
+}
+
+export interface AiLibraryEntry {
+  assetId: string
+  mediaType: 'image' | 'video'
+  /** 存进作品库的时间（ISO 8601）。 */
+  createdAt: string
+  /** 只有图片有。 */
+  mimeType?: 'image/png' | 'image/jpeg' | 'image/webp'
+  fileName: string
+  /** 客户在画布素材库里给它起的名字；没起过就没有。 */
+  name?: string
+  /** 画布里生成时记下的那句描述；对话和视频里做的没有这一项，页面按自己的记录补。 */
+  prompt?: string
+  /** 是哪个画布项目里的（融合第 5 步）。used：只是在那个项目的节点上用着（比如客户导进去的图），不是它生成的。项目名只当文字显示。 */
+  canvas?: { projectId: string; projectName: string; used?: true }
+}
+
+export interface AiLibraryPage {
+  items: AiLibraryEntry[]
+  offset: number
+  limit: number
+  /** 这一类、这次搜索一共多少个。 */
+  total: number
+  hasMore: boolean
+  /** 整个作品库各有多少个（不管搜的是什么），筛选那一排用。 */
+  counts: { image: number; video: number; film: number }
+}
+
+/**
+ * 主窗口「添加到画布」（融合第 5 步的「放进画布」，yoyo 2026-11-22 亲手打字同意）：把客户点的那一张图抄一份进他选的
+ * 画布项目的素材库。只交图片的编号，外加项目的编号，或者新建项目用的名字；图由主进程按当前账号认过、读出来、
+ * 照图片的老规矩查过再抄。只限图片，一次一张。画布窗口那一套通道里没有对应的入口，画布自己拿不到别的图。
+ */
+export type CanvasProjectImageInput =
+  | { assetId: string; projectId: string }
+  /** 新建一个项目再放进去。文件夹由主进程建在「文档 › 星芒画布」里，跟画布里点「新建项目」一样。 */
+  | { assetId: string; newProjectName: string }
+
+export interface CanvasProjectImageResult {
+  projectId: string
+  /** 只当文字显示。 */
+  projectName: string
+  /** 这个项目是不是这一次新建的。 */
+  created: boolean
+}
+
 /**
  * 「搬到新电脑」导出：聊天对话由渲染层按它自己的格式整理好交过来（已去掉图片和
  * 运行时字段），设置由主进程自己从 settings.json 里挑能带走的几项，渲染层塞不进别的。
@@ -736,12 +848,72 @@ export interface DataTransferExportInput {
   conversations: unknown[]
   /** 聊天页「常用的话」（Fable 第二轮 Q7）。旧版本不带，当作没存过。 */
   phrases?: string[]
+  /** 「创作」里的视频，一条一个文件，原样带走（内容由渲染层自己认）。旧版本不带。 */
+  videoProjects?: VideoStudioProjectFile[]
+  /**
+   * 连当前账号作品库里的作品一起导出（「搬作品改」）：主进程让客户选一个位置，在那里新建一个文件夹放聊天记录
+   * 和「作品」文件夹。作品是哪些、在哪由主进程按当前账号自己找，渲染层只说要不要。
+   */
+  includeWorks?: boolean
+}
+
+/** 当前账号作品库里有多少作品（回收站里的不算）、一共多大。 */
+export interface DataTransferWorksSummary {
+  images: number
+  videos: number
+  audios: number
+  /** 一共多大：作品，带画布项目时连同项目里的文件。 */
+  bytes: number
+  /** 跟着导出的画布项目几个（第三轮复查第 6 条）；没有就不带。 */
+  canvasProjects?: number
+  /** 文件夹现在找不到、导不出去的画布项目几个；只在导出前报数时有。 */
+  canvasProjectsUnreachable?: number
 }
 
 export interface DataTransferExportResult {
+  /** 聊天记录与设置那份文件；带作品时在新建的文件夹里（「打开所在位置」定位到它）。 */
   outputPath: string
   conversations: number
+  /** 带走了几条视频；旧版本不回。 */
+  videoProjects?: number
+  /** 带作品导出时才有：新建的文件夹叫什么、实际导出了几件作品、几个画布项目（没有项目不带）。 */
+  works?: { folderName: string; count: number; canvasProjects?: number }
 }
+
+/**
+ * 导入的文件旁边「作品」文件夹的样子。ready：清单读得出来，token 交给 data-transfer:import-works 导入；
+ * missing：文件里说带了作品，旁边却没有这个文件夹；unreadable：有文件夹，但里面的清单读不出来或不对。
+ * 数目在 ready 时是清单里的，另两种是文件里记的。
+ */
+export type DataTransferWorksPreview = DataTransferWorksSummary & (
+  | { state: 'ready'; token: string }
+  | { state: 'missing' | 'unreadable' }
+)
+
+/**
+ * 导入的文件旁边「画布项目」文件夹的样子，文件里说带了画布项目才有。ready 时跟作品用同一个 token 导；
+ * 「作品」文件夹不在或读不出来时，画布项目也导不了，跟它报同一个样子。count 在 ready 时是清单里的，另两种是文件里记的。
+ */
+export interface DataTransferCanvasProjectsPreview {
+  count: number
+  state: 'ready' | 'missing' | 'unreadable'
+}
+
+/** 画布项目导进来几个；existing：本机已有同一个项目；full：本机项目数到了上限；failed：读不出来或没放成。 */
+export interface DataTransferCanvasProjectsImportResult {
+  added: number
+  existing: number
+  full: number
+  failed: number
+}
+
+/**
+ * 导入作品的结果。no-space：空间不够，一件都没导，neededBytes 是要复制的那几件（带画布项目时连同项目）加起来多大。
+ * canvasProjects：带了画布项目才有。
+ */
+export type DataTransferWorksImportResult =
+  | { status: 'done'; added: number; existing: number; failed: number; canvasProjects?: DataTransferCanvasProjectsImportResult }
+  | { status: 'no-space'; neededBytes: number; availableBytes: number; canvasProjects?: DataTransferCanvasProjectsImportResult }
 
 /**
  * 「搬到新电脑」导入读出来的内容，还没有写进任何地方。对话由渲染层逐条严格校验后
@@ -764,6 +936,19 @@ export interface DataTransferImportPreview {
   anonymousUsage?: boolean
   /** 同上，这台电脑上关过、文件里是开的：和 conflictingSettings 一起先问，设置名已经在 conflictLabels 里。 */
   conflictingAnonymousUsage?: boolean
+  /**
+   * 文件里「给 AI 的长期嘱咐」，这台电脑上还没写过、可以直接换的（第三轮复查第 7 条）。它要写进三家工具的说明文件，
+   * 设置页走 config:save-standing-instructions 写，不进 settings:save。旧文件没有、和这台一样的都没有这一项。
+   */
+  standingInstructions?: string
+  /** 同上，这台电脑上写过另一段：和 conflictingSettings 一起先问，设置名已经在 conflictLabels 里。 */
+  conflictingStandingInstructions?: string
+  /** 文件里「创作」的视频，渲染层逐条认过再合并。旧文件没有这一项。 */
+  videoProjects?: VideoStudioProjectFile[]
+  /** 导出时带了作品才有。 */
+  works?: DataTransferWorksPreview
+  /** 导出时带了画布项目才有。 */
+  canvasProjects?: DataTransferCanvasProjectsPreview
 }
 
 /**
@@ -993,6 +1178,14 @@ export interface XingmangInvokeContract {
   cancelExternalClientInstall: IpcInvokeDefinition<'external-clients:cancel-install', [tool: ExternalToolId], InstallCancelResult>
   /** 回打开以后还要客户知道的事（ExternalClientLaunchResult），没有就是空对象。 */
   launchExternalClient: IpcInvokeDefinition<'external-clients:launch', [tool: ExternalToolId], ExternalClientLaunchResult>
+  /** Antigravity 命令行和桌面端装没装、设置是不是当前账号这条线路的（只看本机，不带密钥，I3）。 */
+  inspectAntigravity: IpcInvokeDefinition<'antigravity:inspect', [], AntigravityStatus>
+  /** 一键装命令行或桌面端，装好接着按需签密钥写设置；进度走 antigravity:install-progress。 */
+  installAntigravity: IpcInvokeDefinition<'antigravity:install', [target: AntigravityTarget], AntigravityInstallResult>
+  /** 写好设置再打开桌面端；开着的那一份拿不到这次的设置时不打开，回 closeFirst 请客户先关掉。 */
+  openAntigravityDesktop: IpcInvokeDefinition<'antigravity:open-desktop', [], AntigravityDesktopLaunchResult>
+  /** 写好设置，在选的文件夹里开一个终端跑 agy；workspace 缺省用记住的那个工作目录。 */
+  openAntigravityCli: IpcInvokeDefinition<'antigravity:open-cli', [workspace?: string], void>
   /**
    * 首页 Claude Desktop 卡上的一键切换：只改它登录页那个选择（官方登录 / 第三方），星芒那份配置留着。
    * 只有 Claude Desktop 支持；切回当前账号时那份用不上了回 reconnect，界面接着打开配置窗口。
@@ -1039,6 +1232,12 @@ export interface XingmangInvokeContract {
    */
   setClaudeCommitAttribution: IpcInvokeDefinition<'config:set-claude-commit-attribution', [hidden: boolean], ClaudeToggleResult>
   /**
+   * 设置 › 工具管理「给 AI 的长期嘱咐」（总单 Q4 C5）：把这段话写进 Claude Code、Codex、Grok 各自全局说明里星芒那一段
+   * （标记外面客户自己写的不动，空字符串 = 拿掉那一段），再记进设置。三家各自的结果都回来，一家写不上不抛错；
+   * 上次存下的那段话随 settings:get 的 standingInstructions 回来。
+   */
+  saveStandingInstructions: IpcInvokeDefinition<'config:save-standing-instructions', [text: string], StandingInstructionsSaveResult>
+  /**
    * 切回官方账号后那一问（Fable 复查第一轮 3）的回答。ask：Claude Code 现在是官方账号的样子、还是「不逐条确认就执行」时，
    * 先备份，再只撤 permissions.defaultMode = bypassPermissions 和 skipDangerousModePermissionPrompt = true 这两项；
    * 配置这会儿又接着别的地址就抛错不改。keep：什么都不改。两种都记下问过了，以后不再问。
@@ -1082,7 +1281,7 @@ export interface XingmangInvokeContract {
   chooseWorkspace: IpcInvokeDefinition<'workspace:choose', [options?: ChooseWorkspaceOptions], string | null>
   getRepositoryContext: IpcInvokeDefinition<'repository:get-context', [], RepositoryContext>
   installNodeRuntime: IpcInvokeDefinition<'runtime:install-node', [request?: NodeRuntimeInstallRequest], NodeRuntimeInstallResult>
-  restartWindows: IpcInvokeDefinition<'runtime:restart-windows', [], void>
+  restartWindows: IpcInvokeDefinition<'runtime:restart-windows', [options?: WindowsRestartOptions], WindowsRestartResult>
   installPythonRuntime: IpcInvokeDefinition<'runtime:install-python', [], PythonRuntimeInstallResult>
   /** Windows 上按当前用户静默安装钉死版本的 Git for Windows；其余平台直接报错。 */
   installGitRuntime: IpcInvokeDefinition<'runtime:install-git', [], GitRuntimeInstallResult>
@@ -1114,8 +1313,9 @@ export interface XingmangInvokeContract {
   checkCodexDesktopUpdate: IpcInvokeDefinition<'desktop:check-update-codex', [], DesktopAppStatus>
   /**
    * mode 省略 = 开新对话(旧行为);resumeLast 由主进程按工具映射成固定参数。
-   * sessionId 只给 Codex 的 resumeLast:那条记录自己的 id(`codex:<UUID>`),主进程在
-   * 记录里核对过、且就在 workspace 里才按 id 接,否则照旧按目录找最近一条。
+   * sessionId 只给 Codex、Claude Code、Grok CLI 的 resumeLast:那条记录自己的 id(`codex:<UUID>`,
+   * `claude:` / `grok:` 加 64 位十六进制),主进程在记录里核对过、且就在 workspace 里,才按
+   * 记录里读出的编号接,否则照旧按目录找最近一条。
    */
   launchCli: IpcInvokeDefinition<
     'cli:launch',
@@ -1172,13 +1372,6 @@ export interface XingmangInvokeContract {
    * 缺省 = 已经交给安装程序（旧行为）。
    */
   installUpdate: IpcInvokeDefinition<'update:install', [options?: UpdateInstallOptions], { accepted: true; postponed?: true }>
-  listSessions: IpcInvokeDefinition<'sessions:list', [query: SessionListQuery], SessionPageResult>
-  getSessionDetail: IpcInvokeDefinition<'sessions:detail', [sessionId: string], SessionDetailResult>
-  exportSession: IpcInvokeDefinition<
-    'sessions:export',
-    [sessionId: string],
-    SessionExportResult | null
-  >
   archiveSession: IpcInvokeDefinition<
     'sessions:archive',
     [sessionId: string],
@@ -1261,6 +1454,17 @@ export interface XingmangInvokeContract {
   logoutMcpServer: IpcInvokeDefinition<'mcp:logout', [name: string], McpServer[]>
   listSkills: IpcInvokeDefinition<'skills:list', [], SkillItem[]>
   importSkill: IpcInvokeDefinition<'skills:import', [input: ImportSkillInput], SkillItem[]>
+  /**
+   * 技能「从压缩包导入」的「选择压缩包」：主进程弹原生选择框，把选中的 .zip 查完解到星芒自己的数据
+   * 文件夹，交回技能那一层的位置，再照「从文件夹导入」那样逐家导入（那边的检查照旧再做一遍）。
+   * 不收渲染层给的路径；取消返回 null，压缩包打不开、不安全、没有技能时报中文原因。
+   */
+  chooseSkillArchive: IpcInvokeDefinition<'skills:choose-archive', [], SkillArchiveExtraction | null>
+  /**
+   * 「从压缩包导入」的框关掉时（导入完、取消、换页面）：把解开的临时文件夹删掉。不收参数，只删星芒
+   * 自己在那个文件夹里起名的那几份；各家导入都是复制，删了不影响已导入的技能。
+   */
+  discardSkillArchives: IpcInvokeDefinition<'skills:discard-archives', [], void>
   toggleSkill: IpcInvokeDefinition<
     'skills:toggle',
     [skillPath: string, enabled: boolean],
@@ -1290,11 +1494,6 @@ export interface XingmangInvokeContract {
     'extensions:list',
     [provider: ProviderId],
     ProviderExtensionsSnapshot
-  >
-  listAllProviderExtensions: IpcInvokeDefinition<
-    'extensions:list-all',
-    [],
-    ProviderExtensionsSnapshot[]
   >
   mutateProviderExtension: IpcInvokeDefinition<
     'extensions:mutate',
@@ -1438,6 +1637,8 @@ export interface XingmangInvokeContract {
   /** 用量账单的价格表；没有按型号价目的账号（历史账号）回 null。 */
   getAccountPriceList: IpcInvokeDefinition<'account:get-price-list', [], AccountPriceList | null>
   revokeAccountKey: IpcInvokeDefinition<'account:revoke-key', [id: number], void>
+  /** 密钥管理的「启用」：把停用、到期、额度用完的那把重新打开。只有星芒账号有，历史账号不显示这颗按钮。 */
+  enableAccountKey: IpcInvokeDefinition<'account:enable-key', [id: number], void>
   copyAccountKey: IpcInvokeDefinition<'account:copy-key', [id: number], void>
   /** 找回密码后复制新密码：走主进程写剪贴板，60 秒后自动清掉。 */
   copyResetPassword: IpcInvokeDefinition<'account:copy-reset-password', [password: string], void>
@@ -1469,7 +1670,20 @@ export interface XingmangInvokeContract {
     AccountRevokeOtherLoginSessionsResult
   >
   openCanvasWindow: IpcInvokeDefinition<'canvas:open', [], void>
-  openCanvasAssetLibrary: IpcInvokeDefinition<'canvas:open-asset-library', [], void>
+  /** 「创作」左边那一列要的画布项目：当前账号没归档的那些，只回编号、名字和最后改动的时间。 */
+  listCanvasProjects: IpcInvokeDefinition<'canvas:list-projects', [], CanvasProjectListEntry[]>
+  /** 「创作 › 作品库」的一页：当前账号做过的图片和视频（融合第 3 步）。只回编号、时间、名字和描述，不回文件内容和路径。 */
+  listAiLibrary: IpcInvokeDefinition<'library:list', [input: AiLibraryListInput], AiLibraryPage>
+  /**
+   * 把画布窗口开在这个项目上。编号先在当前账号的项目里认过才用；画布开着别的项目时先走它自己的关闭确认，
+   * 客户在那里选了留下就回 false。
+   */
+  openCanvasProject: IpcInvokeDefinition<'canvas:open-project', [projectId: string], boolean>
+  /**
+   * 「添加到画布」：把当前账号的一张图抄一份进他选的画布项目的素材库（或先新建一个项目）。图片编号和项目编号都在主进程
+   * 按当前账号认过才用；回项目的编号和名字，不回路径。
+   */
+  addImageToCanvasProject: IpcInvokeDefinition<'canvas:add-project-image', [input: CanvasProjectImageInput], CanvasProjectImageResult>
   getRememberedAccountLogin: IpcInvokeDefinition<'account:get-remembered-login', [siteId?: AccountSiteId], RememberedAccountLogin | null>
   setRememberedAccountLogin: IpcInvokeDefinition<'account:set-remembered-login', [input: RememberedAccountLogin | null, siteId?: AccountSiteId], void>
   createAccountKey: IpcInvokeDefinition<'account:create-key', [input: AccountKeyCreateInput], void>
@@ -1510,6 +1724,9 @@ export interface XingmangInvokeContract {
   openAiVideo: IpcInvokeDefinition<'video:open', [assetId: string], void>
   /** suggestedName：系统对话框里默认的文件名（视频剪辑页传片名），主进程洗成干净的文件名再用。 */
   saveAiVideo: IpcInvokeDefinition<'video:save-as', [assetId: string, suggestedName?: string], { saved: boolean }>
+  /** 这个账号存着的视频（分镜、设置、片段编号），一条一个文件（总单 #79）。 */
+  readVideoStudioProjects: IpcInvokeDefinition<'video-studio:read-projects', [scope: string], VideoStudioProjectsSnapshot>
+  writeVideoStudioProjects: IpcInvokeDefinition<'video-studio:write-projects', [input: VideoStudioProjectsWrite], void>
   readAiChatHistory: IpcInvokeDefinition<'chat-history:read', [scope: string], AiChatHistorySnapshot>
   writeAiChatHistory: IpcInvokeDefinition<'chat-history:write', [input: AiChatHistoryWrite], void>
   /** 聊天页把退出前那一次存完了（不管存没存成），回 onAiChatHistoryFlushRequested 给的编号。 */
@@ -1517,6 +1734,13 @@ export interface XingmangInvokeContract {
   exportAiChatConversation: IpcInvokeDefinition<'chat-history:export-text', [input: ChatConversationExportInput], { outputPath: string } | null>
   exportAppData: IpcInvokeDefinition<'data-transfer:export', [input: DataTransferExportInput], DataTransferExportResult | null>
   importAppData: IpcInvokeDefinition<'data-transfer:import', [], DataTransferImportPreview | null>
+  /** 导出前问一句带不带作品时报的数（「搬作品改」）；没登录是 null。 */
+  inspectAppWorks: IpcInvokeDefinition<'data-transfer:inspect-works', [], DataTransferWorksSummary | null>
+  /**
+   * 把刚才 data-transfer:import 选的那份文件旁边的作品导进当前账号的作品库。token 是那一次给的；文件路径
+   * 留在主进程，渲染层交不进别的位置。本机已有的同名作品不覆盖。
+   */
+  importAppWorks: IpcInvokeDefinition<'data-transfer:import-works', [token: string], DataTransferWorksImportResult>
   /**
    * 连接自检：用该工具配置文件里真正写着的 Key、服务地址和模型，向星芒服务
    * 发一次最小请求，把失败归到网络 / 密钥 / 额度 / 分组 / 模型 / 协议中的
@@ -1580,6 +1804,14 @@ export interface XingmangInvokeContract {
   setCodexRemoteAutoStart: IpcInvokeDefinition<'codex-remote:set-auto-start', [enabled: boolean], CodexRemoteSnapshot>
   /** 「多久没消息就自动关」（YF-10）：4 / 12 小时，null = 不自动关（缺省）。开着的渠道当场按新时长重新起算。 */
   setCodexRemoteIdleClose: IpcInvokeDefinition<'codex-remote:set-idle-close', [hours: RemoteIdleCloseHours | null], CodexRemoteSnapshot>
+  /** 「手机端使用的模型」：null = 跟电脑上的 Codex 一样。 */
+  setCodexRemoteModel: IpcInvokeDefinition<'codex-remote:set-model', [model: string | null], CodexRemoteSnapshot>
+  /** 「权限」两档：default（缺省，跟电脑上的 Codex 一样）或 readOnly。只记下来，手机上下一句交给 Codex 时用上。 */
+  setCodexRemotePermission: IpcInvokeDefinition<'codex-remote:set-permission', [permission: RemotePermission], CodexRemoteSnapshot>
+  /** 「选择对话」：本机 Codex 最近的对话。读不出来时报错（「无法读取对话列表，请稍后重试。」）。 */
+  listCodexRemoteConversations: IpcInvokeDefinition<'codex-remote:list-conversations', [], CodexRemoteConversationList>
+  /** 选好「手机端的对话」：null = 新对话；别的只收上一次列出来的那段的编号。 */
+  chooseCodexRemoteConversation: IpcInvokeDefinition<'codex-remote:choose-conversation', [conversationId: string | null], CodexRemoteSnapshot>
   /** 卡片「最近一次」的「停下这一轮」（YF-13）：跟手机上发「停止」一样，手机上也收到「已停止。」。 */
   stopCodexRemoteTurn: IpcInvokeDefinition<'codex-remote:stop-turn', [], CodexRemoteSnapshot>
   /** 卡片「最近一次」的「都拒绝」（YF-13）：等着同意的一条条拒绝，跟手机上点「拒绝」一样；这一轮不停。 */
@@ -1607,6 +1839,13 @@ export interface XingmangEventContract {
   onExternalClientInstallProgress: IpcEventDefinition<'external-clients:install-progress', ExternalClientInstallProgress>
   /** 点「打开」以后替它准备的进度（Windows 上替 Claude Desktop 放 Claude Code 程序），只发给点了「打开」的那个窗口。 */
   onExternalClientLaunchProgress: IpcEventDefinition<'external-clients:launch-progress', ExternalClientLaunchProgress>
+  /** Antigravity 一键安装的进度，只发给点了安装的那个窗口。 */
+  onAntigravityInstallProgress: IpcEventDefinition<'antigravity:install-progress', AntigravityProgress>
+  /**
+   * 换账号、换线路以后主进程替 Antigravity 改完了设置（antigravity-service.ts 的 follow）。载荷为空：界面只重读
+   * 那两张卡，不借线路那一声，免得把三个外部客户端再检测一遍（复查 A 第 2 轮第 2 条）。
+   */
+  onAntigravitySettingsFollowed: IpcEventDefinition<'antigravity:settings-followed', undefined>
   onAccountSessionChanged: IpcEventDefinition<'account:session-changed', AccountSessionState>
   onAccountUsageChanged: IpcEventDefinition<'account:usage-changed', AccountUsageChangedEvent>
   /** 本机账号存储被重建。载荷为空：备份文件名与账号内容都不跨 IPC。 */
@@ -1692,12 +1931,17 @@ export const ipcInvokeChannels = {
   installExternalClient: 'external-clients:install',
   cancelExternalClientInstall: 'external-clients:cancel-install',
   launchExternalClient: 'external-clients:launch',
+  inspectAntigravity: 'antigravity:inspect',
+  installAntigravity: 'antigravity:install',
+  openAntigravityDesktop: 'antigravity:open-desktop',
+  openAntigravityCli: 'antigravity:open-cli',
   switchExternalClientSource: 'external-clients:switch-source',
   switchToOfficialAccount: 'config:switch-to-official-account',
   switchAccountSource: 'config:switch-account-source',
   repairCliHooks: 'config:repair-cli-hooks',
   setClaudeWriteBoundary: 'config:set-claude-write-boundary',
   setClaudeCommitAttribution: 'config:set-claude-commit-attribution',
+  saveStandingInstructions: 'config:save-standing-instructions',
   answerClaudeCommandConfirmation: 'config:answer-claude-command-confirmation',
   inspectRunningTools: 'tools:inspect-running',
   checkToolModels: 'tools:check-models',
@@ -1745,9 +1989,6 @@ export const ipcInvokeChannels = {
   checkForUpdates: 'update:check',
   downloadUpdate: 'update:download',
   installUpdate: 'update:install',
-  listSessions: 'sessions:list',
-  getSessionDetail: 'sessions:detail',
-  exportSession: 'sessions:export',
   archiveSession: 'sessions:archive',
   restoreSession: 'sessions:restore',
   listProviderSessions: 'provider-sessions:list',
@@ -1785,6 +2026,8 @@ export const ipcInvokeChannels = {
   logoutMcpServer: 'mcp:logout',
   listSkills: 'skills:list',
   importSkill: 'skills:import',
+  chooseSkillArchive: 'skills:choose-archive',
+  discardSkillArchives: 'skills:discard-archives',
   toggleSkill: 'skills:toggle',
   uninstallSkill: 'skills:uninstall',
   listPlugins: 'plugins:list',
@@ -1795,7 +2038,6 @@ export const ipcInvokeChannels = {
   upgradeMarketplace: 'marketplaces:upgrade',
   removeMarketplace: 'marketplaces:remove',
   listProviderExtensions: 'extensions:list',
-  listAllProviderExtensions: 'extensions:list-all',
   mutateProviderExtension: 'extensions:mutate',
   ensureProviderMarketplace: 'extensions:ensure-marketplace',
   checkProviderMcpHealth: 'extensions:check-mcp-health',
@@ -1851,6 +2093,7 @@ export const ipcInvokeChannels = {
   getAccountUsableGroups: 'account:list-groups',
   getAccountPriceList: 'account:get-price-list',
   revokeAccountKey: 'account:revoke-key',
+  enableAccountKey: 'account:enable-key',
   copyAccountKey: 'account:copy-key',
   copyResetPassword: 'account:copy-reset-password',
   revealAccountKey: 'account:reveal-key',
@@ -1861,7 +2104,10 @@ export const ipcInvokeChannels = {
   revokeAccountLoginSession: 'account:revoke-login-session',
   revokeOtherAccountLoginSessions: 'account:revoke-other-login-sessions',
   openCanvasWindow: 'canvas:open',
-  openCanvasAssetLibrary: 'canvas:open-asset-library',
+  listCanvasProjects: 'canvas:list-projects',
+  listAiLibrary: 'library:list',
+  openCanvasProject: 'canvas:open-project',
+  addImageToCanvasProject: 'canvas:add-project-image',
   getRememberedAccountLogin: 'account:get-remembered-login',
   setRememberedAccountLogin: 'account:set-remembered-login',
   createAccountKey: 'account:create-key',
@@ -1887,12 +2133,16 @@ export const ipcInvokeChannels = {
   readVideoStudioMusic: 'video-studio:read-music',
   openAiVideo: 'video:open',
   saveAiVideo: 'video:save-as',
+  readVideoStudioProjects: 'video-studio:read-projects',
+  writeVideoStudioProjects: 'video-studio:write-projects',
   readAiChatHistory: 'chat-history:read',
   writeAiChatHistory: 'chat-history:write',
   confirmAiChatHistoryFlushed: 'chat-history:flushed',
   exportAiChatConversation: 'chat-history:export-text',
   exportAppData: 'data-transfer:export',
   importAppData: 'data-transfer:import',
+  inspectAppWorks: 'data-transfer:inspect-works',
+  importAppWorks: 'data-transfer:import-works',
   checkProviderConnection: 'diagnostics:check-connection',
   probeCodexResponses: 'diagnostics:probe-codex-responses',
   checkExternalClientConnection: 'diagnostics:check-external-connection',
@@ -1906,6 +2156,10 @@ export const ipcInvokeChannels = {
   reconnectCodexRemoteChannel: 'codex-remote:reconnect',
   setCodexRemoteAutoStart: 'codex-remote:set-auto-start',
   setCodexRemoteIdleClose: 'codex-remote:set-idle-close',
+  setCodexRemoteModel: 'codex-remote:set-model',
+  setCodexRemotePermission: 'codex-remote:set-permission',
+  listCodexRemoteConversations: 'codex-remote:list-conversations',
+  chooseCodexRemoteConversation: 'codex-remote:choose-conversation',
   stopCodexRemoteTurn: 'codex-remote:stop-turn',
   declineCodexRemoteApprovals: 'codex-remote:decline-approvals',
   chooseCodexRemoteWorkspace: 'codex-remote:choose-workspace',
@@ -1923,6 +2177,8 @@ export const ipcInvokeChannels = {
 export const ipcEventChannels = {
   onExternalClientInstallProgress: 'external-clients:install-progress',
   onExternalClientLaunchProgress: 'external-clients:launch-progress',
+  onAntigravityInstallProgress: 'antigravity:install-progress',
+  onAntigravitySettingsFollowed: 'antigravity:settings-followed',
   onAccountSessionChanged: 'account:session-changed',
   onAccountUsageChanged: 'account:usage-changed',
   onAccountVaultRecovered: 'account:vault-recovered',

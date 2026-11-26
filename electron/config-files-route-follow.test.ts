@@ -135,7 +135,7 @@ describe('provider route follow', () => {
     if (next.status !== 'rewrite') throw new Error(next.status)
     const edited = `${fs.readFileSync(settings, 'utf8')}\n`
     fs.writeFileSync(settings, edited)
-    expect(() => applyProviderRouteFollow('claude', next, r)).toThrow('工具配置在改线路时被别的程序改了')
+    expect(() => applyProviderRouteFollow('claude', next, r)).toThrow('工具配置在切换线路时被其他程序修改')
     expect(fs.readFileSync(settings, 'utf8')).toBe(edited)
   })
 
@@ -171,6 +171,6 @@ describe('provider route follow', () => {
   it('refuses to write anywhere but the provider config files', () => {
     const { root, roots: r } = roots()
     expect(() => applyProviderRouteFollow('claude', { status: 'rewrite', from: primary.claude, file: path.join(root, 'elsewhere.json'), original: '', content: '{}' }, r))
-      .toThrow('工具配置路径不对')
+      .toThrow('工具配置路径有误')
   })
 })

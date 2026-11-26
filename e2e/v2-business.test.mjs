@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { before, after, test } from 'node:test'
+import { expect } from '@playwright/test'
 import { openFixturePage } from './fixture-readiness.mjs'
 import { actionTimeoutMs, createBrowserFixture, navigationTimeoutMs } from './harness.mjs'
 import { assertNoToast, recordToasts, waitForToast } from './toast-recording.mjs'
@@ -106,8 +107,8 @@ test('Sub2API usage submits calendar dates, IDs and timezone with unsupported fi
     assert.equal(last.groupId, 5)
     assert.equal('startTimestamp' in last, false)
     await page.getByText(/包含结束日期全天/).waitFor()
-    await usage.getByText('这段时间没有调用', { exact: true }).waitFor()
-    await usage.getByText('换个筛选条件看看。', { exact: true }).waitFor()
+    await usage.getByText('该时间段暂无调用', { exact: true }).waitFor()
+    await usage.getByText('请调整筛选条件。', { exact: true }).waitFor()
     // 收起来以后，改过的条件数挂在按钮上；没动过的默认日期不算。
     await toggle.click()
     assert.equal(await toggle.innerText(), '展开筛选 · 5')
@@ -230,7 +231,7 @@ test('the usage range drives the stats, one bar per local day or week and the ca
     // 调用明细跟着同一段时间查。
     await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage'))
     assert.equal((await lastUsage()).startTimestamp, midnight)
-    await page.getByTestId('account-usage-section').getByText('这段时间没有调用', { exact: true }).waitFor()
+    await page.getByTestId('account-usage-section').getByText('该时间段暂无调用', { exact: true }).waitFor()
 
     const range = page.getByRole('group', { name: '统计时间' })
     await range.getByRole('button', { name: '24 小时', exact: true }).click()
@@ -249,10 +250,10 @@ test('the usage range drives the stats, one bar per local day or week and the ca
     await page.waitForFunction(() => document.querySelectorAll('.v2-usage-chart-col').length === 5)
     assert.match(await bars.first().getAttribute('title'), /^\d+月\d+日至\d+月\d+日：\$5\.00$/)
 
-    // 快捷筛选「失败」：只查错误记录，空着时说这段时间没有失败的调用。
+    // 快捷筛选「失败」：只查错误记录，空着时说该时间段无失败的调用。
     await page.getByTestId('account-usage-section').getByRole('button', { name: '失败', exact: true }).click()
     await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage' && call.args.type === 5))
-    await page.getByText('这段时间没有失败的调用', { exact: true }).waitFor()
+    await page.getByText('该时间段无失败的调用', { exact: true }).waitFor()
   } finally { await page.close() }
 })
 
@@ -313,10 +314,10 @@ test('changing the usage range sends the call list back to its first page', asyn
 
 test('account views distinguish summary-only, failed reads and valid empty results', async () => {
   for (const [query, tab, expected, absent] of [
-    ['sub2apiReliability=1', '用量账单', '只有累计数', '这个时间段还没有用量'],
-    ['fail=dashboard', '用量账单', '花费趋势暂时没有读到', '这个时间段还没有用量'],
-    ['fail=usage', '用量账单', '调用明细暂时没有读到', '这段时间没有调用'],
-    ['sub2apiReliability=1&fail=subscriptions', '充值订阅', '订阅信息暂时没有读到', '还没有订阅'],
+    ['sub2apiReliability=1', '用量账单', '只有累计数', '该时间段暂无用量'],
+    ['fail=dashboard', '用量账单', '花费趋势获取失败', '该时间段暂无用量'],
+    ['fail=usage', '用量账单', '调用明细暂时无法获取', '该时间段暂无调用'],
+    ['sub2apiReliability=1&fail=subscriptions', '充值订阅', '订阅信息暂时无法获取', '暂无订阅'],
   ]) {
     const page = await fixture(`page=account&${query}`)
     try {
@@ -372,7 +373,7 @@ test('usage details retain ordinary cache prices and distinguish missing prices 
       } else if (kind === 'missing' || kind === 'unknown-tier') {
         assert.doesNotMatch(await billing.innerText(), /\$25 \/ 百万|\$75 \/ 百万/)
         assert.match(await billing.innerText(), /\$0\.7726/)
-        assert.match(text, /这一条没给出单价，以上面的总费用为准。/)
+        assert.match(text, /此记录未提供单价，以上方总费用为准。/)
         assert.equal(await dialog.locator('.is-matched').count(), 0)
         if (kind === 'missing') assert.doesNotMatch(text, /未提供 秒/)
       } else if (kind === 'sub2') {
@@ -472,7 +473,7 @@ test('the orders head asks the main process to open the invoice window without n
       await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
       const orders = page.getByTestId('account-orders-section')
       await orders.getByRole('button', { name: '开发票', exact: true }).click()
-      await waitForToast(page, `开票中心已在新窗口打开；要登录的话，用这个账号的${loginName}和密码。`)
+      await waitForToast(page, `开票中心已在新窗口打开。如需登录，请使用当前账号的${loginName}和密码。`)
       assert.deepEqual(
         (await calls(page)).filter((call) => call.name === 'open-invoice-portal').map((call) => call.args),
         [[]],
@@ -490,7 +491,7 @@ test('the invoice button says the approved line when the invoice window does not
     await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     const orders = page.getByTestId('account-orders-section')
     await orders.getByRole('button', { name: '开发票', exact: true }).click()
-    await orders.getByRole('alert').filter({ hasText: '没能打开开票中心，请稍后再试；还不行请找客服。' }).waitFor()
+    await orders.getByRole('alert').filter({ hasText: '开票中心打开失败，请稍后重试；如仍无法打开，请联系客服。' }).waitFor()
     // 订单照常列着：打不开开票中心不影响看订单。
     await orders.getByText('TEST-ORDER').waitFor()
   } finally {
@@ -591,12 +592,12 @@ test('an unread profile keeps the account pages and only blocks the ones that ne
   try {
     const failure = page.getByTestId('account-read-error')
     await failure.waitFor()
-    assert.match(await failure.innerText(), /当前账号的资料暂时没有读到[\s\S]*账号资料服务暂时不可用/)
+    assert.match(await failure.innerText(), /当前账号资料获取失败[\s\S]*账号资料服务暂时不可用/)
     await failure.getByRole('button', { name: '联系客服', exact: true }).click()
     assert.equal((await calls(page)).some((call) => call.name === 'open-help'), true)
-    await page.getByText('当前账号的资料暂时没有读到', { exact: true }).first().waitFor()
+    await page.getByText('当前账号资料获取失败', { exact: true }).first().waitFor()
     // 页头那句也直说没读到，不拿站点名或别的话顶上。
-    assert.equal(await page.locator('.v2-acct-hero p').innerText(), '当前账号的资料暂时没有读到')
+    assert.equal(await page.locator('.v2-acct-hero p').innerText(), '当前账号资料获取失败')
     assert.equal(await page.getByRole('tab').count(), 6)
     await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     await page.getByRole('button', { name: '到账 $10，实付 10.00', exact: true }).waitFor()
@@ -615,10 +616,10 @@ test('an unread profile keeps the account pages and only blocks the ones that ne
 
 test('account lists that could not be read say so with the reason and read again on request', async () => {
   for (const [query, tab, title, reason, absent] of [
-    ['fail=orders', '充值订阅', '订单暂时没有读到', '订单服务暂时不可用', '还没有订单'],
-    ['fail=tasks', '用量账单', '生成任务暂时没有读到', '任务服务暂时不可用', '暂无生成任务'],
-    ['fail=usage', '用量账单', '调用明细暂时没有读到', '调用记录服务暂时不可用', '这段时间没有调用'],
-    ['fail=devices', '账号安全', '登录设备暂时没有读到', '设备服务暂时不可用', '正在读取登录设备…'],
+    ['fail=orders', '充值订阅', '订单暂时无法获取', '订单服务暂时不可用', '暂无订单'],
+    ['fail=tasks', '用量账单', '生成任务暂时无法获取', '任务服务暂时不可用', '暂无生成任务'],
+    ['fail=usage', '用量账单', '调用明细暂时无法获取', '调用记录服务暂时不可用', '该时间段暂无调用'],
+    ['fail=devices', '账号安全', '登录设备暂时无法获取', '设备服务暂时不可用', '正在读取登录设备…'],
   ]) {
     const page = await fixture(`page=account&${query}`)
     try {
@@ -694,10 +695,10 @@ test('the price table is a third view of the usage page, read only when first op
       await prices.getByRole('button', { name: '价格表', exact: true }).waitFor()
       assert.equal(await prices.getByRole('button', { name: '价格表', exact: true }).getAttribute('aria-pressed'), 'true')
       if (query.includes('fail')) {
-        await prices.getByText('价格表暂时读不到，稍后再试。不影响使用。').waitFor()
+        await prices.getByText('价格表暂时无法获取，请稍后重试，不影响使用。').waitFor()
         await prices.getByTestId('account-prices-retry').click()
         await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'get-price-list').length === 2)
-        await prices.getByText('价格表暂时读不到，稍后再试。不影响使用。').waitFor()
+        await prices.getByText('价格表暂时无法获取，请稍后重试，不影响使用。').waitFor()
         continue
       }
       const table = prices.getByTestId('account-prices-table')
@@ -709,7 +710,7 @@ test('the price table is a third view of the usage page, read only when first op
         ['gpt-5.6-sol', 'GPT', '$1.25', '$10.00'],
       ])
       await prices.getByText('价格表 · 美元 / 每百万 Token').waitFor()
-      assert.equal(await prices.getByTestId('account-prices-note').innerText(), '已经算上分组的倍数。实际扣多少以用量账单为准。分档计价的，用过以后在调用明细里点开那一次，能看到每一档的价格。')
+      assert.equal(await prices.getByTestId('account-prices-note').innerText(), '已经算上分组的倍数。实际扣多少以用量账单为准。分档计价的模型，可在调用明细中展开对应记录查看各档价格。')
       // Switching away and back keeps what was read.
       await prices.getByRole('button', { name: '调用明细', exact: true }).click()
       await usage.getByRole('button', { name: '价格表', exact: true }).click()
@@ -738,7 +739,7 @@ test('recharge stays open when subscriptions fail and says when the top-up detai
     const panel = page.getByRole('tabpanel').filter({ visible: true })
     await panel.getByRole('button', { name: '到账 $10，实付 10.00', exact: true }).waitFor()
     assert.equal(await panel.getByTestId('account-recharge-submit').isDisabled(), false)
-    await panel.getByText('订阅信息暂时没有读到', { exact: true }).waitFor()
+    await panel.getByText('订阅信息暂时无法获取', { exact: true }).waitFor()
     await panel.getByTestId('account-subscriptions-retry').waitFor()
     assert.equal(await panel.getByTestId('account-recharge-plans').count(), 0)
     assert.equal(await panel.getByRole('group', { name: '扣费顺序' }).count(), 0)
@@ -751,11 +752,11 @@ test('recharge stays open when subscriptions fail and says when the top-up detai
     await failed.getByRole('tab', { name: '充值订阅', exact: true }).click()
     const card = failed.getByTestId('account-recharge-error')
     await card.waitFor()
-    assert.match(await card.innerText(), /充值信息暂时没有读到[\s\S]*充值服务暂时不可用/)
+    assert.match(await card.innerText(), /充值信息加载失败[\s\S]*充值服务暂时不可用/)
     await card.getByRole('button', { name: '联系客服', exact: true }).waitFor()
     assert.equal(await failed.getByRole('button', { name: /^到账/ }).count(), 0)
     // 订阅那边读得到，照样摆着。
-    await failed.getByText('还没有订阅', { exact: true }).waitFor()
+    await failed.getByLabel('充值订阅').getByText('暂无订阅', { exact: true }).waitFor()
     const reads = (await calls(failed)).filter((call) => call.name === 'get-topup-info').length
     await card.getByTestId('account-recharge-retry').click()
     await failed.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'get-topup-info').length > count, reads)
@@ -770,7 +771,7 @@ test('without a payment channel the recharge card says so first, greys the form 
     await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     const notice = page.getByTestId('account-recharge-no-methods')
     await notice.waitFor()
-    assert.match(await notice.innerText(), /暂时没有可用的支付渠道[\s\S]*请稍后重试或联系客服。有充值码的话，点「有充值码？」兑换。/)
+    assert.match(await notice.innerText(), /暂时没有可用的支付渠道[\s\S]*请稍后重试或联系客服。如有充值码，可点击「有充值码？」兑换。/)
     await notice.getByRole('button', { name: '联系客服', exact: true }).waitFor()
     // 提示在卡片最上面，档位在它下面。
     const noticeBox = await notice.boundingBox()
@@ -803,15 +804,15 @@ test('login devices say which device each button signs out', async () => {
     // 这台电脑只标「当前设备」；退出登录在账号概览那条「当前登录」上。
     await devices.getByText('当前设备', { exact: true }).waitFor()
     assert.equal(await devices.getByRole('button', { name: '退出登录', exact: true }).count(), 0)
-    await devices.getByRole('button', { name: '让它下线', exact: true }).click()
-    let dialog = page.getByRole('dialog', { name: /^让「.+」下线？$/ })
+    await devices.getByRole('button', { name: '下线此设备', exact: true }).click()
+    let dialog = page.getByRole('dialog', { name: /^是否下线「.+」？$/ })
     await dialog.getByRole('button', { name: '下线', exact: true }).waitFor()
-    await dialog.getByText('它要重新登录才能看账号信息，那台电脑上配好的工具照常能用。', { exact: true }).waitFor()
+    await dialog.getByText('该设备需重新登录才能查看账号信息，其上已配置的工具可正常使用。', { exact: true }).waitFor()
     await dialog.getByRole('button', { name: '取消', exact: true }).click()
     await others.click()
-    dialog = page.getByRole('dialog', { name: '让其他设备都下线？', exact: true })
+    dialog = page.getByRole('dialog', { name: '是否下线所有其他设备？', exact: true })
     await dialog.getByRole('button', { name: '全部下线', exact: true }).waitFor()
-    await dialog.getByText('除了这台电脑，其他设备要重新登录才能看账号信息，上面配好的工具照常能用。', { exact: true }).waitFor()
+    await dialog.getByText('除本机外，其他设备需重新登录才能查看账号信息，其上已配置的工具可正常使用。', { exact: true }).waitFor()
   } finally {
     await page.close()
   }
@@ -829,7 +830,7 @@ test('the overview keeps switching and signing out on the current-login bar and 
     assert.equal((await calls(page)).some((call) => call.name === 'open-account-switcher'), true)
     await bar.getByTestId('account-overview-logout').click()
     const logout = page.getByRole('dialog', { name: '退出登录？', exact: true })
-    await logout.getByText('已配好的工具会保留。', { exact: true }).waitFor()
+    await logout.getByText('已配置的工具将保留。', { exact: true }).waitFor()
     await logout.getByRole('button', { name: '取消', exact: true }).click()
     // 显示名称在页头铅笔打开的「编辑资料」里：没改过「保存」点不了，改了才亮。
     await page.getByTestId('account-profile-edit').click()
@@ -865,7 +866,7 @@ test('the invite page leads with the code, copies the whole link and moves rebat
     // 星芒账号的后台不给邀请名单，「邀请记录」整节不出。
     assert.equal(await panel.getByTestId('account-invite-records').count(), 0)
     await panel.getByTestId('account-invite-transfer').click()
-    await page.getByRole('dialog', { name: '把 $1.00 返利转入余额？', exact: true }).waitFor()
+    await page.getByRole('dialog', { name: '是否将 $1.00 返利转入余额？', exact: true }).waitFor()
   } finally {
     await page.close()
   }
@@ -885,17 +886,17 @@ test('the transfer dialog starts from what is transferable now, also after part 
     assert.equal(await amount.inputValue(), '1')
     await amount.fill('0.4')
     // 余额 F8-1：只转一部分时标题写这次要转的数，不再写全部可转的 $1.00。
-    await page.getByRole('dialog', { name: '把 $0.40 返利转入余额？', exact: true }).waitFor()
+    await page.getByRole('dialog', { name: '是否将 $0.40 返利转入余额？', exact: true }).waitFor()
     await amount.fill('')
-    await page.getByRole('dialog', { name: '把 $1.00 返利转入余额？', exact: true }).waitFor()
+    await page.getByRole('dialog', { name: '是否将 $1.00 返利转入余额？', exact: true }).waitFor()
     await amount.fill('0.4')
-    await page.getByRole('dialog', { name: '把 $0.40 返利转入余额？', exact: true }).waitFor()
+    await page.getByRole('dialog', { name: '是否将 $0.40 返利转入余额？', exact: true }).waitFor()
     await dialog.getByRole('button', { name: '转入余额', exact: true }).click()
     await waitForToast(page, '$0.40 已转入余额')
     await dialog.waitFor({ state: 'hidden' })
     await transferable.getByText('$0.60', { exact: true }).waitFor()
     await transfer.click()
-    await page.getByRole('dialog', { name: '把 $0.60 返利转入余额？', exact: true }).waitFor()
+    await page.getByRole('dialog', { name: '是否将 $0.60 返利转入余额？', exact: true }).waitFor()
     assert.equal(await amount.inputValue(), '0.6')
     assert.deepEqual((await calls(page)).filter((call) => call.name === 'transfer-affiliate-quota').map((call) => call.args), [{ quota: 40 }])
   } finally {
@@ -911,7 +912,7 @@ test('a historical account moves a rebate with cents in one go, at the exact amo
     const panel = page.getByRole('tabpanel').filter({ visible: true })
     const transfer = panel.getByTestId('account-invite-transfer')
     await transfer.click()
-    const dialog = page.getByRole('dialog', { name: '把 $3.46 返利转入余额？', exact: true })
+    const dialog = page.getByRole('dialog', { name: '是否将 $3.46 返利转入余额？', exact: true })
     await dialog.waitFor()
     const amount = dialog.getByLabel('转入金额（美元）', { exact: true })
     assert.equal(await amount.inputValue(), '3.456')
@@ -933,7 +934,7 @@ test('the empty transfer button tells a drained rebate from one never earned', a
     const panel = page.getByRole('tabpanel').filter({ visible: true })
     const transfer = panel.getByTestId('account-invite-transfer')
     await transfer.click()
-    const dialog = page.getByRole('dialog', { name: '把 $1.00 返利转入余额？', exact: true })
+    const dialog = page.getByRole('dialog', { name: '是否将 $1.00 返利转入余额？', exact: true })
     await dialog.getByRole('button', { name: '转入余额', exact: true }).click()
     await dialog.waitFor({ state: 'hidden' })
     await transfer.getByText('已全部转入', { exact: true }).waitFor()
@@ -946,7 +947,7 @@ test('the empty transfer button tells a drained rebate from one never earned', a
     await fresh.getByRole('tab', { name: '邀请返利', exact: true }).click()
     const transfer = fresh.getByRole('tabpanel').filter({ visible: true }).getByTestId('account-invite-transfer')
     // 从来没赚过时写「已全部转入」像是转过了（W44）。
-    await transfer.getByText('还没有返利', { exact: true }).waitFor()
+    await transfer.getByText('暂无返利', { exact: true }).waitFor()
     assert.equal(await transfer.isDisabled(), true)
   } finally {
     await fresh.close()
@@ -980,7 +981,7 @@ test('tool key limits list only the tools that have a key and name the ones stil
       await card.locator('[data-testid^="tool-key-limit-"]:not([data-testid*="-input-"]):not([data-testid*="-save-"])').evaluateAll((rows) => rows.map((row) => row.getAttribute('data-testid'))),
       ['tool-key-limit-claude', 'tool-key-limit-codex'],
     )
-    assert.equal(await page.getByTestId('tool-key-limits-missing').innerText(), 'Grok CLI 还没配，配好后会出现在这里。')
+    assert.equal(await page.getByTestId('tool-key-limits-missing').innerText(), 'Grok CLI 尚未配置，配置后将显示在此处。')
   } finally {
     await page.close()
   }
@@ -989,7 +990,7 @@ test('tool key limits list only the tools that have a key and name the ones stil
     await none.getByRole('tab', { name: '密钥管理', exact: true }).click()
     const line = none.getByTestId('tool-key-limits')
     await line.waitFor()
-    assert.equal(await line.innerText(), '工具配好后，可以在这里给每个工具设额度上限。')
+    assert.equal(await line.innerText(), '工具配置完成后，可在此为每个工具设置额度上限。')
   } finally {
     await none.close()
   }
@@ -999,7 +1000,7 @@ test('tool key limits that could not be read can be read again without leaving t
   const page = await fixture('page=account&managedKeys=1')
   try {
     // 概览数密钥把数也按 100 一页读，等它读完再让下一次失败，失败的才是这张卡。
-    await page.locator('.v2-acct-kv').filter({ hasText: '2 把' }).waitFor()
+    await page.locator('.v2-acct-kv').filter({ hasText: '2 个' }).waitFor()
     await page.evaluate(() => window.failNextRead('toolKeyLimits'))
     await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
     const card = page.getByTestId('tool-key-limits')
@@ -1027,7 +1028,7 @@ test('tool key limits that could not be read can be read again without leaving t
     assert.equal(await emptyLine.count(), 0)
     await alert.getByRole('button', { name: '重新加载', exact: true }).click()
     await emptyLine.waitFor()
-    assert.equal(await emptyLine.innerText(), '工具配好后，可以在这里给每个工具设额度上限。')
+    assert.equal(await emptyLine.innerText(), '工具配置完成后，可在此为每个工具设置额度上限。')
     assert.equal(await card.getByRole('alert').count(), 0)
   } finally {
     await none.close()
@@ -1041,7 +1042,7 @@ test('a half-typed tool key limit is refused instead of being saved as no limit'
     const card = page.getByTestId('tool-key-limits')
     const field = card.getByTestId('tool-key-limit-input-claude')
     const save = card.getByTestId('tool-key-limit-save-claude')
-    const refused = card.getByRole('alert').getByText('请填写大于 0 的上限金额，留空表示不限额。', { exact: true })
+    const refused = card.getByRole('alert').getByText('请填写大于 0 的上限金额，留空表示不限额度。', { exact: true })
     await field.waitFor()
     // 「1e」「-」这种半截数，数字框交出来的值是空的，跟留空一样；不能当成不限额存下去（表单 F10-b）。
     // 「-」是先清空再打的：从空到「-」值没变，框的 onChange 根本不来。
@@ -1157,7 +1158,7 @@ test('a profile read once stays on screen when a later refresh cannot read it', 
     await page.getByTestId('account-refresh').click()
     const alert = page.getByRole('tabpanel').filter({ visible: true }).getByRole('alert')
     await alert.getByText('账号资料服务暂时不可用').waitFor()
-    // 手上那份资料留着：不整页换成「暂时没有读到」，页头的名字和邮箱也还在。
+    // 手上那份资料留着：不整页换成「暂未获取」，页头的名字和邮箱也还在。
     assert.equal(await page.getByTestId('account-read-error').count(), 0)
     assert.equal(await name.innerText(), '本地测试')
     assert.match(await page.locator('.v2-acct-hero p').innerText(), /^test@example\.invalid · /)
@@ -1206,17 +1207,17 @@ test('a subscription re-read that fails says so instead of still showing no subs
   try {
     const panel = page.getByRole('tabpanel').filter({ visible: true })
     const choose = panel.getByTestId('account-recharge-plans')
-    await panel.getByText('还没有订阅', { exact: true }).waitFor()
+    await panel.getByText('暂无订阅', { exact: true }).waitFor()
     assert.equal(await choose.count(), 1)
     await page.evaluate(() => window.failNextRead('subscriptions'))
     await page.getByTestId('account-refresh').click()
-    await panel.getByTestId('account-subscriptions-error').getByText('订阅信息暂时没有读到').waitFor()
-    assert.equal(await panel.getByText('还没有订阅', { exact: true }).count(), 0)
+    await panel.getByTestId('account-subscriptions-error').getByText('订阅信息暂时无法获取').waitFor()
+    assert.equal(await panel.getByText('暂无订阅', { exact: true }).count(), 0)
     assert.equal(await choose.count(), 0)
     // 充值那张卡不受影响。
     assert.equal(await panel.getByTestId('account-recharge-submit').count(), 1)
     await panel.getByTestId('account-subscriptions-retry').click()
-    await panel.getByText('还没有订阅', { exact: true }).waitFor()
+    await panel.getByText('暂无订阅', { exact: true }).waitFor()
     assert.equal(await choose.count(), 1)
   } finally {
     await page.close()
@@ -1301,9 +1302,9 @@ test('revoking a key a tool is using warns first and puts a fresh key back witho
     await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
     await page.getByTestId('account-key-in-use-1').getByText('Claude Code 在用').waitFor()
     const dialog = await revokeTestKey(page)
-    assert.match(await dialog.innerText(), /撤销后这把密钥马上失效，找不回来。[\s\S]*Claude Code 正在用它，会马上换一把新的写进去，不影响使用。/)
+    assert.match(await dialog.innerText(), /撤销后该密钥将立即失效且无法恢复。[\s\S]*Claude Code 正在使用该密钥，将立即写入新密钥，不影响使用。/)
     await dialog.getByRole('button', { name: '撤销', exact: true }).click()
-    await waitForToast(page, '已撤销「Test key」，Claude Code 已换用新的密钥')
+    await waitForToast(page, '已撤销「Test key」，Claude Code 已更换为新密钥')
     assert.equal(await page.getByTestId('account-key-replace-failed').count(), 0)
     const names = (await calls(page)).map((call) => [call.name, call.args])
     assert.deepEqual(names.filter(([name]) => name === 'revokeAccountKey' || name === 'rewriteKey'),
@@ -1317,11 +1318,11 @@ test('a failed key replacement after revoking says what to press and retries on 
     const dialog = await revokeTestKey(page)
     await dialog.getByRole('button', { name: '撤销', exact: true }).click()
     const notice = page.getByTestId('account-key-replace-failed')
-    await notice.getByText('Claude Code 暂时用不了', { exact: true }).waitFor()
+    await notice.getByText('Claude Code 暂时无法使用', { exact: true }).waitFor()
     await page.getByTestId('account-key-replace-retry').click()
-    await page.getByText('Claude Code 还是没换上新密钥，请检查网络后再点一次。', { exact: true }).waitFor()
+    await page.getByText('Claude Code 仍未更换为新密钥，请检查网络后重试。', { exact: true }).waitFor()
     await page.getByTestId('account-key-replace-retry').click()
-    await waitForToast(page, 'Claude Code 已换上新密钥')
+    await waitForToast(page, 'Claude Code 已更换为新密钥')
     assert.equal(await notice.count(), 0)
     assert.equal((await calls(page)).filter((call) => call.name === 'rewriteKey').length, 3)
   } finally { await page.close() }
@@ -1333,9 +1334,9 @@ test('revoking a key a hand-configured tool is using never claims a fresh key an
     const dialog = await revokeTestKey(page)
     await dialog.getByRole('button', { name: '撤销', exact: true }).click()
     const notice = page.getByTestId('account-key-replace-skipped')
-    await notice.getByText('Claude Code 还在用刚撤销的密钥', { exact: true }).waitFor()
+    await notice.getByText('Claude Code 仍在使用已撤销的密钥', { exact: true }).waitFor()
     await waitForToast(page, '已撤销「Test key」')
-    assert.equal(await page.getByText(/已换用新的密钥/).count(), 0)
+    assert.equal(await page.getByText(/已更换为新密钥/).count(), 0)
     assert.equal(await page.getByTestId('account-key-replace-retry').count(), 0)
     await page.getByTestId('account-key-replace-configure').click()
     assert.deepEqual((await calls(page)).filter((call) => call.name === 'openConfig').map((call) => call.args), ['claude'])
@@ -1372,14 +1373,14 @@ test('the overview key count catches up after a key is revoked on the key tab', 
   const page = await fixture('page=account&keyCount=21')
   try {
     const card = page.getByTestId('account-overview-security')
-    await card.getByText('21 把', { exact: true }).waitFor()
+    await card.getByText('21 个', { exact: true }).waitFor()
     await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
     await page.getByRole('button', { name: '密钥 paged-key-1 的更多操作', exact: true }).click()
     await page.getByRole('menuitem', { name: '撤销密钥', exact: true }).click()
     await page.getByRole('dialog', { name: '撤销「paged-key-1」？', exact: true }).getByRole('button', { name: '撤销', exact: true }).click()
     await waitForToast(page, '已撤销「paged-key-1」')
     await page.getByRole('tab', { name: '账号概览', exact: true }).click()
-    await card.getByText('20 把', { exact: true }).waitFor()
+    await card.getByText('20 个', { exact: true }).waitFor()
   } finally { await page.close() }
 })
 
@@ -1400,11 +1401,49 @@ test('key search finds a key that lives on a later page and starts from the firs
   } finally { await page.close() }
 })
 
+test('a stopped key offers 启用 on its own row and turns back on when it is pressed (Q2)', async () => {
+  const page = await fixture('page=account&stoppedKeys=1')
+  try {
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    const disabled = page.getByTestId('account-key-row-21')
+    await disabled.getByText('已停用', { exact: true }).waitFor()
+    // 正常那把不摆「启用」。
+    assert.equal(await page.getByTestId('account-key-enable-1').count(), 0)
+    const enable = page.getByRole('button', { name: '启用密钥 disabled-key', exact: true })
+    assert.equal(await enable.innerText(), '启用')
+    await enable.click()
+    await waitForToast(page, '已启用「disabled-key」')
+    await page.getByTestId('account-key-enable-21').waitFor({ state: 'detached' })
+    assert.equal(await disabled.getByText('已停用', { exact: true }).count(), 0)
+    assert.deepEqual((await calls(page)).filter((call) => call.name === 'enableAccountKey').map((call) => call.args), [21])
+  } finally { await page.close() }
+})
+
+test('enabling a key past its expiry says to change the expiry first and keeps the button', async () => {
+  const page = await fixture('page=account&stoppedKeys=1')
+  try {
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    await page.getByRole('button', { name: '启用密钥 expired-key', exact: true }).click()
+    await page.getByText('该密钥已过到期时间。请先点击该行右侧的「⋯」，选择「编辑」延后到期时间，再点击「启用」。', { exact: true }).waitFor()
+    await page.getByTestId('account-key-row-22').getByText('已过期', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('account-key-enable-22').isEnabled(), true)
+  } finally { await page.close() }
+})
+
+test('a 历史账号 key list never offers 启用, since that backend cannot turn keys back on here', async () => {
+  const page = await fixture('page=account&stoppedKeys=1&sub2apiReliability=1')
+  try {
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    await page.getByTestId('account-key-row-21').getByText('已停用', { exact: true }).waitFor()
+    assert.equal(await page.getByRole('button', { name: /^启用密钥/ }).count(), 0)
+  } finally { await page.close() }
+})
+
 test('revoking a key no tool is using only says it cannot be undone and never rewrites a tool', async () => {
   const page = await fixture('page=account')
   try {
     const dialog = await revokeTestKey(page)
-    assert.equal((await dialog.locator('p').allInnerTexts()).join('\n'), '撤销后这把密钥马上失效，找不回来。')
+    assert.equal((await dialog.locator('p').allInnerTexts()).join('\n'), '撤销后该密钥将立即失效且无法恢复。')
     await dialog.getByRole('button', { name: '撤销', exact: true }).click()
     await waitForToast(page, '已撤销「Test key」')
     assert.equal((await calls(page)).some((call) => call.name === 'rewriteKey'), false)
@@ -1429,7 +1468,7 @@ test('the revoke dialog stays open and cannot be cancelled while the revoke is r
     await page.keyboard.press('Escape')
     assert.equal(await dialog.isVisible(), true)
     await page.evaluate(() => window.releaseRevoke())
-    await waitForToast(page, '已撤销「Test key」，Claude Code 已换用新的密钥')
+    await waitForToast(page, '已撤销「Test key」，Claude Code 已更换为新密钥')
     await dialog.waitFor({ state: 'hidden' })
     assert.equal((await calls(page)).filter((call) => call.name === 'revokeAccountKey').length, 1)
   } finally { await page.close() }
@@ -1504,7 +1543,7 @@ test('refreshing key groups preserves the draft and requires a new choice when t
     await save.click()
     const created = page.getByTestId('account-key-created')
     await created.getByText('「draft key」已创建', { exact: true }).waitFor()
-    await created.getByText('想让某个工具用它，在列表里点「配置到工具」。', { exact: true }).waitFor()
+    await created.getByText('如需在工具中使用，请在列表中点击「配置到工具」。', { exact: true }).waitFor()
     const args = (await calls(page)).find((call) => call.name === 'create-key').args
     assert.deepEqual({ name: args.name, group: args.group, remainQuota: args.remainQuota }, { name: 'draft key', group: 'group-C', remainQuota: 1234 })
     await page.getByTestId('account-key-created-done').click()
@@ -1620,7 +1659,7 @@ test('key group failures name the real cause instead of one generic refresh prom
     // 限流：服务端回英文原文，映射成「稍等几秒」，而不是让用户反复点刷新
     await page.evaluate(() => window.keyGroupsHarness.failNext('list groups failed: 429 Too Many Requests'))
     await page.getByTestId('account-key-groups-refresh').click()
-    await dialog.getByText('请求太频繁，稍等几秒再试。', { exact: true }).waitFor()
+    await dialog.getByText('请求次数过多，请稍候几秒后重试。', { exact: true }).waitFor()
     assert.equal(await save.isDisabled(), true)
 
     // 账号被封禁：走 account-errors 的既有匹配表，同样不该退化成刷新提示
@@ -1674,14 +1713,14 @@ test('session detail shows transcript and archives the native id after a user ac
 })
 
 // 记录页的 lead 一直写着「继续之前的对话」,但页面只有导出和归档。这条钉住
-// 兑现之后的行为:按钮把记录里的工作目录和固定的 resumeLast 一起交给主进程,
-// 续接参数本身永远不从渲染层来。Codex 另带这条记录的 id,由主进程核对后按 id
-// 接(它自己按目录找时还看连接名,切过账号就找不到)。
-test('records page resumes the most recent conversation in the folder on the row', async () => {
+// 兑现之后的行为:按钮把记录里的工作目录、固定的 resumeLast 和这条记录的 id
+// 一起交给主进程,续接参数本身永远不从渲染层来:主进程从记录里读出编号、核对
+// 过文件夹再按编号接(0.2.25 S1 起三家都这样)。
+test('records page resumes the conversation on the row', async () => {
   const page = await fixture('page=sessions')
   try {
     await page.getByTestId('sessions-resume-codex:session-1').click()
-    await waitForToast(page, '已打开Codex CLI，接着 C:/test-project 里最近的一条对话')
+    await waitForToast(page, '已打开Codex CLI，在 C:/test-project 中继续这次对话')
     assert.deepEqual(
       (await calls(page)).find((call) => call.name === 'launch-cli').args,
       { provider: 'codex', workspace: 'C:/test-project', mode: 'resumeLast', sessionId: 'codex:session-1' },
@@ -1691,14 +1730,19 @@ test('records page resumes the most recent conversation in the folder on the row
   }
 })
 
-// 续接参数是 CLI 自己按目录找最近一条,所以同一个工具、同一个目录只有最近的
-// 那条能给按钮:否则用户点第三条、接上的却是第一条。
-test('only the most recent record of a folder offers to resume it', async () => {
+// 0.2.25 S1:以前续接参数是 CLI 自己按目录找最近一条,同一个工具、同一个目录
+// 只有最近的那条给按钮。现在按这条记录的编号接,更早的那条也有按钮,点哪条接哪条。
+test('every record of a folder offers to resume that very record', async () => {
   const page = await fixture('page=sessions&sameFolder=1')
   try {
     await page.getByTestId('sessions-row-codex:session-0').waitFor()
     assert.equal(await page.getByTestId('sessions-resume-codex:session-1').count(), 1)
-    assert.equal(await page.getByTestId('sessions-resume-codex:session-0').count(), 0)
+    await page.getByTestId('sessions-resume-codex:session-0').click()
+    await waitForToast(page, '已打开Codex CLI，在 C:/test-project 中继续这次对话')
+    assert.equal(
+      (await calls(page)).find((call) => call.name === 'launch-cli').args.sessionId,
+      'codex:session-0',
+    )
   } finally {
     await page.close()
   }
@@ -1715,13 +1759,13 @@ test('a record whose folder is gone keeps the resume button in place but disable
     assert.equal(await resume.isDisabled(), true)
     assert.equal(
       await resume.getAttribute('title'),
-      '这条记录的文件夹已经不在了，接不上上次的对话',
+      '该记录的文件夹已不存在，无法继续上次的对话',
     )
     // v4：文件夹那一格挂着警告图标，悬停说一句，路径照旧显示。
     await page.getByTestId('sessions-missing-codex:session-1').waitFor()
     assert.equal(
       await page.getByTestId('sessions-missing-codex:session-1').getAttribute('title'),
-      '这个文件夹已经不在了',
+      '该文件夹已不存在',
     )
     // 按不动就不该有任何一次启动请求发出去。
     await resume.click({ force: true }).catch(() => {})
@@ -1745,49 +1789,136 @@ test('session detail exposes a retry action after a temporary read failure', asy
   }
 })
 
-test('extension toggle preserves original state and reports mutation failure', async () => {
-  const page = await fixture('page=mcp')
+test('session detail shows what each AI turn ran and changed, folded to names only', async () => {
+  const page = await fixture('page=sessions&turnActivity=1')
   try {
-    // 开关的名字说的是点下去会怎样（v4 批12）。
-    const control = page.getByRole('switch', { name: '停用 测试扩展', exact: true })
-    await control.click()
-    await page.getByText('扩展操作失败，已有配置保留').waitFor()
-    assert.equal(await control.getAttribute('aria-checked'), 'true')
+    await page.getByTestId('sessions-view-codex:session-1').click()
+    const drawer = page.getByTestId('session-detail-drawer')
+    const line = drawer.getByTestId('session-detail-turn-activity')
+    await line.getByText('本轮：运行了 3 条命令，修改了 2 个文件，有 1 步未成功', { exact: true }).waitFor()
+    assert.equal(await line.getByText('sum.ts、sum.test.ts', { exact: true }).isVisible(), false)
+    await line.getByText('本轮：运行了 3 条命令，修改了 2 个文件，有 1 步未成功', { exact: true }).click()
+    await line.getByText('sum.ts、sum.test.ts', { exact: true }).waitFor()
+    await line.getByText('npm、git', { exact: true }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('sessions search can also look through what was said, after the typing settles', async () => {
+  const page = await fixture('page=sessions')
+  try {
+    await page.getByTestId('sessions-row-codex:session-1').waitFor()
+    await page.getByTestId('sessions-search').fill('没说过')
+    assert.equal((await calls(page)).some((call) => call.name === 'list-sessions-content'), false)
+    await page.getByText('同时搜索对话内容', { exact: true }).click()
+    assert.equal(await page.getByTestId('sessions-search-content').isChecked(), true)
+    await page.getByText('最近的对话中未找到「没说过」', { exact: true }).waitFor()
     assert.deepEqual(
-      (await calls(page)).find((call) => call.name === 'extension').args,
-      {
-        provider: 'claude',
-        kind: 'mcp',
-        action: 'disable',
-        id: 'test-extension',
-        // 列表给出的层要原样带回去，否则项目里的那份会被当成全局的去改（#488）。
-        scope: 'user',
-      },
+      (await calls(page)).filter((call) => call.name === 'list-sessions-content').map((call) => call.args),
+      [{ search: '没说过', searchContent: true }],
+    )
+    // 打字时先不翻：一口气敲完只发停手后的那个词。
+    await page.getByTestId('sessions-search').fill('测试')
+    await page.getByTestId('sessions-search-content-status').getByText('正在搜索对话内容…', { exact: true }).waitFor()
+    await page.getByTestId('sessions-row-codex:session-1').waitFor()
+    await page.getByTestId('sessions-search-content-status').waitFor({ state: 'detached' })
+    assert.deepEqual(
+      (await calls(page)).filter((call) => call.name === 'list-sessions-content').map((call) => call.args.search),
+      ['没说过', '测试'],
     )
   } finally {
     await page.close()
   }
 })
 
-test('waiting for MCP browser authorization can be cancelled without a failure banner', async () => {
-  const page = await fixture('page=mcp&installedProviders=codex&mcpAuth')
+const callsNamed = async (page, name) =>
+  (await calls(page)).filter((call) => call.name === name)
+
+// 0.2.25 精选、外接工具、技能、插件合成一页「插件」以后，原来四页上的这些用例搬到新页上测同一件事；
+// 新页自己的几条在文件后面（const hub 那一段）。只装 Claude Code 的那几条不读 Codex，免得一进页就替用户下载
+// GPT 官方插件目录、多出几次读列表，数调用数时对不上。
+const hubClaudeOnly = 'page=extensions&installedProviders=claude'
+const hubAllTools = 'page=extensions&installedProviders=claude,codex,grok'
+
+// 点左边「已安装」里的一条，打开它的详情。
+async function openInstalled(page, name) {
+  await page.getByTestId('hub-installed').getByRole('button', { name: new RegExp(name) }).click()
+  const detail = page.getByTestId('hub-detail')
+  await expect(detail.getByRole('heading', { level: 2 })).toHaveText(name)
+  return detail
+}
+
+// 装了 Codex 时「插件」页一进来就替用户下载 GPT 官方插件目录（夹具里一开始没下载），下载那一阵别的操作都不接；
+// 等目录里那条搜得出来、「添加」能点了再往下。
+async function hubCatalogReady(page) {
+  await page.getByTestId('hub-search').fill('Game Studio')
+  await page.getByTestId('hub-row-plugin-game-studio-openai-api-curated').waitFor()
+  await page.getByTestId('hub-search').fill('')
+  await expect(page.getByTestId('hub-add')).toBeEnabled()
+}
+
+// 右上角「添加」里的一项：mcp（自定义连接）、plugin（添加插件）、market（添加插件市场）、skill（从文件夹导入）。
+async function openHubAdd(page, item) {
+  await page.getByTestId('hub-add').click()
+  await page.getByTestId(`hub-add-${item}`).click()
+}
+
+test('a switch in the details keeps its state when the change fails and sends the listed scope back', async () => {
+  const page = await fixture(hubClaudeOnly)
   try {
-    const row = page.getByTestId('mcp-row-test-extension')
-    await row.getByTestId('mcp-auth-test-extension').click()
-    await row.getByText('等你在浏览器里授权', { exact: true }).waitFor()
-    // 等授权时整页别的按钮都灰着；这颗「取消」是唯一能停下来的地方，读屏要说清停的是哪一行。
-    const cancel = row.getByRole('button', { name: '停止等待 测试扩展 授权', exact: true })
+    const detail = await openInstalled(page, '测试连接')
+    // 开关的名字说的是点下去会怎样（v4 批12）。
+    const control = detail.getByRole('switch', { name: '停用 测试连接', exact: true })
+    await control.click()
+    await page.getByText('扩展操作失败，已有配置保留').first().waitFor()
+    assert.equal(await control.getAttribute('aria-checked'), 'true')
+    // 列表给出的层要原样带回去，否则项目里的那份会被当成全局的去改（#488）。
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, {
+      provider: 'claude', kind: 'mcp', action: 'disable', id: 'test-extension', scope: 'user',
+    })
+  } finally {
+    await page.close()
+  }
+})
+
+// Codex 没有插件启停命令：开关走它自己的接口改 config.toml，通用的扩展改动对 Codex 插件只认装和卸。
+test('a Codex plugin switch goes through the Codex plugin interface and names the plugin in the toast', async () => {
+  const page = await fixture('page=extensions&installedProviders=claude,codex&extensionOk')
+  try {
+    await hubCatalogReady(page)
+    const detail = await openInstalled(page, 'Sentry')
+    await detail.getByRole('switch', { name: '停用 Sentry', exact: true }).click()
+    await waitForToast(page, '已停用「Sentry」')
+    assert.deepEqual((await callsNamed(page, 'toggle-plugin')).map((call) => call.args), [['sentry@openai-api-curated', false]])
+    assert.equal((await callsNamed(page, 'extension')).length, 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('waiting for a connection to be authorized in the browser can be cancelled without a failure banner', async () => {
+  const page = await fixture('page=extensions&installedProviders=codex&mcpAuth')
+  try {
+    await hubCatalogReady(page)
+    const detail = await openInstalled(page, '测试连接')
+    const row = detail.getByTestId('hub-where-codex')
+    await expect(row).toContainText('需要登录授权')
+    await row.getByTestId('hub-auth-codex').click()
+    await row.getByText('等待在浏览器中授权', { exact: true }).waitFor()
+    // 等授权时整页别的按钮都灰着；这颗「取消」是唯一能停下来的地方，读屏要说清停的是哪一条。
+    const cancel = row.getByRole('button', { name: '停止等待 测试连接 授权', exact: true })
     assert.equal(await cancel.textContent(), '取消')
     await cancel.click()
     await row.getByText('正在停止', { exact: true }).waitFor()
-    await waitForToast(page, '已取消，测试扩展 还没有授权')
+    await waitForToast(page, '已取消，测试连接 尚未授权')
     await row.getByText('登录授权', { exact: true }).waitFor()
-    assert.equal(await row.getByTestId('mcp-auth-cancel-test-extension').count(), 0)
-    assert.equal(await row.getByTestId('mcp-auth-test-extension').isEnabled(), true)
+    assert.equal(await cancel.count(), 0)
+    assert.equal(await row.getByTestId('hub-auth-codex').isEnabled(), true)
     // 取消是正常结束：不弹红条，也不说「已授权」。
     assert.equal(await page.getByText('未完成', { exact: false }).count(), 0)
     assert.equal(
-      await page.evaluate(() => window.__v2Toasts.entries.some((entry) => entry.text === '测试扩展 已授权')),
+      await page.evaluate(() => window.__v2Toasts.entries.some((entry) => entry.text === '测试连接 已授权')),
       false,
     )
     const recorded = await calls(page)
@@ -1798,40 +1929,42 @@ test('waiting for MCP browser authorization can be cancelled without a failure b
   }
 })
 
-test('each MCP connection carries its own checked answer and the reason behind it', async () => {
-  const page = await fixture('page=mcp')
+// 第五部分第 25、28 条：每条连接各说各的检测结果，工具给的原因一起上屏；检测未完成直说；不后台轮询，
+// 「重新加载」先重读列表再检测。
+test('a connection shows its own checked answer with the reason, and 重新加载 reads the list again before checking', async () => {
+  const page = await fixture(`${hubClaudeOnly}&mcpHealthFail`)
   try {
-    const pill = page.getByTestId('mcp-health-test-extension')
-    await pill.getByText('连不上', { exact: true }).waitFor()
+    let detail = await openInstalled(page, '测试连接')
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('未检测')
+    await detail.getByText('连接检测没有跑完', { exact: true }).waitFor()
+    assert.equal((await callsNamed(page, 'mcp-health')).length, 1)
+    const reads = (await callsNamed(page, 'list-extensions')).length
+    await detail.getByTestId('hub-back').click()
+    await page.getByTestId('hub-reload').click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'mcp-health').length === 2)
+    detail = await openInstalled(page, '测试连接')
     // 「连不上」本身不够用，工具给出的那句原因必须一起上屏。
-    await page.getByText('启动失败：找不到 uvx', { exact: true }).waitFor()
-    assert.equal(
-      (await calls(page)).filter((call) => call.name === 'mcp-health').length,
-      1,
-    )
-    // 不后台轮询：再有结果只能是用户自己点出来的。
-    await page.getByTestId('mcp-health-recheck').click()
-    await pill.getByText('连不上', { exact: true }).waitFor()
-    assert.equal(
-      (await calls(page)).filter((call) => call.name === 'mcp-health').length,
-      2,
-    )
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('无法连接')
+    await detail.getByText('启动失败：找不到 uvx', { exact: true }).waitFor()
+    const names = (await calls(page)).map((call) => call.name)
+    assert.equal(names.filter((name) => name === 'list-extensions').length, reads + 1)
+    assert.ok(names.lastIndexOf('list-extensions') < names.lastIndexOf('mcp-health'), '先重读列表，再检测连接')
   } finally {
     await page.close()
   }
 })
 
 test('adding a uvx connection without Python says so first and still lets it through', async () => {
-  const page = await fixture('page=mcp')
+  const page = await fixture(hubClaudeOnly)
   try {
-    await page.getByTestId('mcp-add').click()
+    await openHubAdd(page, 'mcp')
     await page.getByRole('button', { name: '本地程序', exact: true }).click()
     await page.getByTestId('mcp-source').fill('uvx')
     const notice = page.getByTestId('mcp-runtime-notice')
     await notice.waitFor()
-    await notice.getByText(/没有找到 uv/).waitFor()
+    await notice.getByText(/未找到 uv/).waitFor()
     // 提示只是提示：它不该把「添加」按下去的路堵死。
-    await notice.getByText(/仍然可以直接添加/).waitFor()
+    await notice.getByText(/仍可直接添加/).waitFor()
     await notice.getByTestId('mcp-install-python').click()
     await page.getByText('测试环境不装 Python').first().waitFor()
     // npx 型的命令不该被这条提示牵连。
@@ -1842,15 +1975,15 @@ test('adding a uvx connection without Python says so first and still lets it thr
   }
 })
 
-// D20：缺 uv 不再叫客户去命令行敲 pip，交给客服教，并给一颗「找客服」。
+// D20：缺 uv 不再叫客户去命令行敲 pip，交给客服教，并给一颗「联系客服」。
 test('a uvx connection missing uv points to customer support with a button instead of a pip command', async () => {
-  const page = await fixture('page=mcp&help')
+  const page = await fixture(`${hubClaudeOnly}&help`)
   try {
-    await page.getByTestId('mcp-add').click()
+    await openHubAdd(page, 'mcp')
     await page.getByRole('button', { name: '本地程序', exact: true }).click()
     await page.getByTestId('mcp-source').fill('uvx')
     const notice = page.getByTestId('mcp-runtime-notice')
-    await notice.getByText(/这个工具还要一个叫 uv 的小组件，点「找客服」，客服教你装。/).waitFor()
+    await notice.getByText(/该工具还需安装 uv 组件，请点击「联系客服」获取安装指导。/).waitFor()
     assert.equal(await notice.getByText(/pip install uv/).count(), 0)
     await notice.getByTestId('mcp-runtime-support').click()
     assert.equal((await callsNamed(page, 'open-help')).length, 1)
@@ -1859,251 +1992,176 @@ test('a uvx connection missing uv points to customer support with a button inste
   }
 })
 
-test('curated MCP install confirms the exact command before writing any configuration', async () => {
-  const page = await fixture('page=mcp')
+test('installing a recommended connection shows the exact command and writes nothing before 安装', async () => {
+  const page = await fixture(hubClaudeOnly)
   try {
-    const shelf = page.getByTestId('curated-shelf')
-    await shelf.waitFor()
-    await shelf.getByTestId('curated-install-browser').click()
-    const confirm = page.getByTestId('curated-confirm')
-    await confirm.waitFor()
-    // 确认框必须原样给出将要执行的命令和那句免责说明，用户才知道自己在同意什么。
-    await confirm.getByText('npx -y @playwright/mcp@0.0.82', { exact: true }).waitFor()
-    await confirm.getByText(/第三方软件/).first().waitFor()
-    assert.equal(
-      (await calls(page)).some((call) => call.name === 'extension'),
-      false,
-    )
-    await confirm.getByTestId('curated-confirm-submit').click()
-    await confirm.getByText('扩展操作失败，已有配置保留').waitFor()
-    assert.deepEqual(
-      (await calls(page)).find((call) => call.name === 'extension').args,
-      {
-        provider: 'claude',
-        kind: 'mcp',
-        action: 'install',
-        id: 'browser',
-        scope: 'user',
-        mcp: {
-          type: 'stdio',
-          command: 'npx',
-          args: ['-y', '@playwright/mcp@0.0.82'],
-          env: {},
-        },
-      },
-    )
+    await page.getByTestId('hub-add-mcp-sequential-thinking').click()
+    const dialog = page.getByRole('dialog', { name: '安装「逐步思考」', exact: true })
+    // 安装框必须原样给出将要执行的命令和那句免责说明，用户才知道自己在同意什么。
+    await dialog.getByText('npx -y @modelcontextprotocol/server-sequential-thinking@2026.8.31', { exact: true }).waitFor()
+    await dialog.getByText(/第三方软件/).first().waitFor()
+    assert.equal((await callsNamed(page, 'extension')).length, 0)
+    await dialog.getByTestId('hub-install-submit').click()
+    await dialog.getByText('扩展操作失败，已有配置保留').first().waitFor()
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, {
+      provider: 'claude',
+      kind: 'mcp',
+      action: 'install',
+      id: 'sequential-thinking',
+      scope: 'user',
+      mcp: { type: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-sequential-thinking@2026.8.31'], env: {} },
+    })
   } finally {
     await page.close()
   }
 })
 
-test('the curated plugin shelf shows both commands and installs through the existing plugin path', async () => {
-  const page = await fixture('page=plugins')
+test('a recommended Claude plugin lists both commands, says which version lands and installs only into Claude', async () => {
+  const page = await fixture('page=extensions&installedProviders=claude,codex')
   try {
-    const shelf = page.getByTestId('curated-shelf')
-    await shelf.waitFor()
-    await shelf.getByTestId('curated-install-code-review').click()
-    const confirm = page.getByTestId('curated-confirm')
-    await confirm.waitFor()
-    // 装插件要先保证官方市场在册，所以确认框里必须是两条命令，少列一条就是没说全。
-    await confirm
-      .getByText('claude plugin marketplace add anthropics/claude-plugins-official', { exact: true })
-      .waitFor()
-    await confirm
-      .getByText('claude plugin install code-review@claude-plugins-official', { exact: true })
-      .waitFor()
-    // 官方市场装到的是它当下那一份，钉不住版本这件事要在点确认之前说出来。
-    await confirm.getByText(/安装的是官方市场当前的版本/).waitFor()
-    await confirm.getByText(/第三方软件/).first().waitFor()
-    assert.equal(
-      (await calls(page)).some((call) => call.name === 'extension'),
-      false,
-    )
-    await confirm.getByTestId('curated-confirm-submit').click()
-    await confirm.getByText('扩展操作失败，已有配置保留').waitFor()
-    // 精选不另开通道：走的还是页面上「添加插件」那一条出口。
-    assert.deepEqual(
-      (await calls(page)).find((call) => call.name === 'extension').args,
-      {
-        provider: 'claude',
-        kind: 'plugin',
-        action: 'install',
-        source: 'code-review@claude-plugins-official',
-      },
-    )
+    await hubCatalogReady(page)
+    await page.getByTestId('hub-add-plugin-feature-dev-claude-plugins-official').click()
+    const dialog = page.getByRole('dialog', { name: '安装「功能开发流程」', exact: true })
+    // 装插件要先保证官方市场在册，所以安装框里是两条命令，少列一条就是没说全。
+    await dialog.getByText('claude plugin marketplace add anthropics/claude-plugins-official', { exact: true }).waitFor()
+    await dialog.getByText('claude plugin install feature-dev@claude-plugins-official', { exact: true }).waitFor()
+    // 官方市场装到的是它当下那一份，钉不住版本这件事要在点「安装」之前说出来。
+    await dialog.getByText(/将安装官方市场的当前版本/).waitFor()
+    await dialog.getByText(/第三方软件/).first().waitFor()
+    // 插件各家格式不通用：另两家灰着说为什么。
+    await expect(dialog.getByTestId('hub-install-tools-codex')).toBeDisabled()
+    await expect(dialog.getByTestId('hub-install-tools-codex')).toContainText('插件各家格式不通用，这一条只有 Claude 版')
+    assert.equal((await callsNamed(page, 'extension')).length, 0)
+    await dialog.getByTestId('hub-install-submit').click()
+    await dialog.getByText('扩展操作失败，已有配置保留').first().waitFor()
+    // 精选不另开通道：走的还是「添加插件」那一条出口。
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, {
+      provider: 'claude', kind: 'plugin', action: 'install', source: 'feature-dev@claude-plugins-official',
+    })
   } finally {
     await page.close()
   }
 })
 
-test('the Codex plugin market downloads the official catalog by itself and lists what can be installed', async () => {
-  const page = await fixture('page=plugins&codexCatalogOffline')
+test('a recommended entry that needs a folder asks for it in the same dialog before adding', async () => {
+  const page = await fixture('page=extensions&installedProviders=claude,codex')
   try {
-    // 插件页合成一页：选到 Codex CLI，官方目录就在已装列表下面。
-    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
-    // 第一次按国内常见的样子失败：说清楚原因，留一颗按钮让用户开加速后自己再点。
-    await page.getByText(/插件目录没有下载下来/).first().waitFor()
-    const notice = page.getByTestId('plugins-official-marketplace')
-    await notice.getByText('官方插件目录还没下载').waitFor()
-    assert.equal(
-      (await calls(page)).filter((call) => call.name === 'ensure-marketplace').length,
-      1,
-    )
-    await notice.getByTestId('plugins-official-marketplace-add').click()
-    await notice.getByText('官方插件目录已就绪').waitFor()
-    const row = page.getByTestId('plugins-row-game-studio@openai-api-curated')
-    await row.getByText('Design and prototype browser games').waitFor()
-    await row.getByTestId('plugins-install-game-studio@openai-api-curated').waitFor()
-    assert.deepEqual(
-      (await calls(page)).filter((call) => call.name === 'ensure-marketplace').map((call) => call.args),
-      ['codex', 'codex'],
-    )
-  } finally {
-    await page.close()
-  }
-})
-
-test('a curated entry that needs a folder prefills the form instead of installing a broken connection', async () => {
-  const page = await fixture('page=mcp')
-  try {
-    await page.getByTestId('curated-install-files').click()
-    await page.getByTestId('curated-confirm-submit').click()
-    const notice = page.getByTestId('curated-input-directory')
-    await notice.waitFor()
-    await notice.getByText(/点「选择文件夹」挑一个/).waitFor()
+    await hubCatalogReady(page)
+    // 本地文件已经装在 Claude 里，「+」装的是 GPT 那一份。
+    await page.getByTestId('hub-add-mcp-files').click()
+    const dialog = page.getByTestId('hub-install-dialog')
+    const submit = dialog.getByTestId('hub-install-submit')
+    assert.equal(await submit.innerText(), '继续填写')
+    await submit.click()
+    const notice = dialog.getByTestId('curated-input-directory')
+    await notice.getByText(/点击「选择文件夹」选择后将自动填写，无需手动修改。/).waitFor()
     await notice.getByTestId('curated-choose-directory').waitFor()
-    assert.equal(
-      (await calls(page)).some((call) => call.name === 'extension'),
-      false,
-    )
     // 占位符没换就提交要当场拦住，而不是写进一条起不来的连接。
-    await page.getByTestId('mcp-form-submit').click()
-    await page
-      .getByText('{{directory}} 还没换成真实内容，请先填好再添加。')
-      .first()
-      .waitFor()
-    assert.equal(
-      (await calls(page)).some((call) => call.name === 'extension'),
-      false,
-    )
+    await submit.click()
+    await dialog.getByText('{{directory}} 尚未替换为实际内容，请填写后再添加。', { exact: true }).waitFor()
+    assert.equal((await callsNamed(page, 'extension')).length, 0)
+    assert.equal((await callsNamed(page, 'add-mcp')).length, 0)
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await page.getByTestId('featured-recommend').click()
+    // 「反馈与客服」分两个页签（v4 第 10 批）：想要新的连接落在「留言反馈」。
+    assert.deepEqual((await callsNamed(page, 'navigate')).at(-1).args, ['feedback', 'form'])
   } finally {
     await page.close()
   }
 })
 
-const callsNamed = async (page, name) =>
-  (await calls(page)).filter((call) => call.name === name)
-
-// 第五部分第 23、24 条：自己加的连接在上，「星芒精选」在下；一个词同时筛两边。
-test('the MCP page lists its own connections above the curated shelf and one search narrows both', async () => {
-  const page = await fixture('page=mcp')
+test('the GPT official catalog downloads by itself on the first visit without an extra success note', async () => {
+  const page = await fixture('page=extensions&installedProviders=claude,codex')
   try {
-    const list = page.getByTestId('mcp-list')
-    await page.getByRole('heading', { name: '已装到 Claude Code', exact: true }).waitFor()
-    await list.getByTestId('mcp-row-test-extension').waitFor()
-    const shelf = page.getByTestId('curated-shelf')
-    await shelf.getByText('我们挑过的，装之前会先给你看它要什么权限', { exact: true }).waitFor()
-    const listBox = await list.boundingBox()
-    const shelfBox = await shelf.boundingBox()
-    assert.ok(listBox.y + listBox.height <= shelfBox.y, '自己的列表排在「星芒精选」上面')
-    // 精选每张卡只留「添加」：要不要联网放在点「添加」后的确认框里说。
-    assert.equal(await shelf.getByText(/联网/).count(), 0)
-    const search = page.getByTestId('mcp-search')
-    await search.fill('GitHub')
-    await shelf.getByTestId('curated-install-github').waitFor()
-    await shelf.getByTestId('curated-install-browser').waitFor({ state: 'detached' })
-    // 精选一条都不匹配就整块收起；搜不到的那句在已装列表那张卡里。
-    await search.fill('no-such-connection-8472')
-    await shelf.waitFor({ state: 'detached' })
-    await list.getByTestId('mcp-filter-empty').getByText('没有找到「no-such-connection-8472」', { exact: true }).waitFor()
+    await page.getByTestId('hub-search').fill('Game Studio')
+    await page.getByTestId('hub-row-plugin-game-studio-openai-api-curated').waitFor()
+    await page.waitForTimeout(300)
+    assert.equal(await page.getByText('插件目录已下载，下方为可安装的插件。').count(), 0)
+    assert.equal((await callsNamed(page, 'ensure-marketplace')).length, 1)
   } finally {
     await page.close()
   }
 })
 
-test('an empty MCP list says how to add one and 看看精选 lands on the first install', async () => {
-  const page = await fixture('page=mcp&empty')
+test('when the GPT official catalog fails to download the group says why and offers to try again', async () => {
+  const page = await fixture('page=extensions&installedProviders=claude,codex&codexCatalogOffline')
   try {
-    const empty = page.getByTestId('mcp-empty')
-    await empty.getByText('还没有给 Claude Code 装外接工具', { exact: true }).waitFor()
-    await empty.getByText('装下面「星芒精选」里的，或点右上角「自定义连接」接你自己的。', { exact: true }).waitFor()
-    await empty.getByRole('button', { name: '自定义连接', exact: true }).waitFor()
-    await empty.getByTestId('mcp-see-curated').click()
-    await page.waitForFunction(() => document.activeElement?.dataset.testid?.startsWith('curated-install-'))
+    // 第一次按国内常见的样子失败：说清楚原因，留一颗按钮让用户自己再点。
+    await page.getByText(/插件目录下载失败/).first().waitFor()
+    const notice = page.getByTestId('hub-section-codex').getByTestId('hub-codex-marketplace')
+    await notice.getByText('官方插件目录尚未下载').waitFor()
+    assert.equal((await callsNamed(page, 'ensure-marketplace')).length, 1)
+    await notice.getByTestId('hub-codex-marketplace-add').click()
+    await notice.waitFor({ state: 'detached' })
+    await page.getByTestId('hub-search').fill('Game Studio')
+    await page.getByTestId('hub-row-plugin-game-studio-openai-api-curated').getByText('Design and prototype browser games').waitFor()
+    await page.getByTestId('hub-add-plugin-game-studio-openai-api-curated').waitFor()
+    assert.deepEqual((await callsNamed(page, 'ensure-marketplace')).map((call) => call.args), ['codex', 'codex'])
   } finally {
     await page.close()
   }
 })
 
-// 第五部分第 25、28 条：没检测成就别写「上次检测」；「重新检测」先重读列表再检测。
-test('an MCP check that did not finish says so, and 重新检测 reads the list again before checking', async () => {
-  const page = await fixture('page=mcp&mcpHealthFail')
+test('with nothing installed the plugins page says how to add one', async () => {
+  const page = await fixture(`${hubClaudeOnly}&empty`)
   try {
-    await page.getByTestId('mcp-health-failed').getByText('这次没检测成', { exact: true }).waitFor()
-    assert.equal(await page.getByText(/上次检测/).count(), 0)
-    const reads = (await callsNamed(page, 'list-extensions')).length
-    await page.getByTestId('mcp-health-recheck').click()
-    await page.getByText(/^上次检测 /).waitFor()
-    assert.equal(await page.getByTestId('mcp-health-failed').count(), 0)
-    const names = (await calls(page)).map((call) => call.name)
-    assert.equal(names.filter((name) => name === 'list-extensions').length, reads + 1)
-    assert.ok(names.lastIndexOf('list-extensions') < names.lastIndexOf('mcp-health'), '先重读列表，再检测连接')
+    await expect(page.locator('.v2-hub-side-empty')).toHaveText('暂未安装插件')
+    // 推荐照样摆着，能直接点「+」装。
+    await page.getByTestId('hub-add-mcp-browser').waitFor()
+    await page.getByTestId('hub-tab-custom').click()
+    await page.getByTestId('hub-custom-empty').getByText('暂无自定义连接。获取服务方提供的连接配置后，请点击右上角「添加」。', { exact: true }).waitFor()
+    await page.getByTestId('hub-nav-skills').click()
+    await page.getByTestId('hub-skills-empty').getByText('暂未安装技能。获取技能文件夹后，请点击右上角「添加」导入。', { exact: true }).waitFor()
+    await expect(page.locator('.v2-hub-side-empty')).toHaveText('暂未安装技能')
   } finally {
     await page.close()
   }
 })
 
-// 第五部分第 26 条：弹框标题带上工具名，选项上面有小标题。v4 批12：外接工具的弹框叫「自定义连接」，
-// 下面选给哪几个工具用，所以标题不再带某一个工具的名字。
-test('the add dialogs name the tool they add to and label their choices', async () => {
-  const mcp = await fixture('page=mcp')
+// 第五部分第 26 条：弹框标题带上它要做的事，选项上面有小标题。「装到：全部」时添加插件先问装进哪一家。
+test('the add menu names what each dialog adds and asks which tool a plugin goes into', async () => {
+  const page = await fixture('page=extensions&installedProviders=claude,codex')
   try {
-    await mcp.getByTestId('mcp-add').first().click()
-    const dialog = mcp.getByRole('dialog', { name: '自定义连接', exact: true })
-    await dialog.waitFor()
+    await hubCatalogReady(page)
+    await openHubAdd(page, 'mcp')
+    const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
     await dialog.getByText('类型', { exact: true }).waitFor()
     await dialog.getByRole('button', { name: '网络服务', exact: true }).waitFor()
     await dialog.getByRole('combobox', { name: '装到哪里', exact: true }).waitFor()
     const tools = dialog.getByRole('group', { name: '给这些工具用', exact: true })
     assert.equal(await tools.getByRole('button', { name: 'Claude Code', exact: true }).getAttribute('aria-pressed'), 'true')
     assert.equal(await tools.getByRole('button', { name: 'Codex CLI', exact: true }).getAttribute('aria-pressed'), 'false')
+    await page.keyboard.press('Escape')
+    await dialog.waitFor({ state: 'detached' })
+    await openHubAdd(page, 'plugin')
+    const chooser = page.getByRole('dialog', { name: '装到哪里', exact: true })
+    await expect(chooser.getByTestId('hub-tool-chooser-grok')).toBeDisabled()
+    await expect(chooser.getByTestId('hub-tool-chooser-grok')).toContainText('本机尚未安装 Grok CLI')
+    await chooser.getByTestId('hub-tool-chooser-codex').click()
+    await page.getByRole('dialog', { name: '给 Codex CLI 添加插件', exact: true }).waitFor()
   } finally {
-    await mcp.close()
-  }
-  const plugins = await fixture('page=plugins')
-  try {
-    await plugins.getByTestId('plugins-add').first().click()
-    await plugins.getByRole('dialog', { name: '给 Claude Code 添加插件', exact: true }).waitFor()
-  } finally {
-    await plugins.close()
-  }
-  const skills = await fixture('page=skills')
-  try {
-    await skills.getByRole('tab', { name: /^Codex CLI/ }).click()
-    await skills.getByTestId('skills-add').first().click()
-    await skills.getByRole('dialog', { name: '给 Codex CLI 导入技能', exact: true }).waitFor()
-  } finally {
-    await skills.close()
+    await page.close()
   }
 })
 
 // Grok 装插件不带 --trust 一律被拒；带上以后插件里的命令每次打开 Grok 都会跑，所以先弹框问（yoyo 10-17 定）。
 test('a Grok plugin installs with --trust only after the user confirms, and other tools never ask', async () => {
-  const page = await fixture('page=plugins&extensionOk')
+  const page = await fixture(`${hubAllTools}&extensionOk`)
   try {
-    await page.getByRole('tab', { name: /^Grok CLI/ }).click()
-    await page.getByTestId('plugins-add').first().click()
+    await hubCatalogReady(page)
+    await openHubAdd(page, 'plugin')
+    await page.getByTestId('hub-tool-chooser-grok').click()
     const form = page.getByRole('dialog', { name: '给 Grok CLI 添加插件', exact: true })
     await form.waitFor()
     // Grok 的插件命令没有范围参数，选「当前项目」也装进全局（#1092），所以只给「我的（全局）」。
     assert.deepEqual(await form.getByLabel('添加范围', { exact: true }).locator('option').allTextContents(), ['我的（全局）'])
     await form.getByTestId('plugins-source').fill('owner/repo')
     await form.getByTestId('plugins-form-submit').click()
-    const confirm = page.getByRole('dialog', { name: '给 Grok CLI 装这个插件？', exact: true })
+    const confirm = page.getByRole('dialog', { name: '是否为 Grok CLI 安装此插件？', exact: true })
     await confirm.waitFor()
-    await confirm.getByText('插件里带的技能、命令和外接工具，装好后每次打开 Grok CLI 都会自动运行，能像你本人一样读写这台电脑上的文件。', { exact: true }).waitFor()
+    await confirm.getByText('插件中的技能、命令和连接在安装后，每次打开 Grok CLI 时都会自动运行，并可像您本人一样读写本机文件。', { exact: true }).waitFor()
     await confirm.getByText('owner/repo', { exact: true }).waitFor()
-    await confirm.getByText('只装你认识、信得过的来源；拿不准就先别装。', { exact: true }).waitFor()
+    await confirm.getByText('请仅安装来源可信的插件；如不确定，请暂不安装。', { exact: true }).waitFor()
     assert.equal((await callsNamed(page, 'extension')).length, 0, '点「添加」只弹框，不装')
     // 先不装：回到表单，填过的来源还在，什么都没装。
     await confirm.getByRole('button', { name: '先不装', exact: true }).click()
@@ -2118,8 +2176,8 @@ test('a Grok plugin installs with --trust only after the user confirms, and othe
       { provider: 'grok', kind: 'plugin', action: 'install', source: 'owner/repo', scope: 'user', trust: true },
     ])
     // Claude Code 没有这一问，也不带 trust。
-    await page.getByRole('tab', { name: /^Claude Code/ }).click()
-    await page.getByTestId('plugins-add').first().click()
+    await openHubAdd(page, 'plugin')
+    await page.getByTestId('hub-tool-chooser-claude').click()
     const claudeForm = page.getByRole('dialog', { name: '给 Claude Code 添加插件', exact: true })
     assert.deepEqual(await claudeForm.getByLabel('添加范围', { exact: true }).locator('option').allTextContents(), ['我的（全局）', '当前项目'])
     await claudeForm.getByTestId('plugins-source').fill('owner/repo')
@@ -2134,178 +2192,108 @@ test('a Grok plugin installs with --trust only after the user confirms, and othe
   }
 })
 
-// 第五部分第 28 条；10-24 起 Claude Code、Grok CLI 的技能也在这里从文件夹导入（「扩展改」第 2 条），
-// 主进程照 Codex 那套复制进它们自己的技能文件夹，界面走通用的 mutate。
-test('Claude Code and Grok CLI import skills from a folder like Codex CLI', async () => {
-  const page = await fixture('page=skills&empty&extensionOk')
+// 第五部分第 28 条；10-24 起 Claude Code、Grok CLI 的技能也能从文件夹导入（「扩展改」第 2 条），主进程照 Codex 那套
+// 复制进它们自己的技能文件夹，界面走通用的 mutate；Codex 走它自己的导入。合页以后一次导进勾上的几家。
+test('a skill folder is imported into every family picked, and 重新加载 reads the lists again', async () => {
+  const page = await fixture(`${hubAllTools}&extensionOk`)
   try {
-    const empty = page.getByTestId('skills-empty')
-    await empty.getByText('点「从文件夹导入」，选一个技能文件夹。', { exact: true }).waitFor()
-    assert.equal(await page.getByTestId('skills-import-unsupported').count(), 0, '不再放「不能在这里导入」那一行')
-    const add = empty.getByTestId('skills-add')
-    assert.equal(await add.isDisabled(), false)
-    assert.equal(await add.getAttribute('title'), null)
-    await add.click()
-    const form = page.getByRole('dialog', { name: '给 Claude Code 导入技能', exact: true })
-    assert.deepEqual(await form.getByLabel('添加范围', { exact: true }).locator('option').allTextContents(), ['我的（全局）', '当前项目'])
-    await form.getByLabel('技能文件夹路径', { exact: true }).fill('/Users/demo/skills/reviewer')
-    await form.getByTestId('skills-form-submit').click()
-    await form.waitFor({ state: 'detached' })
-    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, {
-      provider: 'claude', kind: 'skill', action: 'install', source: '/Users/demo/skills/reviewer', scope: 'user',
-    })
-    // Grok CLI 同样能导入；工具条上的「重新加载」照样重读。
-    await page.getByRole('tab', { name: /^Grok CLI/ }).click()
-    await empty.getByText('点「从文件夹导入」，选一个技能文件夹。', { exact: true }).waitFor()
-    await empty.getByTestId('skills-add').click()
-    await page.getByRole('dialog', { name: '给 Grok CLI 导入技能', exact: true }).waitFor()
-    await page.getByRole('button', { name: '取消', exact: true }).click()
+    await hubCatalogReady(page)
+    await page.getByTestId('hub-nav-skills').click()
+    await openHubAdd(page, 'skill')
+    const dialog = page.getByRole('dialog', { name: '从文件夹导入', exact: true })
+    assert.deepEqual(await dialog.getByLabel('添加范围', { exact: true }).locator('option').allTextContents(), ['我的（全局）', '当前项目'])
+    for (const id of ['claude', 'codex', 'grok'])
+      assert.equal(await dialog.getByTestId(`hub-skill-import-tools-${id}`).getAttribute('aria-pressed'), 'true')
+    await dialog.getByTestId('hub-skill-import-tools-codex').click()
+    await dialog.getByLabel('技能文件夹路径', { exact: true }).fill('/Users/demo/skills/reviewer')
+    await dialog.getByTestId('hub-skill-import-submit').click()
+    await waitForToast(page, '已添加「reviewer」，给 Claude Code、Grok CLI 使用，下次打开工具时生效')
+    await dialog.waitFor({ state: 'detached' })
+    assert.deepEqual((await callsNamed(page, 'extension')).map((call) => call.args), [
+      { provider: 'claude', kind: 'skill', action: 'install', source: '/Users/demo/skills/reviewer', scope: 'user' },
+      { provider: 'grok', kind: 'skill', action: 'install', source: '/Users/demo/skills/reviewer', scope: 'user' },
+    ])
+    assert.equal((await callsNamed(page, 'importSkill')).length, 0)
     const reads = (await callsNamed(page, 'list-extensions')).length
-    await page.getByTestId('skills-reload').click()
+    await page.getByTestId('hub-reload').click()
     await page.waitForFunction((count) => JSON.parse(document.documentElement.dataset.calls).filter((call) => call.name === 'list-extensions').length > count, reads)
   } finally {
     await page.close()
   }
 })
 
-// 第五部分第 29、31 条：「已安装」先放装了的，再放精选；有新版本的行上直接给「更新」。
-test('installed plugins come before the curated shelf and an update sits on the row', async () => {
-  const page = await fixture('page=plugins')
+// 第五部分第 31 条：有新版本的，行上「…」里和详情那一家那一行上都给「更新」。
+test('an entry with a newer version offers 更新 in its menu and on the tool it is installed in', async () => {
+  const page = await fixture(`${hubClaudeOnly}&pluginUpdate`)
   try {
-    const list = page.getByTestId('plugins-list')
-    const row = list.getByTestId('plugins-row-test-extension')
-    await row.waitFor()
-    assert.equal(await list.locator('.xm-card-head').count(), 0, '列表卡不加标题')
-    const shelf = page.getByTestId('curated-shelf')
-    await shelf.waitFor()
-    const listBox = await list.boundingBox()
-    const shelfBox = await shelf.boundingBox()
-    assert.ok(listBox.y + listBox.height <= shelfBox.y, '装了的排在「星芒精选」上面')
-    const update = row.getByTestId('plugins-update-test-extension')
-    await update.waitFor()
-    const updateBox = await update.boundingBox()
-    const switchBox = await row.getByRole('switch').boundingBox()
-    assert.ok(updateBox.x + updateBox.width <= switchBox.x, '「更新」在开关左边')
-    await update.click()
+    await page.getByRole('button', { name: '代码审查 更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '更新', exact: true }).click()
     await page.getByText('扩展操作失败，已有配置保留').first().waitFor()
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, {
+      provider: 'claude', kind: 'plugin', action: 'update', id: 'code-review@claude-plugins-official', scope: 'user',
+    })
+    const detail = await openInstalled(page, '代码审查')
+    await detail.getByTestId('hub-where-claude').getByRole('button', { name: '更新', exact: true }).click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'extension').length === 2)
     assert.equal((await callsNamed(page, 'extension')).at(-1).args.action, 'update')
-    // 「…」菜单里那一项照留。
-    await row.getByRole('button', { name: /更多操作/ }).click()
-    await page.getByRole('menuitem', { name: '更新', exact: true }).waitFor()
   } finally {
     await page.close()
   }
 })
 
-// 已知2 跟进：详情里 local 写「当前项目」。v4 批12：「范围」筛选换成按范围分组，local 归「本地」那一组；
-// 详情从抽屉换成弹窗，testId 沿用。
-test('installed plugins are grouped by the layer they live in and details open in a dialog', async () => {
-  const plugins = await fixture('page=plugins&scopedExtensions')
+// 已知2 跟进：仅在当前项目中使用的（local）那一份，详情里写清楚只在当前项目。
+test('an entry installed only in this project says so in its details', async () => {
+  const page = await fixture(`${hubClaudeOnly}&scopedExtensions`)
   try {
-    const user = plugins.getByTestId('plugins-group-user')
-    const local = plugins.getByTestId('plugins-group-local')
-    await user.getByTestId('plugins-row-test-extension').waitFor()
-    await user.getByText('你的所有项目都能用', { exact: true }).waitFor()
-    await local.getByText('只在当前项目、只给你自己', { exact: true }).waitFor()
-    const row = local.getByTestId('plugins-row-local-plugin')
-    assert.equal(await local.getByTestId('plugins-row-test-extension').count(), 0)
-    assert.equal(await plugins.getByTestId('plugins-scope').count(), 0, '不再有「范围」筛选')
-    await row.getByRole('button', { name: /更多操作/ }).click()
-    await plugins.getByRole('menuitem', { name: '查看详情', exact: true }).click()
-    const details = plugins.getByTestId('resource-detail-drawer')
-    assert.equal(await details.evaluate((element) => element.tagName), 'DIALOG')
-    assert.equal(await details.locator('dt', { hasText: /^范围$/ }).locator('xpath=following-sibling::dd[1]').innerText(), '当前项目')
-    await details.locator('[data-modal-close]').click()
-    await details.waitFor({ state: 'detached' })
-  } finally {
-    await plugins.close()
-  }
-})
-
-test('an empty installed plugin list points at the catalog below and 看看精选 lands on the first install', async () => {
-  const page = await fixture('page=plugins&empty')
-  try {
-    const empty = page.getByTestId('plugins-empty')
-    await empty.getByText('还没有给 Claude Code 装插件', { exact: true }).waitFor()
-    await empty.getByText('从下面的官方目录里挑一个。', { exact: true }).waitFor()
-    // 「已安装」「市场」两个页签合成了一页。
-    assert.equal(await page.getByRole('tab', { name: '市场', exact: true }).count(), 0)
-    await empty.getByTestId('plugins-see-curated').click()
-    await page.waitForFunction(() => document.activeElement?.dataset.testid?.startsWith('curated-install-'))
+    const detail = await openInstalled(page, '本项目插件')
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('仅限当前项目、仅本人可用')
   } finally {
     await page.close()
   }
 })
 
-// 第五部分第 30 条：没有插件市场的工具直说。合页以后它的已装列表就在上面，不用再「去已安装」。
-test('a tool without a plugin market says so under its installed list', async () => {
-  const page = await fixture('page=plugins')
+test('removing a connection from one tool says which tool it leaves and that the others keep theirs', async () => {
+  const page = await fixture('page=extensions&installedProviders=claude,codex&extensionOk')
   try {
-    await page.getByRole('tab', { name: /^Grok CLI/ }).click()
-    const notice = page.getByTestId('plugins-market-unavailable')
-    await notice.getByText('Grok CLI 没有插件市场', { exact: true }).waitFor()
-    await notice.getByText('它的插件装好后在上面的列表里管理。', { exact: true }).waitFor()
-    assert.equal(await page.getByTestId('plugins-market-go-installed').count(), 0)
-    await page.getByTestId('plugins-search').waitFor()
-    await page.getByTestId('plugins-list').getByTestId('plugins-row-test-extension').waitFor()
-  } finally {
-    await page.close()
-  }
-})
-
-test('the Codex plugin catalog fetched on choosing Codex CLI brings no extra success note', async () => {
-  const page = await fixture('page=plugins')
-  try {
-    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
-    await page.getByTestId('plugins-row-game-studio@openai-api-curated').waitFor()
-    await page.waitForTimeout(300)
-    assert.equal(await page.getByText('插件目录已下载，下面就是可以安装的插件。').count(), 0)
-    assert.equal((await callsNamed(page, 'ensure-marketplace')).length, 1)
-  } finally {
-    await page.close()
-  }
-})
-
-// v4 批12：页签上带数量，开关、删除、自定义连接成功后都说清是哪一个、给了哪个工具。
-test('the tool tabs carry the count and a switched-off connection is named in the toast', async () => {
-  const page = await fixture('page=mcp&extensionOk')
-  try {
-    const claude = page.getByRole('tab', { name: /^Claude Code/ })
-    await claude.locator('.v2-ext-tab-count').getByText('1', { exact: true }).waitFor()
-    assert.equal(await page.getByRole('tab', { name: /^Codex CLI/ }).locator('.v2-ext-tab-count').count(), 0, '没去过的工具不数')
-    await page.getByText('Claude Code 官方叫「MCP 服务器」', { exact: true }).waitFor()
-    await page.getByRole('switch', { name: '停用 测试扩展', exact: true }).click()
-    await page.getByText('已停用「测试扩展」', { exact: true }).waitFor()
-  } finally {
-    await page.close()
-  }
-})
-
-// Codex 没有插件启停命令：开关走它自己的接口改 config.toml，通用的扩展改动对 Codex 插件只认装和卸。
-test('a Codex plugin switch goes through the Codex plugin interface and names the plugin in the toast', async () => {
-  const page = await fixture('page=plugins&extensionOk')
-  try {
-    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
-    await page.getByTestId('plugins-row-game-studio@openai-api-curated').waitFor()
-    await page.getByRole('switch', { name: '停用 测试扩展', exact: true }).click()
-    await page.getByText('已停用「测试扩展」', { exact: true }).waitFor()
-    assert.deepEqual((await callsNamed(page, 'toggle-plugin')).map((call) => call.args), [['test-extension', false]])
-    assert.equal((await callsNamed(page, 'extension')).length, 0)
-  } finally {
-    await page.close()
-  }
-})
-
-test('removing a connection says which tool it leaves and that the others keep theirs', async () => {
-  const page = await fixture('page=mcp&extensionOk')
-  try {
-    await page.getByTestId('mcp-row-test-extension').getByRole('button', { name: '测试扩展 更多操作', exact: true }).click()
+    await hubCatalogReady(page)
+    const detail = await openInstalled(page, '浏览器')
+    await detail.getByTestId('hub-where-claude').getByRole('button', { name: 'browser 更多操作', exact: true }).click()
     await page.getByRole('menuitem', { name: '从 Claude Code 移除…', exact: true }).click()
-    const dialog = page.getByRole('dialog', { name: '从 Claude Code 移除「测试扩展」？', exact: true })
-    await dialog.getByText('其他工具里的不受影响。精选里的以后可以在精选里再加，自己加的要重新填一遍。', { exact: true }).waitFor()
+    const dialog = page.getByRole('dialog', { name: '从 Claude Code 移除「browser」？', exact: true })
+    await dialog.getByText('其他工具中的不受影响。如需使用，可重新安装。', { exact: true }).waitFor()
     await dialog.getByRole('button', { name: '移除', exact: true }).click()
-    await page.getByText('已从 Claude Code 移除「测试扩展」', { exact: true }).waitFor()
-    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, { provider: 'claude', kind: 'mcp', action: 'uninstall', id: 'test-extension', scope: 'user' })
+    await waitForToast(page, '已从 Claude Code 移除「browser」')
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, { provider: 'claude', kind: 'mcp', action: 'uninstall', id: 'browser', scope: 'user' })
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('未安装')
+    await expect(detail.getByTestId('hub-where-codex')).toContainText('已安装')
+    // 自己加的那条，提醒的是要重新填一遍。
+    await detail.getByTestId('hub-back').click()
+    const custom = await openInstalled(page, '测试连接')
+    await custom.getByTestId('hub-where-claude').getByRole('button', { name: '测试连接 更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '从 Claude Code 移除…', exact: true }).click()
+    await page.getByRole('dialog', { name: '从 Claude Code 移除「测试连接」？', exact: true })
+      .getByText('其他工具里的不受影响。自己加的要重新填一遍。', { exact: true }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('the remove confirmation waits for another extension change and says why instead of spinning', async () => {
+  const page = await fixture(`${hubClaudeOnly}&extensionOk&extensionHold`)
+  try {
+    const detail = await openInstalled(page, '测试连接')
+    await detail.getByRole('switch', { name: '停用 测试连接', exact: true }).click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'extension'))
+    await detail.getByTestId('hub-where-claude').getByRole('button', { name: '测试连接 更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '从 Claude Code 移除…', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: '从 Claude Code 移除「测试连接」？', exact: true })
+    const remove = dialog.getByRole('button', { name: '移除', exact: true })
+    assert.equal(await dialog.getByTestId('hub-delete-busy').innerText(), '上一操作尚未完成，请完成后再移除。')
+    assert.equal(await remove.isDisabled(), true)
+    assert.equal(await remove.getAttribute('aria-busy'), null)
+    await page.evaluate(() => window.releaseExtension())
+    await dialog.getByTestId('hub-delete-busy').waitFor({ state: 'detached' })
+    assert.equal(await remove.isDisabled(), false)
   } finally {
     await page.close()
   }
@@ -2313,15 +2301,16 @@ test('removing a connection says which tool it leaves and that the others keep t
 
 // D67：自己加的市场点「移除市场」先问一句，点「移除」才真的移除，点「取消」什么都不动。
 test('removing a custom plugin market asks first and only removes it after confirming', async () => {
-  const page = await fixture('page=plugins&customMarket')
+  const page = await fixture('page=extensions&installedProviders=claude,codex&customMarket')
   try {
-    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
+    await hubCatalogReady(page)
+    await page.getByTestId('hub-tab-custom').click()
     const markets = page.getByTestId('plugins-custom-markets')
     const openRemoval = async () => {
       await markets.getByRole('button', { name: '市场 my-market 的更多操作', exact: true }).click()
       await page.getByRole('menuitem', { name: '移除市场', exact: true }).click()
       const dialog = page.getByRole('dialog', { name: '移除市场「my-market」？', exact: true })
-      await dialog.getByText('移除后，这个市场就不在列表里了，要用时得重新添加。', { exact: true }).waitFor()
+      await dialog.getByText('移除后，该市场将不再显示在列表中，如需使用需重新添加。', { exact: true }).waitFor()
       return dialog
     }
     let dialog = await openRemoval()
@@ -2338,30 +2327,11 @@ test('removing a custom plugin market asks first and only removes it after confi
   }
 })
 
-test('the remove confirmation waits for another extension change and says why instead of spinning', async () => {
-  const page = await fixture('page=mcp&extensionOk&extensionHold')
-  try {
-    await page.getByRole('switch', { name: '停用 测试扩展', exact: true }).click()
-    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'extension'))
-    await page.getByTestId('mcp-row-test-extension').getByRole('button', { name: '测试扩展 更多操作', exact: true }).click()
-    await page.getByRole('menuitem', { name: '从 Claude Code 移除…', exact: true }).click()
-    const dialog = page.getByRole('dialog', { name: '从 Claude Code 移除「测试扩展」？', exact: true })
-    const remove = dialog.getByRole('button', { name: '移除', exact: true })
-    assert.equal(await dialog.getByTestId('mcp-delete-busy').innerText(), '上一个操作还没完成，完成后才能移除。')
-    assert.equal(await remove.isDisabled(), true)
-    assert.equal(await remove.getAttribute('aria-busy'), null)
-    await page.evaluate(() => window.releaseExtension())
-    await dialog.getByTestId('mcp-delete-busy').waitFor({ state: 'detached' })
-    assert.equal(await remove.isDisabled(), false)
-  } finally {
-    await page.close()
-  }
-})
-
 test('a custom connection checks its name first and then goes to every tool picked', async () => {
-  const page = await fixture('page=mcp&extensionOk')
+  const page = await fixture('page=extensions&installedProviders=claude,codex&extensionOk')
   try {
-    await page.getByTestId('mcp-add').first().click()
+    await hubCatalogReady(page)
+    await openHubAdd(page, 'mcp')
     const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
     const submit = dialog.getByTestId('mcp-form-submit')
     await page.getByTestId('mcp-source').fill('npx')
@@ -2370,7 +2340,7 @@ test('a custom connection checks its name first and then goes to every tool pick
     await dialog.getByText('名称只能用字母、数字和 - _，最多 40 位', { exact: true }).waitFor()
     await page.getByTestId('mcp-name').fill('test-extension')
     await submit.click()
-    await dialog.getByText('已经有叫「test-extension」的连接了，换个名字', { exact: true }).waitFor()
+    await dialog.getByText('已存在名为「test-extension」的连接，请更换名称', { exact: true }).waitFor()
     assert.equal((await callsNamed(page, 'extension')).length, 0)
     await page.getByTestId('mcp-name').fill('my-db')
     // 只给 Claude Code 时能选「当前项目」；勾上 Codex CLI（只有全局一层）就只剩「我的（全局）」，两边都装成全局。
@@ -2395,12 +2365,12 @@ test('a custom connection checks its name first and then goes to every tool pick
 // F6：「启动命令」里直接填整行命令，交给工具前拆成程序和参数，带引号的路径整段算程序；表单里他填的字不动，
 // 框下面说一声参数已经分出去了。
 test('a whole command line in the launch box goes to the tool as the program and its arguments', async () => {
-  const page = await fixture('page=mcp&extensionOk')
+  const page = await fixture(`${hubClaudeOnly}&extensionOk`)
   try {
-    await page.getByTestId('mcp-add').first().click()
+    await openHubAdd(page, 'mcp')
     const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
     const source = page.getByTestId('mcp-source')
-    const splitHint = dialog.getByText('已经帮你把后面的参数分出去了', { exact: true })
+    const splitHint = dialog.getByText('已自动拆分后续参数', { exact: true })
     await page.getByTestId('mcp-name').fill('amap')
     await source.fill('npx')
     assert.equal(await splitHint.count(), 0)
@@ -2414,7 +2384,7 @@ test('a whole command line in the launch box goes to the tool as the program and
       { type: 'stdio', command: 'npx', args: ['-y', '@amap/amap-maps-mcp-server'], env: {} },
     ])
 
-    await page.getByTestId('mcp-add').first().click()
+    await openHubAdd(page, 'mcp')
     await page.getByTestId('mcp-name').fill('local-tool')
     await source.fill('"C:\\Program Files\\My Tool\\tool.exe"')
     assert.equal(await splitHint.count(), 0)
@@ -2432,27 +2402,28 @@ test('a whole command line in the launch box goes to the tool as the program and
 
 // 同类对比第 1 条：提供方给的一整段配置直接粘贴，替他填好表单；带密钥的网络服务连请求头一起给到每个勾上的工具。
 test('a pasted provider config fills the custom connection and carries its headers to every tool', async () => {
-  const page = await fixture('page=mcp&extensionOk')
+  const page = await fixture('page=extensions&installedProviders=claude,codex&extensionOk')
   try {
-    await page.getByTestId('mcp-add').first().click()
+    await hubCatalogReady(page)
+    await openHubAdd(page, 'mcp')
     const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
     const paste = dialog.getByTestId('mcp-paste')
     await paste.fill('随便写的一句话')
-    await dialog.getByTestId('mcp-paste-result').getByText('没认出这段配置', { exact: true }).waitFor()
+    await dialog.getByTestId('mcp-paste-result').getByText('无法识别此配置', { exact: true }).waitFor()
     await paste.fill(JSON.stringify({
       mcpServers: {
         docs: { type: 'http', url: 'https://docs.example.test/mcp', headers: { Authorization: 'Bearer sk-docs' } },
         files: { command: 'npx', args: ['-y', 'files-server'], env: { ROOT: '<你的文件夹>' } },
       },
     }))
-    await dialog.getByText('认出来了：网络服务「docs」', { exact: true }).waitFor()
+    await dialog.getByText('已识别：网络服务「docs」', { exact: true }).waitFor()
     assert.equal(await dialog.getByTestId('mcp-name').inputValue(), 'docs')
     assert.equal(await dialog.getByTestId('mcp-source').inputValue(), 'https://docs.example.test/mcp')
     assert.equal(await dialog.getByTestId('mcp-headers').inputValue(), 'Authorization: Bearer sk-docs')
     // 第二条照样能选，示例文字要他自己换，提示里点名是哪一项。
     await dialog.getByTestId('mcp-paste-choice').selectOption('1')
-    await dialog.getByText('认出来了：本地程序「files」', { exact: true }).waitFor()
-    await dialog.getByText('下面几项已经替你填好。ROOT 看起来还是说明里的示例文字，换成你自己的再点「添加」。一次加一个，加好以后再粘贴同一段，选下一个。', { exact: true }).waitFor()
+    await dialog.getByText('已识别：本地程序「files」', { exact: true }).waitFor()
+    await dialog.getByText('已自动填写下方各项。ROOT 仍为说明中的示例文字，请替换为实际内容后点击「添加」。每次添加一个，添加后可再次粘贴同一段内容并选择下一个。', { exact: true }).waitFor()
     assert.equal(await dialog.getByTestId('mcp-source').inputValue(), 'npx')
     await dialog.getByTestId('mcp-paste-choice').selectOption('0')
     // 他自己改过的名字，再选一次也不动。
@@ -2476,15 +2447,16 @@ test('a pasted provider config fills the custom connection and carries its heade
 })
 
 test('a custom connection leaves alone a same-named one another picked tool already has', async () => {
-  const page = await fixture('page=mcp&extensionOk&codexMcp=github')
+  const page = await fixture('page=extensions&installedProviders=claude,codex&extensionOk&codexMcp=github')
   try {
-    await page.getByTestId('mcp-add').first().click()
+    await hubCatalogReady(page)
+    await openHubAdd(page, 'mcp')
     const dialog = page.getByRole('dialog', { name: '自定义连接', exact: true })
     await dialog.getByTestId('mcp-paste').fill('claude mcp add --transport http github https://api.example.test/mcp')
-    await dialog.getByText('认出来了：网络服务「github」', { exact: true }).waitFor()
+    await dialog.getByText('已识别：网络服务「github」', { exact: true }).waitFor()
     await dialog.getByTestId('mcp-form-tools-codex').click()
     await dialog.getByTestId('mcp-form-submit').click()
-    await dialog.getByText('Codex CLI 里已经有叫「github」的连接了，为了不动原来那条，这次没有添加。换个名字，或者不勾 Codex CLI。', { exact: true }).waitFor()
+    await dialog.getByText('Codex CLI 中已存在名为「github」的连接，为保留原连接，本次未添加。请更换名称，或取消勾选 Codex CLI。', { exact: true }).waitFor()
     assert.equal((await callsNamed(page, 'extension')).length, 0)
     assert.equal((await callsNamed(page, 'add-mcp')).length, 0)
   } finally {
@@ -2492,23 +2464,21 @@ test('a custom connection leaves alone a same-named one another picked tool alre
   }
 })
 
-// 同类对比 备选 5：Claude Code 全局里的一条连接「也装到别的工具」。界面只把名字交给主进程，已经有同名的不给勾。
-test('a Claude Code connection is copied to the other tools that do not have it yet', async () => {
-  const page = await fixture('page=mcp&extensionOk&claudeMcp=docs&codexMcp=docs')
+// 同类对比 备选 5：Claude Code 全局里自己加的一条连接，「+」装到别的工具。界面只把名字交给主进程，已经有的不给勾。
+test('a connection added in Claude Code is copied to the tools that do not have it yet', async () => {
+  const page = await fixture(`${hubAllTools}&extensionOk&claudeMcp=docs&codexMcp=docs`)
   try {
-    const row = page.getByTestId('mcp-row-docs')
-    await row.getByRole('button', { name: 'docs 更多操作', exact: true }).click()
-    await page.getByRole('menuitem', { name: '也装到别的工具…', exact: true }).click()
-    const dialog = page.getByTestId('mcp-copy')
-    await dialog.getByText('把「docs」也装到别的工具', { exact: true }).waitFor()
-    const codex = dialog.getByTestId('mcp-copy-tools-codex')
-    const grok = dialog.getByTestId('mcp-copy-tools-grok')
-    await codex.getByText('已添加', { exact: true }).waitFor()
-    assert.equal(await grok.getAttribute('aria-pressed'), 'true', '查回来以后能装的先勾上')
-    assert.equal(await codex.isDisabled(), true)
-    assert.equal(await dialog.getByTestId('mcp-copy-tools-claude').count(), 0, '不列来源那个工具')
-    await dialog.getByTestId('mcp-copy-confirm').click()
-    await waitForToast(page, '已添加「docs」，给 Grok CLI 使用，下次打开工具时生效')
+    await hubCatalogReady(page)
+    await page.getByTestId('hub-tab-custom').click()
+    await page.getByTestId('hub-add-mcp-docs').click()
+    const dialog = page.getByRole('dialog', { name: '安装「docs」', exact: true })
+    await dialog.getByText('连接中填写的密钥、附加设置和请求头将原样复制，并安装到这些工具的「我的（全局）」中，下次打开工具时生效。', { exact: true }).waitFor()
+    const tools = dialog.getByRole('group', { name: '装到哪里', exact: true })
+    await expect(tools.getByTestId('hub-install-tools-codex')).toBeDisabled()
+    await expect(tools.getByTestId('hub-install-tools-codex')).toContainText('已安装')
+    await expect(tools.getByTestId('hub-install-tools-grok')).toHaveAttribute('aria-pressed', 'true')
+    await dialog.getByTestId('hub-install-submit').click()
+    await waitForToast(page, '已安装「docs」，给 Grok CLI 使用，下次打开工具时生效')
     await dialog.waitFor({ state: 'detached' })
     assert.deepEqual((await callsNamed(page, 'copy-mcp')).map((call) => call.args), [{ from: 'claude', to: 'grok', name: 'docs' }])
     assert.equal((await callsNamed(page, 'extension')).length, 0)
@@ -2519,17 +2489,20 @@ test('a Claude Code connection is copied to the other tools that do not have it 
 })
 
 test('a copy that fails for one tool keeps the ones already done and retries only the rest', async () => {
-  const page = await fixture('page=mcp&extensionOk&claudeMcp=docs&copyMcpFail=grok')
+  const page = await fixture(`${hubAllTools}&extensionOk&claudeMcp=docs&copyMcpFail=grok`)
   try {
-    await page.getByTestId('mcp-row-docs').getByRole('button', { name: 'docs 更多操作', exact: true }).click()
-    await page.getByRole('menuitem', { name: '也装到别的工具…', exact: true }).click()
-    const dialog = page.getByTestId('mcp-copy')
-    await dialog.locator('[data-testid="mcp-copy-tools-grok"][aria-pressed="true"]').waitFor()
-    assert.equal(await dialog.getByTestId('mcp-copy-tools-codex').getAttribute('aria-pressed'), 'true')
-    await dialog.getByTestId('mcp-copy-confirm').click()
+    await hubCatalogReady(page)
+    await page.getByTestId('hub-tab-custom').click()
+    await page.getByTestId('hub-add-mcp-docs').click()
+    const dialog = page.getByRole('dialog', { name: '安装「docs」', exact: true })
+    await expect(dialog.getByTestId('hub-install-tools-codex')).toHaveAttribute('aria-pressed', 'true')
+    await expect(dialog.getByTestId('hub-install-tools-grok')).toHaveAttribute('aria-pressed', 'true')
+    await dialog.getByTestId('hub-install-submit').click()
     await dialog.getByText('扩展操作失败，已有配置保留').first().waitFor()
-    await dialog.getByTestId('mcp-copy-tools-codex').getByText('已添加', { exact: true }).waitFor()
-    await dialog.getByTestId('mcp-copy-confirm').click()
+    // 装上了的从勾选里拿掉，再点一次只补剩下的。
+    await expect(dialog.getByTestId('hub-install-tools-codex')).toHaveAttribute('aria-pressed', 'false')
+    await expect(dialog.getByTestId('hub-install-tools-grok')).toHaveAttribute('aria-pressed', 'true')
+    await dialog.getByTestId('hub-install-submit').click()
     await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'copy-mcp').length === 3)
     await dialog.getByText('扩展操作失败，已有配置保留').first().waitFor()
     assert.deepEqual((await callsNamed(page, 'copy-mcp')).map((call) => call.args.to), ['codex', 'grok', 'grok'])
@@ -2538,152 +2511,70 @@ test('a copy that fails for one tool keeps the ones already done and retries onl
   }
 })
 
-// 测试扩展在三个工具里都有：没有能装的，「装上」点不了；Grok 的连接不给这一项（读不全）。
-test('copying is offered only where every other tool can still take the connection', async () => {
-  const page = await fixture('page=mcp&extensionOk')
+// 三家都有的那条没有能装的，行上只给「…」；只有 Grok 里有的读不全，不给装到别的工具。
+test('copying is offered only where another tool can still take the connection', async () => {
+  const page = await fixture(`${hubAllTools}&codexMcp=test-extension&grokMcp=test-extension`)
   try {
-    await page.getByTestId('mcp-row-test-extension').getByRole('button', { name: '测试扩展 更多操作', exact: true }).click()
-    await page.getByRole('menuitem', { name: '也装到别的工具…', exact: true }).click()
-    const dialog = page.getByTestId('mcp-copy')
-    await dialog.getByTestId('mcp-copy-tools-grok').getByText('已添加', { exact: true }).waitFor()
-    assert.equal(await dialog.getByTestId('mcp-copy-confirm').isDisabled(), true)
-    await dialog.getByRole('button', { name: '取消', exact: true }).click()
-    await dialog.waitFor({ state: 'detached' })
-    await page.getByRole('tab', { name: /^Grok CLI/ }).click()
-    await page.getByTestId('mcp-row-test-extension').getByRole('button', { name: '测试扩展 更多操作', exact: true }).click()
-    await page.getByRole('menuitem', { name: '从 Grok CLI 移除…', exact: true }).waitFor()
-    assert.equal(await page.getByRole('menuitem', { name: '也装到别的工具…', exact: true }).count(), 0)
+    await page.getByTestId('hub-tab-custom').click()
+    await page.getByTestId('hub-menu-mcp-test-extension').waitFor()
+    assert.equal(await page.getByTestId('hub-add-mcp-test-extension').count(), 0)
   } finally {
     await page.close()
   }
-})
-
-test('a tool that is not installed offers its own install in place of the list', async () => {
-  const page = await fixture('page=skills&installedProviders=codex')
+  const grokOnly = await fixture(`${hubAllTools}&grokMcp=only-grok`)
   try {
-    await page.getByText('Codex CLI 官方叫「技能（Skills）」', { exact: true }).waitFor()
-    const claude = page.getByRole('tab', { name: /^Claude Code/ })
-    await claude.getByText('未安装', { exact: true }).waitFor()
-    await claude.click()
-    const bar = page.getByTestId('skills-tool-missing')
-    await bar.getByText('还没有安装 Claude Code', { exact: true }).waitFor()
-    await bar.getByText('装好后就能添加下面的技能。', { exact: true }).waitFor()
-    assert.equal(await page.getByTestId('skills-list').count(), 0)
-    await bar.getByRole('button', { name: '安装 Claude Code', exact: true }).click()
-    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'install-tool'))
-    assert.deepEqual((await callsNamed(page, 'install-tool')).map((call) => call.args), ['claude'])
-    // 没装的工具不去问它的列表。
-    assert.deepEqual((await callsNamed(page, 'list-extensions')).map((call) => call.args), ['codex'])
+    await grokOnly.getByTestId('hub-tab-custom').click()
+    await grokOnly.getByTestId('hub-menu-mcp-only-grok').waitFor()
+    assert.equal(await grokOnly.getByTestId('hub-add-mcp-only-grok').count(), 0)
   } finally {
-    await page.close()
+    await grokOnly.close()
   }
 })
 
-// 「在上面的列表里管理」要上面真有列表：Grok CLI 没装时只给安装那一条。
-test('a missing tool without a plugin market shows only its install bar', async () => {
-  const page = await fixture('page=plugins&installedProviders=claude')
+// 没装的工具不去读它的列表；那一家那一行写「这台电脑还没装」，给「前往首页安装」。
+test('a tool that is not installed is not read and each entry leads to the home page to install it', async () => {
+  const page = await fixture('page=extensions&installedProviders=codex')
   try {
-    await page.getByRole('tab', { name: /^Grok CLI/ }).click()
-    await page.getByTestId('plugins-tool-missing').getByText('还没有安装 Grok CLI', { exact: true }).waitFor()
-    assert.equal(await page.getByTestId('plugins-market-unavailable').count(), 0)
-  } finally {
-    await page.close()
-  }
-})
-
-test('the Codex skills page points at the plugins that now carry the official skills', async () => {
-  const page = await fixture('page=skills')
-  try {
-    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
-    const notice = page.getByTestId('skills-codex-official')
-    await notice.getByText('OpenAI 的官方技能现在放在插件里', { exact: true }).waitFor()
-    await notice.getByRole('button', { name: '去看插件', exact: true }).click()
-    assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'plugins')
-  } finally {
-    await page.close()
-  }
-})
-
-// v4 批12 精选页：现有的 10 条，一次装进勾选的几个工具。
-test('the featured page installs an entry into every tool picked through the existing paths', async () => {
-  const page = await fixture('page=featured&extensionOk')
-  try {
-    await page.getByTestId('featured-card-browser').waitFor()
-    await page.getByTestId('featured-install-sequential-thinking').click()
-    const dialog = page.getByRole('dialog', { name: '添加「逐步思考」', exact: true })
-    await dialog.getByText('npx -y @modelcontextprotocol/server-sequential-thinking@2026.8.31', { exact: true }).waitFor()
-    const tools = dialog.getByRole('group', { name: '给这些工具用', exact: true })
-    for (const name of ['Claude Code', 'Codex CLI', 'Grok CLI'])
-      assert.equal(await tools.getByRole('button', { name, exact: true }).getAttribute('aria-pressed'), 'true')
-    await tools.getByRole('button', { name: 'Grok CLI', exact: true }).click()
-    await dialog.getByTestId('featured-install-submit').click()
-    await page.getByText('已添加「逐步思考」，给 Claude Code、Codex CLI 使用', { exact: true }).waitFor()
-    assert.deepEqual((await callsNamed(page, 'extension')).map((call) => call.args.provider), ['claude'])
-    assert.deepEqual((await callsNamed(page, 'add-mcp')).map((call) => call.args.name), ['sequential-thinking'])
-    // 插件只有 Claude Code 能用：另两个灰着写「不支持」。
-    await page.getByTestId('featured-kind').getByRole('button', { name: '插件', exact: true }).click()
-    await page.getByTestId('featured-card-browser').waitFor({ state: 'detached' })
-    await page.getByTestId('featured-install-code-review').click()
-    const plugin = page.getByRole('dialog', { name: '安装「代码审查」', exact: true })
-    const codex = plugin.getByRole('group', { name: '给这些工具用', exact: true }).getByRole('button', { name: /^Codex CLI/ })
-    await codex.getByText('不支持', { exact: true }).waitFor()
-    assert.equal(await codex.isDisabled(), true)
-    await plugin.getByTestId('featured-install-submit').click()
-    await page.getByText('已安装「代码审查」，给 Claude Code 使用', { exact: true }).waitFor()
-    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, { provider: 'claude', kind: 'plugin', action: 'install', source: 'code-review@claude-plugins-official' })
-  } finally {
-    await page.close()
-  }
-})
-
-test('a featured entry that needs a folder asks for it in the same dialog before adding', async () => {
-  const page = await fixture('page=featured')
-  try {
-    await page.getByTestId('featured-install-files').click()
-    const dialog = page.getByTestId('featured-install-dialog')
-    const submit = dialog.getByTestId('featured-install-submit')
-    assert.equal(await submit.innerText(), '继续填写')
-    await submit.click()
-    await dialog.getByTestId('curated-input-directory').getByText(/点「选择文件夹」挑一个，软件会替你填好，不用手改。/).waitFor()
-    await submit.click()
-    await dialog.getByText('{{directory}} 还没换成真实内容，请先填好再添加。', { exact: true }).waitFor()
-    assert.equal((await callsNamed(page, 'extension')).length, 0)
-    await dialog.getByRole('button', { name: '取消', exact: true }).click()
-    await page.getByTestId('featured-recommend').click()
-    // 「反馈与客服」分两个页签（v4 第 10 批）：想要新的连接落在「留言反馈」。
-    assert.deepEqual((await callsNamed(page, 'navigate')).at(-1).args, ['feedback', 'form'])
-  } finally {
-    await page.close()
-  }
-})
-
-// 「扩展改」第 3 条（10-24）：能用它的工具一个都没装时，添加框直说，给「去首页安装」。
-test('a featured entry says when none of its tools is installed and leads to the home page', async () => {
-  const page = await fixture('page=featured&installedProviders=')
-  try {
-    await page.getByTestId('featured-install-sequential-thinking').click()
-    const dialog = page.getByRole('dialog', { name: '添加「逐步思考」', exact: true })
-    const notice = dialog.getByTestId('featured-no-tool')
-    await notice.getByText('还没装能用它的工具', { exact: true }).waitFor()
-    await notice.getByText('这一条给 Claude Code、Codex CLI、Grok CLI 用，这台电脑上一个都还没装。先去首页装一个，装好回来再添加。', { exact: true }).waitFor()
-    await notice.getByTestId('featured-open-home').click()
-    await dialog.waitFor({ state: 'detached' })
+    const detail = await openInstalled(page, '浏览器')
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('本机尚未安装 Claude Code')
+    await detail.getByTestId('hub-where-home-claude').click()
     assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'home')
-    // 插件说「安装」；只要有一个工具装了，就不出这一条。
-    await page.getByTestId('featured-kind').getByRole('button', { name: '插件', exact: true }).click()
-    await page.getByTestId('featured-install-code-review').click()
-    const plugin = page.getByRole('dialog', { name: '安装「代码审查」', exact: true })
-    await plugin.getByText('这一条给 Claude Code 用，这台电脑上一个都还没装。先去首页装一个，装好回来再安装。', { exact: true }).waitFor()
+    assert.deepEqual([...new Set((await callsNamed(page, 'list-extensions')).map((call) => call.args))], ['codex'])
   } finally {
     await page.close()
   }
-  const installed = await fixture('page=featured&installedProviders=claude')
+})
+
+// Mac 验收 R10：风险标签那句说明原来哪儿都没上屏。现在详情页标签下面写出来，鼠标停在标签上也能看到。
+test('a curated entry spells out what its risk tag means under the tags in its details', async () => {
+  const page = await fixture(hubClaudeOnly)
   try {
-    await installed.getByTestId('featured-install-sequential-thinking').click()
-    await installed.getByRole('dialog', { name: '添加「逐步思考」', exact: true }).getByTestId('featured-install-submit').waitFor()
-    assert.equal(await installed.getByTestId('featured-no-tool').count(), 0)
+    await page.getByTestId('hub-open-mcp-files').click()
+    const detail = page.getByTestId('hub-detail')
+    await expect(detail.getByTestId('curated-risk-details-files')).toHaveText('可在您指定的位置新建、修改和删除文件。')
+    await expect(detail.getByTitle('可在您指定的位置新建、修改和删除文件。')).toHaveText('会修改本地文件')
   } finally {
-    await installed.close()
+    await page.close()
+  }
+})
+
+// 「扩展改」第 3 条（10-24）：能用它的工具一个都没装时直说，给「前往首页安装」，不给「+」。
+test('an entry says on each family that the tool is not installed when none is, and leads to the home page', async () => {
+  const page = await fixture('page=extensions&installedProviders=')
+  try {
+    await page.getByTestId('hub-open-mcp-sequential-thinking').click()
+    const detail = page.getByTestId('hub-detail')
+    for (const [id, name] of [['claude', 'Claude Code'], ['codex', 'Codex CLI'], ['grok', 'Grok CLI']])
+      await expect(detail.getByTestId(`hub-where-${id}`)).toContainText(`本机尚未安装 ${name}`)
+    assert.equal(await detail.getByTestId('hub-detail-add').count(), 0)
+    await detail.getByTestId('hub-back').click()
+    assert.equal(await page.getByTestId('hub-add-mcp-sequential-thinking').count(), 0)
+    await expect(page.getByTestId('hub-claude-missing')).toContainText('安装 Claude Code 后可查看 Claude 官方插件。')
+    await page.getByTestId('hub-claude-open-home').click()
+    assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'home')
+    assert.equal((await callsNamed(page, 'list-extensions')).length, 0)
+  } finally {
+    await page.close()
   }
 })
 
@@ -2705,21 +2596,21 @@ test('backup restore requires preview and confirmation before touching files', a
     await preview.getByText('config.toml', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('backup-preview-drawer').count(), 1)
     await preview.getByText('已校验，文件完整', { exact: true }).waitFor()
-    await preview.getByText('恢复前会先把当前配置另存一份，恢复后需要重新打开工具。', { exact: true }).waitFor()
-    await preview.getByText('备份在这台电脑上，里面可能有密钥，别随便发给别人。', { exact: true }).waitFor()
+    await preview.getByText('恢复前将自动另存当前配置，恢复后需重新打开工具。', { exact: true }).waitFor()
+    await preview.getByText('备份保存在本机，其中可能包含密钥，请勿随意提供给他人。', { exact: true }).waitFor()
     await preview
       .getByRole('button', { name: '恢复这份配置', exact: true })
       .click()
     // 预览里点「恢复这份配置」只是打开确认，还没动任何文件。
     const confirm = page.getByRole('dialog', { name: `恢复到 ${shown} 的配置？`, exact: true })
-    await confirm.getByText('当前配置会先另存一份，恢复后需要重新打开工具。', { exact: true }).waitFor()
+    await confirm.getByText('恢复前将自动另存当前配置，恢复后需重新打开工具。', { exact: true }).waitFor()
     assert.equal(
       (await calls(page)).filter((call) => call.name === 'restore-backup')
         .length,
       0,
     )
     await confirm.getByTestId('backups-restore-confirm').click()
-    await waitForToast(page, `已恢复到 ${shown} 的配置，原来的配置已另存`)
+    await waitForToast(page, `已恢复到 ${shown} 的配置，原配置已另存`)
     assert.equal(
       (await calls(page)).find((call) => call.name === 'restore-backup').args,
       'backup-1',
@@ -2750,10 +2641,10 @@ test('an empty backup list says where backups come from and backs up the tool pi
   try {
     const card = page.getByTestId('page-backups')
     const state = page.getByTestId('backups-empty')
-    await state.getByText('还没有备份', { exact: true }).waitFor()
-    await state.getByText('点「立即备份」存一份当前的工具配置。', { exact: true }).waitFor()
+    await state.getByText('暂无备份', { exact: true }).waitFor()
+    await state.getByText('请点击「立即备份」保存当前的工具配置。', { exact: true }).waitFor()
     await card.getByRole('button', { name: 'Grok CLI', exact: true }).click()
-    await state.getByText('Grok CLI 还没有备份', { exact: true }).waitFor()
+    await state.getByText('Grok CLI 暂无备份', { exact: true }).waitFor()
     await page.getByTestId('backups-create').click()
     await page.getByRole('menu', { name: '立即备份', exact: true }).waitFor()
     await page.getByTestId('backups-create-grok').click()
@@ -2761,32 +2652,32 @@ test('an empty backup list says where backups come from and backs up the tool pi
     assert.deepEqual((await calls(page)).filter((call) => call.name === 'create-backup').map((call) => call.args), ['grok'])
     // 选回「全部工具」：空状态不再点名哪个工具。
     await card.getByRole('button', { name: '全部工具', exact: true }).click()
-    await state.getByText('还没有备份', { exact: true }).waitFor()
+    await state.getByText('暂无备份', { exact: true }).waitFor()
   } finally {
     await page.close()
   }
 })
 
-// 决定单 D100：「备份迁移」最下面那张「星芒占用的空间」。清旧备份要先确认，清缩略图直接清；聊天记录和日志只列大小。
+// 决定单 D100：「备份迁移」最下面那张「星芒占用空间」。清旧备份要先确认，清缩略图直接清；聊天记录和日志只列大小。
 test('the storage card lists six sizes and only cleans old backups after a confirmation', async () => {
   const page = await fixture('page=backups')
   try {
     const card = page.getByTestId('settings-storage')
-    await card.getByTestId('settings-storage-total').getByText('一共约 3.1 GB', { exact: true }).waitFor()
+    await card.getByTestId('settings-storage-total').getByText('共约 3.1 GB', { exact: true }).waitFor()
     await card.getByTestId('settings-storage-size-works').getByText('约 2.1 GB', { exact: true }).waitFor()
     assert.equal(await card.getByTestId('settings-storage-row-chat-history').getByRole('button').count(), 0)
     assert.equal(await card.getByTestId('settings-storage-row-logs').getByRole('button').count(), 0)
-    await card.getByText('改工具配置之前自动存的旧配置，一共 24 份。', { exact: true }).waitFor()
+    await card.getByText('修改工具配置前自动保存的配置，共 24 份。', { exact: true }).waitFor()
 
     await card.getByTestId('settings-storage-clean-backups').click()
     const dialog = page.getByRole('dialog', { name: '清理旧备份？', exact: true })
-    await dialog.getByText('只留最近 10 份，更早的 14 份删掉。最近这 10 份照样能在上面的「工具配置备份」里恢复。', { exact: true }).waitFor()
+    await dialog.getByText('将保留最近 10 份，删除更早的 14 份。保留的备份仍可在上方「工具配置备份」中恢复。', { exact: true }).waitFor()
     assert.equal((await calls(page)).some((call) => call.name === 'clean-storage'), false)
     await dialog.getByTestId('settings-storage-backups-confirm').click()
-    await waitForToast(page, '已清理，腾出约 120 MB。')
+    await waitForToast(page, '已清理，释放约 120 MB。')
     assert.deepEqual((await calls(page)).filter((call) => call.name === 'clean-storage').map((call) => call.args), ['backups'])
     // 只重算清掉的那一行：剩下最近 10 份，按钮灰掉。
-    await card.getByTestId('settings-storage-row-backups').getByText('只有最近 10 份，不用清理', { exact: true }).waitFor()
+    await card.getByTestId('settings-storage-row-backups').getByText('仅保留最近 10 份，无需清理', { exact: true }).waitFor()
     assert.equal(await card.getByTestId('settings-storage-clean-backups').isDisabled(), true)
 
     await card.getByTestId('settings-storage-clean-thumbnails').click()
@@ -2801,7 +2692,7 @@ test('the storage card will not clean downloads while a tool is installing', asy
   const page = await fixture('page=backups&storageInstalling')
   try {
     const row = page.getByTestId('settings-storage-row-downloads')
-    await row.getByText('正在装工具，装完再清理', { exact: true }).waitFor()
+    await row.getByText('正在安装工具，请在安装完成后清理', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('settings-storage-clean-downloads').isDisabled(), true)
   } finally {
     await page.close()
@@ -2825,6 +2716,39 @@ test('backup rows are named by the time they were taken and the tool, never by a
   }
 })
 
+// R2-2：校验没过的那份原来跟已下线的工具一起被筛掉，原因和删除入口一起不见了。现在单独一行：
+// 说清用不了、不给预览、不能恢复、能删；认不出工具的只在「全部工具」里。
+test('a broken backup keeps its row, cannot be previewed or restored, and can be deleted', async () => {
+  const page = await fixture('page=backups&brokenBackup')
+  try {
+    const card = page.getByTestId('page-backups')
+    const torn = page.getByTestId('backups-row-backup-torn')
+    const unreadable = page.getByTestId('backups-row-backup-unreadable')
+    await torn.locator('.xm-row-desc').getByText('Codex CLI 配置，此备份不可用，可删除', { exact: true }).waitFor()
+    await torn.getByText('校验失败', { exact: true }).waitFor()
+    assert.equal(await torn.getByRole('button', { name: '预览', exact: true }).count(), 0)
+    assert.equal(await page.getByTestId('backups-restore-backup-torn').isDisabled(), true)
+    await unreadable.locator('.xm-row-desc').getByText('此备份不可用，可删除', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('backups-restore-backup-unreadable').isDisabled(), true)
+    await card.getByText('3 份备份', { exact: true }).waitFor()
+    await card.getByRole('button', { name: 'Codex CLI', exact: true }).click()
+    await card.getByText('2 份备份', { exact: true }).waitFor()
+    await torn.waitFor()
+    assert.equal(await unreadable.count(), 0)
+    await card.getByRole('button', { name: '全部工具', exact: true }).click()
+    // 没有时间的那份，删除确认不写「删除 暂未记录 的备份？」。
+    await unreadable.getByRole('button', { name: '删除这份备份', exact: true }).click()
+    const confirm = page.getByRole('dialog', { name: '删除这份备份？', exact: true })
+    await confirm.getByRole('button', { name: '删除', exact: true }).click()
+    await waitForToast(page, '备份已删除')
+    await unreadable.waitFor({ state: 'detached' })
+    assert.deepEqual((await calls(page)).filter((call) => call.name === 'deleteBackup').map((call) => call.args), ['backup-unreadable'])
+    await card.getByText('2 份备份', { exact: true }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
 test('backup list names whose key a backup holds and warns before restoring another account key', async () => {
   const page = await fixture('page=backups&backupOtherKey')
   try {
@@ -2837,7 +2761,7 @@ test('backup list names whose key a backup holds and warns before restoring anot
     await page.getByTestId('backups-restore-key-warning').waitFor()
     assert.match(
       await page.getByTestId('backups-restore-key-warning').innerText(),
-      /用量不会记在当前账号上/,
+      /用量不计入当前账号/,
     )
   } finally {
     await page.close()
@@ -2859,13 +2783,13 @@ test('feedback opens on the message form and copies what the customer wrote toge
     assert.equal(await page.getByTestId('feedback-panel-log').isHidden(), true)
     // 没写描述就点：就地提示，不复制、不打开客服。
     await page.getByTestId('feedback-send').click()
-    await form.getByText('请先描述一下发生了什么', { exact: true }).waitFor()
+    await form.getByText('请先描述遇到的问题', { exact: true }).waitFor()
     assert.equal((await calls(page)).some((call) => call.name === 'copy-clipboard' || call.name === 'open-support'), false)
     await page.getByTestId('feedback-type').getByRole('button', { name: '功能建议', exact: true }).click()
     await page.getByTestId('feedback-description').fill('点「打开」后终端闪一下就关了')
     await page.getByTestId('feedback-contact').fill('wx-test')
     await page.getByTestId('feedback-send').click()
-    await waitForToast(page, '已复制，发给客服就行')
+    await waitForToast(page, '已复制，请发送给客服')
     // J1：留言交给主进程拼好、现取报告、写剪贴板；页面自己不写剪贴板，客户等报告时切去微信也复制得上。
     const sent = (await calls(page)).filter((call) => call.name === 'copy-feedback-message').map((call) => call.args)
     assert.deepEqual(sent, [{
@@ -2896,7 +2820,7 @@ test('feedback still copies what the customer wrote when the diagnostic report c
     await page.getByTestId('feedback-form').waitFor()
     await page.getByTestId('feedback-description').fill('点「打开」后终端闪一下就关了')
     await page.getByTestId('feedback-send').click()
-    await waitForToast(page, '反馈报告没生成出来，只复制了你写的内容，发给客服就行')
+    await waitForToast(page, '反馈报告生成失败，已复制您填写的内容，请发送给客服')
     const sent = (await calls(page)).filter((call) => call.name === 'copy-feedback-message').map((call) => call.args)
     assert.equal(sent.length, 1)
     assert.equal(sent[0].type, 'bug')
@@ -2919,7 +2843,7 @@ test('feedback lists the first things to try and the support card next to the fo
     const tries = page.getByTestId('feedback-try')
     assert.deepEqual(
       await tries.locator('.v2-fb-try-item > span > span').allInnerTexts(),
-      ['工具装不上，或者打开就闪退', '付了款，余额没变', '不知道从哪里开始用', '想把 AI 连上浏览器或文件夹'],
+      ['工具无法安装或打开后闪退', '已付款，余额未变化', '不清楚如何开始使用', '需要将 AI 连接到浏览器或文件夹'],
     )
     await page.getByTestId('feedback-try-orders').click()
     await page.getByTestId('feedback-try-health').click()
@@ -3000,7 +2924,7 @@ test('feedback shows one line per log entry that opens in place and counts this 
     await panel.getByRole('button', { name: '打开日志文件夹', exact: true }).waitFor()
     await panel.getByRole('button', { name: '刷新', exact: true }).waitFor()
     assert.equal(await page.getByTestId('feedback-clear').isEnabled(), true)
-    await panel.getByText('日志只保存在这台电脑上。', { exact: true }).waitFor()
+    await panel.getByText('日志仅保存在本机。', { exact: true }).waitFor()
     // 筛选后列表跟着走。
     await page.getByTestId('feedback-source').getByRole('button', { name: '更新', exact: true }).click()
     await page.waitForFunction(() => document.querySelectorAll('.v2-feedback-log').length === 2)
@@ -3015,8 +2939,8 @@ test('feedback cannot clear logs it has none of and says how to read them when t
     await openRunLog(empty)
     assert.equal(await empty.getByTestId('feedback-error-count').count(), 0)
     const state = empty.getByTestId('feedback-empty')
-    await state.getByText('还没有运行日志', { exact: true }).waitFor()
-    await state.getByText('软件运行时的事件会记录在这里。', { exact: true }).waitFor()
+    await state.getByText('暂无运行日志', { exact: true }).waitFor()
+    await state.getByText('软件运行时的事件将记录在此处。', { exact: true }).waitFor()
     assert.equal(await empty.getByTestId('feedback-clear').isDisabled(), true)
   } finally {
     await empty.close()
@@ -3025,7 +2949,7 @@ test('feedback cannot clear logs it has none of and says how to read them when t
   try {
     await openRunLog(failed)
     const state = failed.getByTestId('feedback-error')
-    await state.getByText('点「重新加载」再试；还不行，点「打开日志文件夹」直接看日志文件。', { exact: true }).waitFor()
+    await state.getByText('请点击「重新加载」；如仍无法加载，请点击「打开日志文件夹」直接查看日志文件。', { exact: true }).waitFor()
     await state.getByRole('button', { name: '重新加载', exact: true }).waitFor()
     assert.equal(await failed.getByTestId('feedback-clear').isDisabled(), true)
   } finally {
@@ -3038,7 +2962,7 @@ test('feedback clears the run log only after asking and then says it was cleared
   try {
     await page.getByTestId('feedback-clear').click()
     const confirm = page.getByRole('dialog', { name: '清除全部运行日志？', exact: true })
-    await confirm.getByText('清除后找不回来。要发反馈的话，建议先保留日志。', { exact: true }).waitFor()
+    await confirm.getByText('清除后无法恢复。如需提交反馈，建议先保留日志。', { exact: true }).waitFor()
     await confirm.getByText('仅清除运行日志，不会删除工具配置、账号或对话记录。', { exact: true }).waitFor()
     await confirm.getByRole('button', { name: '取消', exact: true }).click()
     await confirm.waitFor({ state: 'hidden' })
@@ -3048,7 +2972,7 @@ test('feedback clears the run log only after asking and then says it was cleared
     await waitForToast(page, '日志已清除')
     const state = page.getByTestId('feedback-empty')
     await state.getByText('日志已清空', { exact: true }).waitFor()
-    await state.getByText('之后的操作会重新记录在这里。', { exact: true }).waitFor()
+    await state.getByText('后续操作将重新记录在此处。', { exact: true }).waitFor()
     assert.equal((await calls(page)).filter((call) => call.name === 'clear-logs').length, 1)
   } finally {
     await page.close()
@@ -3083,12 +3007,12 @@ test('feedback shows the latest 100 entries first and 100 more on request', asyn
 test('feedback copy and export retain the preview snapshot id', async () => {
   const page = await fixture('page=feedback')
   try {
-    // 留言表单里「附带反馈报告」旁边的链接也叫「预览反馈报告」（W68），按名字找会撞上两颗，点的是「找客服」卡上那颗。
+    // 留言表单里「附带反馈报告」旁边的链接也叫「预览反馈报告」（W68），按名字找会撞上两颗，点的是「联系客服」卡上那颗。
     await page.getByTestId('feedback-preview').click()
     await page.getByTestId('feedback-report-text').waitFor()
     // 脱敏提示挪进了预览框，一行细条（v4 第 10 批）。
     const privacy = page.getByTestId('feedback-privacy')
-    assert.equal(await privacy.innerText().then((text) => text.replace(/\s+/g, '')), '密钥、密码和电脑用户名都已隐去。发送前再看一眼有没有私有项目名称和地址。')
+    assert.equal(await privacy.innerText().then((text) => text.replace(/\s+/g, '')), '密钥、密码和电脑用户名均已隐藏。发送前请确认不含私有项目名称和地址。')
     assert.ok((await privacy.boundingBox()).height <= 50)
     // 报告里已经有检查结果时不提醒先去检查。
     assert.equal(await page.getByTestId('feedback-report-unchecked').count(), 0)
@@ -3119,12 +3043,12 @@ test('feedback copy and export retain the preview snapshot id', async () => {
 test('the feedback preview sends the customer to the check page when the report has no check result', async () => {
   const page = await fixture('page=feedback&selfCheckMissing')
   try {
-    // 留言表单里「附带反馈报告」旁边的链接也叫「预览反馈报告」（W68），按名字找会撞上两颗，点的是「找客服」卡上那颗。
+    // 留言表单里「附带反馈报告」旁边的链接也叫「预览反馈报告」（W68），按名字找会撞上两颗，点的是「联系客服」卡上那颗。
     await page.getByTestId('feedback-preview').click()
     const hint = page.getByTestId('feedback-report-unchecked')
-    await hint.getByText('报告里还没有检查结果', { exact: true }).waitFor()
-    await hint.getByText('点「去检查」，等检查页查完再回来复制或导出，客服能少问你几句。', { exact: true }).waitFor()
-    await hint.getByRole('button', { name: '去检查', exact: true }).click()
+    await hint.getByText('报告中暂无检查结果', { exact: true }).waitFor()
+    await hint.getByText('请点击「前往检查」，检查完成后再复制或导出报告，便于客服快速定位问题。', { exact: true }).waitFor()
+    await hint.getByRole('button', { name: '前往检查', exact: true }).click()
     await page.getByTestId('feedback-report-text').waitFor({ state: 'detached' })
     assert.deepEqual(
       (await calls(page))
@@ -3174,7 +3098,7 @@ test('row overflow menus are named after the row they act on', async () => {
     const shown = await backupRowTime(row)
     await row.getByRole('button', { name: '删除这份备份', exact: true }).click()
     const confirm = backups.getByRole('dialog', { name: `删除 ${shown} 的备份？`, exact: true })
-    await confirm.getByText('删除后就不能用它恢复配置了。', { exact: true }).waitFor()
+    await confirm.getByText('删除后将无法使用此备份恢复配置。', { exact: true }).waitFor()
     await confirm.getByRole('button', { name: '取消', exact: true }).click()
     await confirm.waitFor({ state: 'hidden' })
     assert.equal((await calls(backups)).some((call) => call.name === 'deleteBackup'), false)
@@ -3237,7 +3161,7 @@ test('the version card names the current and the new version and shows what to k
       .getByTestId('updates-install-note')
     await note.waitFor()
     assert.equal(await note.isVisible(), true)
-    assert.match(await note.innerText(), /^装之前先保存工具里没做完的东西。/)
+    assert.match(await note.innerText(), /^安装前请保存工具中未完成的工作。/)
     assert.equal(await downloaded.locator('details').count(), 0)
   } finally {
     await downloaded.close()
@@ -3245,7 +3169,7 @@ test('the version card names the current and the new version and shows what to k
   // 只有更新状态读不到：设置页照常打开，版本卡说没读到，不一直挂着「正在读取」。
   const failed = await fixture('page=updates&fail=update')
   try {
-    await failed.getByTestId('updates-current-version').getByText('版本暂未读到', { exact: true }).waitFor()
+    await failed.getByTestId('updates-current-version').getByText('版本暂未获取', { exact: true }).waitFor()
     assert.equal(await failed.getByText('正在读取更新状态…', { exact: true }).count(), 0)
     assert.equal(await failed.getByTestId('updates-new-version').count(), 0)
   } finally {
@@ -3258,7 +3182,7 @@ test('the version card names the current and the new version and shows what to k
 test('the version and backup cards still show when the settings themselves cannot be read', async () => {
   const updates = await fixture('page=updates&fail=settings-read')
   try {
-    await updates.getByText('设置暂时没有读到', { exact: true }).waitFor()
+    await updates.getByText('设置暂时无法获取', { exact: true }).waitFor()
     assert.equal(await updates.getByRole('tab', { name: '版本更新' }).getAttribute('aria-selected'), 'true')
     await updates.getByTestId('updates-current-version').getByText('当前版本 v0.1.31', { exact: true }).waitFor()
     assert.equal(await updates.getByTestId('updates-new-version').innerText(), '有新版本 v0.1.32')
@@ -3269,7 +3193,7 @@ test('the version and backup cards still show when the settings themselves canno
   }
   const backups = await fixture('page=backups&fail=settings-read')
   try {
-    await backups.getByText('设置暂时没有读到', { exact: true }).waitFor()
+    await backups.getByText('设置暂时无法获取', { exact: true }).waitFor()
     assert.equal(await backups.getByRole('tab', { name: '备份迁移' }).getAttribute('aria-selected'), 'true')
     await backups.getByTestId('backups-row-backup-1').waitFor()
   } finally {
@@ -3366,6 +3290,91 @@ test('subscription payment terminal events clear the pending state and explain t
     await page.evaluate(() => window.emitPaymentWindowTerminal({ status: 'closed', tradeNo: 'XM-VISUAL-SUBSCRIPTION' }))
     await page.getByText('支付窗口已关闭', { exact: true }).waitFor()
     assert.equal(await page.getByText('等待支付结果', { exact: true }).count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+// N3：买套餐的框开着时后台改了价。服务端下单只认套餐编号、照那一刻的价扣，所以点付款前要再核一遍。
+const subscriptionCalls = async (page) =>
+  (await calls(page)).filter((call) => /create-subscription-payment|purchase-subscription-balance/.test(call.name))
+
+test('a plan repriced while its purchase dialog is open is shown at the new price before any order is placed', async () => {
+  const page = await fixture('page=account&accountTab=recharge&subscriptionExternal=1')
+  try {
+    await page.getByRole('button', { name: '购买', exact: true }).click()
+    const purchase = page.getByRole('dialog', { name: '购买外部订阅' })
+    await purchase.getByText('¥29', { exact: true }).waitFor()
+    await page.evaluate(() => window.subscriptionPlanHarness.set({ priceAmount: 39 }))
+
+    await purchase.getByRole('button', { name: '打开支付窗口', exact: true }).click()
+    const notice = purchase.getByTestId('account-subscription-plan-changed')
+    await notice.getByText('价格已更新', { exact: true }).waitFor()
+    assert.equal(await notice.getByText('价格由 ¥29 调整为 ¥39，请确认后重新支付。', { exact: true }).count(), 1)
+    await purchase.getByText('¥39', { exact: true }).waitFor()
+    assert.equal(await purchase.getByText('¥29', { exact: true }).count(), 0)
+    // 没下单，卡片上的价也换了。
+    assert.deepEqual(await subscriptionCalls(page), [])
+    await page.getByTestId('account-recharge-plans').getByText('¥39', { exact: true }).waitFor()
+
+    // 看过新价再点一次才下单，等结果那块写的也是新价。
+    await purchase.getByRole('button', { name: '打开支付窗口', exact: true }).click()
+    await page.getByTestId('account-payment-notice').getByText('XM-VISUAL-SUBSCRIPTION', { exact: true }).waitFor()
+    assert.deepEqual((await subscriptionCalls(page)).map((call) => call.name), ['create-subscription-payment'])
+    await page.locator('.v2-recharge-big', { hasText: '¥39' }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('a purchase dialog left open follows a reread plan list instead of charging the balance at the old price', async () => {
+  const page = await fixture('page=account&accountTab=recharge&subscriptionExternal=1&planBalancePay=1', (next) => next.clock.install())
+  try {
+    await page.getByRole('button', { name: '购买', exact: true }).click()
+    const purchase = page.getByRole('dialog', { name: '购买外部订阅' })
+    await purchase.getByRole('button', { name: '使用余额支付 $5', exact: true }).waitFor()
+
+    // 框一直开着，客户切走一阵再回来：窗口回到前台时列表重读，框里跟着换成新价。
+    await page.evaluate(() => window.subscriptionPlanHarness.set({ priceAmount: 8 }))
+    await page.clock.fastForward(61_000)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await purchase.getByTestId('account-subscription-plan-changed')
+      .getByText('价格由 $5 调整为 $8，请确认后重新支付。', { exact: true }).waitFor()
+    await purchase.getByText('余额 $10.00，扣除后剩余 $2.00', { exact: true }).waitFor()
+    assert.deepEqual(await subscriptionCalls(page), [])
+
+    await purchase.getByRole('button', { name: '使用余额支付 $8', exact: true }).click()
+    await waitForToast(page, '外部订阅已开通')
+    assert.deepEqual(await subscriptionCalls(page), [{ name: 'purchase-subscription-balance', args: 1 }])
+  } finally {
+    await page.close()
+  }
+})
+
+test('a plan taken down while its purchase dialog is open cannot be bought from the stale dialog', async () => {
+  const page = await fixture('page=account&accountTab=recharge&subscriptionExternal=1&planBalancePay=1', (next) => next.clock.install())
+  try {
+    await page.getByRole('button', { name: '购买', exact: true }).click()
+    const purchase = page.getByRole('dialog', { name: '购买外部订阅' })
+    const pay = purchase.getByRole('button', { name: '使用余额支付 $5', exact: true })
+    await pay.waitFor()
+    await page.evaluate(() => window.subscriptionPlanHarness.remove())
+
+    await pay.click()
+    const notice = purchase.getByTestId('account-subscription-plan-changed')
+    await notice.getByText('该套餐已下架', { exact: true }).waitFor()
+    assert.equal(await notice.getByText('请关闭此窗口，选择其他套餐。', { exact: true }).count(), 1)
+    assert.equal(await pay.isDisabled(), true)
+    assert.deepEqual(await subscriptionCalls(page), [])
+    await assertNoToast(page, '外部订阅已开通')
+    await page.getByTestId('account-recharge-plans').waitFor({ state: 'detached' })
+
+    // 框还开着，后台又把它上架了：窗口回到前台重读以后，那条收起、付款按钮能点。
+    await page.evaluate(() => window.subscriptionPlanHarness.restore())
+    await page.clock.fastForward(61_000)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await notice.waitFor({ state: 'detached' })
+    assert.equal(await pay.isDisabled(), false)
   } finally {
     await page.close()
   }
@@ -3543,10 +3552,10 @@ test('an amount outside the quick tiers is still quoted on the summary', async (
 test('a default amount below the minimum says why recharging is unavailable', async () => {
   const page = await fixture('page=account&accountTab=recharge&highMinimum=1')
   try {
-    await page.getByText('充值数量不能低于 20，请填整数', { exact: true }).waitFor()
+    await page.getByText('充值金额不能低于 20，请输入整数', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('account-recharge-submit').isDisabled(), true)
     await page.getByRole('button', { name: /^到账 \$20，实付 20\.00/ }).click()
-    assert.equal(await page.getByText('充值数量不能低于 20，请填整数', { exact: true }).count(), 0)
+    assert.equal(await page.getByText('充值金额不能低于 20，请输入整数', { exact: true }).count(), 0)
     assert.equal(await page.getByTestId('account-recharge-submit').isDisabled(), false)
   } finally {
     await page.close()
@@ -3721,7 +3730,7 @@ test('a payment window closed before settlement keeps confirming and points to t
     await page.getByText('等待支付结果', { exact: true }).waitFor()
     await page.evaluate(() => window.emitPaymentWindowTerminal({ status: 'closed', tradeNo: 'XM-VISUAL-TOPUP', confirming: true }))
     const notice = page.getByTestId('account-payment-notice')
-    await notice.getByText('星芒还在确认到账', { exact: false }).waitFor()
+    await notice.getByText('到账后余额将自动更新', { exact: false }).waitFor()
     await notice.getByText('正在确认订单 XM-VISUAL-TOPUP 是否到账…', { exact: true }).waitFor()
     assert.equal(await notice.getByRole('button', { name: '查看我的订单', exact: true }).count(), 1)
 
@@ -3765,7 +3774,7 @@ test('an unconfirmed payment opens my orders with its order number', async () =>
       window.emitPaymentWindowTerminal({ status: 'closed', tradeNo: 'XM-VISUAL-TOPUP', confirming: true })
       window.emitPaymentWindowTerminal({ status: 'unconfirmed', tradeNo: 'XM-VISUAL-TOPUP' })
     })
-    await page.getByText('还没查到这笔订单到账', { exact: true }).waitFor()
+    await page.getByText('暂未确认到账', { exact: true }).waitFor()
     await page.getByTestId('account-payment-orders').click()
     await page.getByRole('tab', { name: '充值订阅', exact: true, selected: true }).waitFor()
     await page.getByTestId('account-orders-section').waitFor()
@@ -3795,13 +3804,13 @@ test('settings that wait on the system state say they were not read and read aga
   try {
     await page.getByText('系统状态暂时读不到', { exact: true }).waitFor()
     const contrast = page.locator('[data-anchor="high-contrast"]')
-    await contrast.getByText('暂未读到', { exact: true }).waitFor()
-    assert.equal(await page.getByText('这台电脑上用不了', { exact: true }).count(), 0)
+    await contrast.getByText('暂未获取', { exact: true }).waitFor()
+    assert.equal(await page.getByText('本机不支持', { exact: true }).count(), 0)
     await page.getByRole('button', { name: '重新读取', exact: true }).click()
     await page.getByRole('switch', { name: '高对比度', exact: true }).waitFor()
     assert.equal(await page.getByText('系统状态暂时读不到', { exact: true }).count(), 0)
     assert.equal(await page.getByRole('button', { name: '重新读取', exact: true }).count(), 0)
-    assert.equal(await contrast.getByText('暂未读到', { exact: true }).count(), 0)
+    assert.equal(await contrast.getByText('暂未获取', { exact: true }).count(), 0)
   } finally {
     await page.close()
   }
@@ -3812,15 +3821,15 @@ test('the notification kinds sit under their own heading and say when the master
   try {
     await page.getByRole('tab', { name: '消息通知', exact: true }).click()
     const kinds = page.getByTestId('settings-notification-kinds')
-    await kinds.getByRole('heading', { name: '提醒哪些事', exact: true }).waitFor()
-    assert.equal(await kinds.getByText('桌面通知关着，下面这些都不会提醒', { exact: true }).count(), 0)
+    await kinds.getByRole('heading', { name: '提醒事项', exact: true }).waitFor()
+    assert.equal(await kinds.getByText('桌面通知已关闭，以下提醒均不会显示', { exact: true }).count(), 0)
     await page.getByRole('switch', { name: '桌面通知', exact: true }).click()
-    await kinds.getByText('桌面通知关着，下面这些都不会提醒', { exact: true }).waitFor()
+    await kinds.getByText('桌面通知已关闭，以下提醒均不会显示', { exact: true }).waitFor()
     assert.equal(await page.getByRole('switch', { name: '余额不足通知', exact: true }).isDisabled(), true)
     // 左栏搜出来的提醒项一样是灰的，那一句也跟着摆在搜索结果里。
     await page.getByTestId('settings-search').fill('余额不足')
     const results = page.getByTestId('settings-search-results')
-    await results.getByText('桌面通知关着，下面这些都不会提醒', { exact: true }).waitFor()
+    await results.getByText('桌面通知已关闭，以下提醒均不会显示', { exact: true }).waitFor()
     assert.equal(await results.getByRole('switch', { name: '余额不足通知', exact: true }).isDisabled(), true)
   } finally {
     await page.close()
@@ -3854,7 +3863,7 @@ test('the settings search lists matching rows in place, links back to their grou
     const results = page.getByTestId('settings-search-results')
     await results.waitFor()
     await page.getByRole('heading', { name: '搜索「托盘」', exact: true }).waitFor()
-    await page.getByText('找到 1 项，可以直接在这里修改', { exact: true }).waitFor()
+    await page.getByText('找到 1 项，可直接在此修改', { exact: true }).waitFor()
     assert.deepEqual(await results.locator('[data-anchor]').evaluateAll((rows) => rows.map((row) => row.dataset.anchor)), ['close-behavior'])
     // 搜索时左栏哪一组都不算选中。
     assert.equal(await page.getByRole('tab', { selected: true }).count(), 0)
@@ -3867,8 +3876,8 @@ test('the settings search lists matching rows in place, links back to their grou
     assert.equal(await page.getByRole('tab', { name: '启动关闭', exact: true }).getAttribute('aria-selected'), 'true')
     // 几个字都要对上；对不上给一句换个说法。
     await search.fill('镜像 托盘')
-    await page.getByTestId('settings-search-empty').getByText('没有找到相关设置', { exact: true }).waitFor()
-    await page.getByText('换个说法试试，比如「托盘」「镜像」「快捷键」。', { exact: true }).waitFor()
+    await page.getByTestId('settings-search-empty').getByText('未找到相关设置', { exact: true }).waitFor()
+    await page.getByText('请尝试其他关键词，如「托盘」「镜像」「快捷键」。', { exact: true }).waitFor()
     // 点左栏的组也会清掉搜索。
     await page.getByRole('tab', { name: '外观显示', exact: true }).click()
     await page.waitForFunction(() => document.querySelector('[data-testid="settings-search"]')?.value === '')
@@ -3880,13 +3889,12 @@ test('the settings search lists matching rows in place, links back to their grou
 
 // YF-4：「怎么建飞书机器人」六步下面两颗，飞书开发者后台交给浏览器（白名单只收这一个网址），教程是星芒自己的那一章。
 test('the Feishu setup steps open the developer console in the browser and the phone remote tutorial in place', async () => {
-  const page = await fixture('page=settings')
+  const page = await fixture('page=remote')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const form = page.getByTestId('settings-remote-card').getByTestId('settings-remote-feishu-form')
-    await form.getByText('怎么建飞书机器人', { exact: true }).click()
+    await form.getByText('如何创建飞书机器人', { exact: true }).click()
     await form.getByRole('button', { name: '打开飞书开放平台', exact: true }).click()
-    await form.getByRole('button', { name: '看教程', exact: true }).click()
+    await form.getByRole('button', { name: '查看教程', exact: true }).click()
     const recorded = await calls(page)
     assert.deepEqual(
       recorded.filter((call) => call.name === 'openExternal' || call.name === 'navigate').map((call) => [call.name, call.args ?? null]),
@@ -3901,30 +3909,29 @@ test('the Feishu setup steps open the developer console in the browser and the p
   }
 })
 
-// YF-19：电脑上加几个干活的文件夹，正在用的标出来，别的能换过去、能移除；满 5 个「添加一个」灰掉。
+// YF-19：电脑上加几个工作文件夹，使用中的标出来，别的能换过去、能移除；满 5 个「添加文件夹」灰掉。
 test('the phone remote card lists several working folders, switches between them and stops adding at five', async () => {
-  const page = await fixture('page=settings&remoteReady&remoteFolders')
+  const page = await fixture('page=remote&remoteReady&remoteFolders')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
     const list = card.getByTestId('settings-remote-workspace-list')
     await list.waitFor()
     assert.deepEqual(await list.locator('.v2-remote-folder > .xm-mono').allInnerTexts(), ['~/projects/demo', '~/projects/blog', '~/projects/shop'])
     const rowOf = (folder) => list.locator('.v2-remote-folder').filter({ hasText: folder })
-    await rowOf('~/projects/demo').getByTestId('settings-remote-workspace-in-use').getByText('正在用', { exact: true }).waitFor()
-    await list.getByText('手机上发「文件夹」也能换。', { exact: true }).waitFor()
-    await rowOf('~/projects/blog').getByRole('button', { name: '用这个', exact: true }).click()
+    await rowOf('~/projects/demo').getByTestId('settings-remote-workspace-in-use').getByText('使用中', { exact: true }).waitFor()
+    await list.getByText('也可在手机上发送「文件夹」切换。', { exact: true }).waitFor()
+    await rowOf('~/projects/blog').getByRole('button', { name: '使用此文件夹', exact: true }).click()
     await rowOf('~/projects/blog').getByTestId('settings-remote-workspace-in-use').waitFor()
     assert.equal(await rowOf('~/projects/demo').getByRole('button', { name: '移除', exact: true }).count(), 1)
     await rowOf('~/projects/shop').getByRole('button', { name: '移除', exact: true }).click()
     await rowOf('~/projects/shop').waitFor({ state: 'detached' })
     const add = card.getByTestId('settings-remote-workspace')
-    assert.equal(await add.innerText(), '添加一个')
+    assert.equal(await add.innerText(), '添加文件夹')
     for (let count = 2; count < 5; count += 1) {
       await add.click()
       await list.locator('.v2-remote-folder').nth(count).waitFor()
     }
-    await list.getByText('最多 5 个，先移除一个再添加。', { exact: true }).waitFor()
+    await list.getByText('最多 5 个，请先移除一个再添加。', { exact: true }).waitFor()
     assert.equal(await add.isDisabled(), true)
     assert.deepEqual((await calls(page)).filter((call) => call.name.startsWith('remote-workspace')).map((call) => [call.name, call.args ?? null]), [
       ['remote-workspace-use', '~/projects/blog'],
@@ -3940,21 +3947,20 @@ test('the phone remote card lists several working folders, switches between them
 
 // 手机遥控 Codex：先选文件夹、填飞书应用，打开遥控，再配对；App Secret 不进记录，填错了当场说。
 test('the phone remote card walks through folder, Feishu app, switch and pairing, and never records the app secret', async () => {
-  const page = await fixture('page=settings')
+  const page = await fixture('page=remote')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
-    await card.getByTestId('settings-remote-feishu-state').getByText('没打开', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-feishu-state').getByText('未开启', { exact: true }).waitFor()
     const toggle = card.getByRole('switch', { name: '打开飞书遥控', exact: true })
     assert.equal(await toggle.isDisabled(), true)
-    await card.getByText('先在上面填好飞书应用。', { exact: true }).waitFor()
+    await card.getByText('请先在上方填写飞书应用信息。', { exact: true }).waitFor()
     await card.getByTestId('settings-remote-workspace').click()
     await card.getByText('~/projects/demo', { exact: true }).waitFor()
-    assert.equal(await card.getByTestId('settings-remote-workspace').innerText(), '添加一个')
+    assert.equal(await card.getByTestId('settings-remote-workspace').innerText(), '添加文件夹')
     await card.getByTestId('settings-remote-feishu-app-id').fill('cli_a1b2c3d4e5')
     await card.getByTestId('settings-remote-feishu-app-secret').fill('wrong-secret')
     await card.getByTestId('settings-remote-feishu-save').click()
-    await card.getByRole('alert').getByText('飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。').waitFor()
+    await card.getByRole('alert').getByText('飞书应用的 App ID 或 App Secret 不正确，请在飞书开放平台核对后重新填写。').waitFor()
     // 填错了框里的字留着，改一下再存就行。
     assert.equal(await card.getByTestId('settings-remote-feishu-app-secret').inputValue(), 'wrong-secret')
     await card.getByTestId('settings-remote-feishu-app-secret').fill('rightSecret123')
@@ -3963,26 +3969,27 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     assert.equal(await card.getByTestId('settings-remote-feishu-form').count(), 0)
     assert.equal(await card.getByRole('alert').count(), 0)
     // YF-1：保存以后还差的几步留在卡上，配对成功才收起。
-    await card.getByTestId('settings-remote-feishu-next').getByText('保存好了。再做下面几步，手机上才收得到', { exact: true }).waitFor()
-    await card.getByText('还没配对。打开遥控后才能配对。', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-feishu-next').getByText('已保存。请完成以下步骤，手机端方可接收消息', { exact: true }).waitFor()
+    await card.getByText('尚未配对。开启遥控后方可配对。', { exact: true }).waitFor()
     assert.equal(await card.getByTestId('settings-remote-feishu-pair').isDisabled(), true)
     await toggle.click()
-    await card.getByTestId('settings-remote-feishu-state').getByText('已连上', { exact: true }).waitFor()
-    await card.getByText('Codex 空闲', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-feishu-state').getByText('已连接', { exact: true }).waitFor()
+    // 说 Codex 在干什么的那句挪到了页头右边。
+    await page.getByTestId('settings-remote-meta').getByText('Codex 空闲', { exact: true }).waitFor()
     await card.getByTestId('settings-remote-feishu-pair').click()
     await card.getByTestId('settings-remote-feishu-code').getByText('482915', { exact: true }).waitFor()
-    await card.getByText('在飞书里打开你建的机器人，私聊发这 6 位数字。10 分钟内有效。', { exact: true }).waitFor()
-    // 手机那头发对了配对码：主进程推一份新快照，卡上换成绑定的人。
+    await card.getByText('在飞书中打开您创建的机器人，私聊发送这 6 位数字。10 分钟内有效。', { exact: true }).waitFor()
+    // 手机那头发对了配对码：主进程推一份新快照，卡上换成绑定用户。
     await page.evaluate(() => window.remoteHarness.pair('小明'))
-    await card.getByTestId('settings-remote-feishu-peer').getByText(/^小明（尾号 9f3c），10 月 25 日 \d\d:\d\d 配对$/).waitFor()
-    assert.equal(await card.getByTestId('settings-remote-feishu-pair').innerText(), '换人')
+    await card.getByTestId('settings-remote-feishu-peer').getByText(/^小明（尾号 9f3c），10 月 25 日 \d\d:\d\d 配对。在手机上发送「帮助」可查看可用指令。$/).waitFor()
+    assert.equal(await card.getByTestId('settings-remote-feishu-pair').innerText(), '重新配对')
     assert.equal(await card.getByTestId('settings-remote-feishu-next').count(), 0)
-    await card.getByTestId('settings-remote-feishu-guide').getByText('怎么建飞书机器人', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-feishu-guide').getByText('如何创建飞书机器人', { exact: true }).waitFor()
     // 解绑先问一句：点「取消」什么都不做，点「解绑」才解。
     const confirm = card.getByTestId('settings-remote-feishu-confirm')
     await card.getByTestId('settings-remote-feishu-unbind').click()
     await confirm.getByRole('heading', { name: '解绑？', exact: true }).waitFor()
-    await confirm.getByText('解绑后，这个人就不能再用手机遥控这台电脑了，要用得重新配对。', { exact: true }).waitFor()
+    await confirm.getByText('解绑后，该用户将无法通过手机遥控本机，如需使用需重新配对。', { exact: true }).waitFor()
     await confirm.getByRole('button', { name: '取消', exact: true }).click()
     await confirm.waitFor({ state: 'detached' })
     assert.equal(await card.getByTestId('settings-remote-feishu-unbind').count(), 1)
@@ -3990,11 +3997,11 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     await card.getByTestId('settings-remote-feishu-unbind').click()
     await confirm.getByRole('button', { name: '解绑', exact: true }).click()
     await confirm.waitFor({ state: 'detached' })
-    await card.getByText('还没配对。点「开始配对」，把配对码私聊发给机器人。', { exact: true }).waitFor()
+    await card.getByText('尚未配对。请点击「开始配对」，将配对码私聊发送给机器人。', { exact: true }).waitFor()
     // 退出登录也先问：确认后凭据清掉、遥控关掉，回到填应用的框。
     await card.getByRole('button', { name: '退出飞书登录', exact: true }).click()
     await confirm.getByRole('heading', { name: '退出飞书登录？', exact: true }).waitFor()
-    await confirm.getByText('退出后要重新填机器人的凭据，才能再用手机遥控。', { exact: true }).waitFor()
+    await confirm.getByText('退出后需重新填写机器人凭据，方可继续使用遥控。', { exact: true }).waitFor()
     await confirm.getByRole('button', { name: '退出登录', exact: true }).click()
     await confirm.waitFor({ state: 'detached' })
     await card.getByTestId('settings-remote-feishu-form').waitFor()
@@ -4020,32 +4027,31 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
 
 // D23：飞书停下来时只说三种固定的话，各配按钮：重新填写、重新连接、找客服。
 test('the Feishu block says one of three fixed sentences when it stops and gives each its buttons', async () => {
-  const page = await fixture('page=settings&remoteReady=1&help=1')
+  const page = await fixture('page=remote&remoteReady=1&help=1')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
     await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).click()
-    await card.getByTestId('settings-remote-feishu-state').getByText('已连上', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-feishu-state').getByText('已连接', { exact: true }).waitFor()
     const status = card.getByTestId('settings-remote-feishu-status')
 
     await page.evaluate(() => window.remoteHarness.feishuProblem('other'))
-    await status.getByText('没连上，点「重新连接」再试；还不行点「找客服」。', { exact: true }).waitFor()
+    await status.getByText('未能建立连接，请点击「重新连接」重试；如问题仍存在，请点击「联系客服」。', { exact: true }).waitFor()
     await card.getByTestId('settings-remote-feishu-support').click()
     assert.equal((await callsNamed(page, 'open-help')).length, 1)
     await card.getByTestId('settings-remote-feishu-reconnect').click()
-    await card.getByTestId('settings-remote-feishu-state').getByText('已连上', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-feishu-state').getByText('已连接', { exact: true }).waitFor()
     assert.equal(await card.getByTestId('settings-remote-feishu-status-actions').count(), 0)
 
     await page.evaluate(() => window.remoteHarness.feishuProblem('connection-limit'))
-    await status.getByText('这个飞书应用在别处也连着，先关掉别处再试。', { exact: true }).waitFor()
+    await status.getByText('该飞书应用已在其他位置连接，请先断开其他连接后重试。', { exact: true }).waitFor()
     await card.getByTestId('settings-remote-feishu-reconnect').waitFor()
     assert.equal(await card.getByTestId('settings-remote-feishu-support').count(), 0)
     await card.getByTestId('settings-remote-feishu-reconnect').click()
-    await card.getByTestId('settings-remote-feishu-state').getByText('已连上', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-feishu-state').getByText('已连接', { exact: true }).waitFor()
 
     // 凭据不对：不另摆按钮，下面那颗「重新填写」就是它的，点了打开填写框。
     await page.evaluate(() => window.remoteHarness.feishuProblem('credential'))
-    await status.getByText('飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。', { exact: true }).waitFor()
+    await status.getByText('飞书应用的 App ID 或 App Secret 不正确，请在飞书开放平台核对后重新填写。', { exact: true }).waitFor()
     assert.equal(await card.getByTestId('settings-remote-feishu-reconnect').count(), 0)
     await card.getByTestId('settings-remote-feishu-edit').click()
     await card.getByTestId('settings-remote-feishu-form').waitFor()
@@ -4058,14 +4064,18 @@ test('the Feishu block says one of three fixed sentences when it stops and gives
 
 // 微信那一块：二维码由主进程画好给过来；手机上要输数字时停下来等输，输错了当场说；登录好了卡上换成机器人编号。
 test('the WeChat block logs in through the QR dialog, asks for the number on the phone and then shows the bot', async () => {
-  const page = await fixture('page=settings')
+  const page = await fixture('page=remote')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
+    // 微信那一块要在连接方式里点「微信」才摆出来；标签「实验功能」在那张卡上。
+    assert.equal(await card.getByTestId('settings-remote-weixin').count(), 0)
+    const tab = card.getByTestId('remote-method-weixin')
+    await tab.click()
+    assert.equal(await tab.getAttribute('aria-selected'), 'true')
+    await tab.getByText('实验功能', { exact: true }).waitFor()
     const block = card.getByTestId('settings-remote-weixin')
-    await block.getByTestId('settings-remote-weixin-warning').getByText('实验功能，随时可能断', { exact: true }).waitFor()
-    await block.getByText('实验功能', { exact: true }).waitFor()
-    await block.getByText('先在上面用微信扫码登录。', { exact: true }).waitFor()
+    await block.getByTestId('settings-remote-weixin-warning').getByText('实验功能，可能随时中断', { exact: true }).waitFor()
+    await block.getByText('请先在上方使用微信扫码登录。', { exact: true }).waitFor()
     assert.equal(await card.getByRole('switch', { name: '打开微信遥控', exact: true }).isDisabled(), true)
     assert.equal(await card.getByRole('button', { name: '退出微信登录', exact: true }).count(), 0)
     await block.getByTestId('settings-remote-weixin-login-start').click()
@@ -4073,18 +4083,18 @@ test('the WeChat block logs in through the QR dialog, asks for the number on the
     const qr = dialog.getByRole('img', { name: '微信登录二维码', exact: true })
     await qr.waitFor()
     assert.match(await qr.getAttribute('src'), /^data:image\/png;base64,/)
-    await dialog.getByText('打开手机微信「扫一扫」，扫完在手机上点确认。二维码 5 分钟内有效。', { exact: true }).waitFor()
+    await dialog.getByText('请使用手机微信「扫一扫」扫码，并在手机上确认。二维码 5 分钟内有效。', { exact: true }).waitFor()
     await page.evaluate(() => window.remoteHarness.weixinScanned())
-    await dialog.getByText('手机微信上显示了一串数字，请输在下面', { exact: true }).waitFor()
+    await dialog.getByText('手机微信上显示了一组数字，请在下方输入', { exact: true }).waitFor()
     assert.equal(await qr.count(), 0)
     const code = dialog.getByTestId('settings-remote-weixin-code')
     await code.fill('1111')
     await dialog.getByTestId('settings-remote-weixin-code-submit').click()
-    await dialog.getByText('数字不对，请对照手机上的数字重新输入', { exact: true }).waitFor()
+    await dialog.getByText('数字不正确，请对照手机上显示的数字重新输入', { exact: true }).waitFor()
     await code.fill('2580')
     await dialog.getByTestId('settings-remote-weixin-code-submit').click()
     // 过了手机上那串数字：扫码的人直接绑上，不用配对码（YF-5）。
-    await dialog.getByText('微信登录好了，已经绑定你这个微信。下一步打开下面的「打开遥控」。', { exact: true }).waitFor()
+    await dialog.getByText('微信已登录并已绑定当前微信。请开启下方「打开遥控」。', { exact: true }).waitFor()
     await block.getByText('已登录：ClawBot decb', { exact: true }).waitFor()
     await block.getByText(/^尾号 c0de 的账号/).waitFor()
     await dialog.getByTestId('settings-remote-weixin-close').click()
@@ -4094,7 +4104,7 @@ test('the WeChat block logs in through the QR dialog, asks for the number on the
     await card.getByRole('button', { name: '退出微信登录', exact: true }).click()
     const logoutConfirm = card.getByTestId('settings-remote-weixin-confirm')
     await logoutConfirm.getByRole('heading', { name: '退出微信登录？', exact: true }).waitFor()
-    await logoutConfirm.getByText('退出后要重新用微信扫码登录，才能再用手机遥控。', { exact: true }).waitFor()
+    await logoutConfirm.getByText('退出后需重新使用微信扫码登录，方可继续使用遥控。', { exact: true }).waitFor()
     await logoutConfirm.getByRole('button', { name: '取消', exact: true }).click()
     await logoutConfirm.waitFor({ state: 'detached' })
     assert.equal((await calls(page)).some((call) => call.name === 'remote-clear'), false)
@@ -4122,19 +4132,44 @@ test('the WeChat block logs in through the QR dialog, asks for the number on the
   }
 })
 
-// YK-5：手机上收到「Codex 没能启动」，电脑卡片上也有一条黄条，点一下去首页；Codex 又起来了就收起。
-test('the phone remote card says Codex could not start and leads to the home page until Codex starts again', async () => {
-  const page = await fixture('page=settings&remoteReady=1')
+// 0.2.25 M1：填好飞书应用、只差文件夹时，「打开遥控」那行以前说「请先在上方选择工作文件夹。」，可文件夹那一行在下面
+// 「通用设置」里。现在说「请先选择工作文件夹。」，开关左边直接一颗「选择文件夹」，选好开关马上能打开，那颗也收起。
+test('the phone remote switch offers to choose the folder beside it when that is the only step left', async () => {
+  const page = await fixture('page=remote&remoteReady=1&remoteNoFolder=1')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const card = page.getByTestId('settings-remote-card')
+    const toggle = card.getByRole('switch', { name: '打开飞书遥控', exact: true })
+    const row = card.getByTestId('settings-remote-feishu-enable')
+    await row.getByText('请先选择工作文件夹。', { exact: true }).waitFor()
+    assert.equal(await toggle.isDisabled(), true)
+    const choose = row.getByTestId('settings-remote-feishu-choose-workspace')
+    assert.equal(await choose.innerText(), '选择文件夹')
+    // 下面「通用设置」里那一行照旧在。
+    assert.equal(await card.getByTestId('settings-remote-workspace').count(), 1)
+    await choose.click()
+    await card.getByTestId('settings-remote-workspace-row').getByText('~/projects/demo', { exact: true }).waitFor()
+    await choose.waitFor({ state: 'detached' })
+    assert.equal(await toggle.isDisabled(), false)
+    assert.equal((await callsNamed(page, 'remote-workspace')).length, 1)
+    await toggle.click()
+    await card.getByTestId('settings-remote-feishu-state').getByText('已连接', { exact: true }).waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+// YK-5：手机上收到「Codex 启动失败」，电脑卡片上也有一条黄条，点一下去首页；Codex 又起来了就收起。
+test('the phone remote card says Codex could not start and leads to the home page until Codex starts again', async () => {
+  const page = await fixture('page=remote&remoteReady=1')
+  try {
     const card = page.getByTestId('settings-remote-card')
     await card.getByTestId('settings-remote-workspace-row').waitFor()
     assert.equal(await card.getByTestId('settings-remote-codex-failed').count(), 0)
     await page.evaluate(() => window.remoteHarness.codexStartFailed(true))
     const notice = card.getByTestId('settings-remote-codex-failed')
-    await notice.getByText('Codex 没能启动', { exact: true }).waitFor()
-    await notice.getByText('手机上刚发来的那条没有做。去首页看一下 Codex，好了以后在手机上再发一次。', { exact: true }).waitFor()
-    await notice.getByRole('button', { name: '去首页看 Codex', exact: true }).click()
+    await notice.getByText('Codex 启动失败', { exact: true }).waitFor()
+    await notice.getByText('手机刚发送的指令未执行。请前往首页检查 Codex，恢复后在手机上重新发送。', { exact: true }).waitFor()
+    await notice.getByRole('button', { name: '前往首页查看 Codex', exact: true }).click()
     assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'home')
     await page.evaluate(() => window.remoteHarness.codexStartFailed(false))
     await notice.waitFor({ state: 'detached' })
@@ -4143,14 +4178,34 @@ test('the phone remote card says Codex could not start and leads to the home pag
   }
 })
 
+// M16：页面第一次读状态还没回来时，主进程先推了一份更新的；读回来的那份旧的不能把页面退回去。
+test('the phone remote page keeps a newer state that arrived while its first read was still out', async () => {
+  const page = await fixture('page=remote&remoteReady=1&remoteHoldReads')
+  try {
+    const card = page.getByTestId('settings-remote-card')
+    await card.getByText('正在读取…', { exact: true }).waitFor()
+    await page.evaluate(() => window.remoteHarness.codexStartFailed(true))
+    const notice = card.getByTestId('settings-remote-codex-failed')
+    await notice.getByText('Codex 启动失败', { exact: true }).waitFor()
+    await page.evaluate(async () => {
+      window.remoteHarness.releaseReads()
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+    })
+    assert.equal(await notice.count(), 1)
+    assert.equal(await card.getByTestId('settings-remote-workspace-row').count(), 1)
+  } finally {
+    await page.close()
+  }
+})
+
 // YF-9：卡片最后一行「打开星芒时自动打开遥控」默认关，点开、点关都记给主进程，开着时飞书那个开关不跟着动。
 test('the phone remote card lets the customer turn on opening the remote whenever the manager starts, off by default', async () => {
-  const page = await fixture('page=settings&remoteReady=1')
+  const page = await fixture('page=remote&remoteReady=1')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
     const row = card.getByTestId('settings-remote-auto-start')
-    await row.getByText('开着时，每次打开星芒都会自己连上，不用再回这里点。星芒开机自启的话，没人在电脑前时手机也能指挥它。不放心就别开。', { exact: true }).waitFor()
+    await row.getByText('开启后，每次打开星芒将自动连接，无需在此手动开启。如星芒设为开机自启，即使无人在电脑前，也可通过手机操作。如有顾虑，请勿开启。', { exact: true }).waitFor()
     const toggle = row.getByRole('switch', { name: '打开星芒时自动打开遥控', exact: true })
     assert.equal(await toggle.getAttribute('aria-checked'), 'false')
     await toggle.click()
@@ -4165,23 +4220,22 @@ test('the phone remote card lets the customer turn on opening the remote wheneve
   }
 })
 
-// YF-10：「多久没消息就自动关」缺省「不自动关」带小字；选 12 小时小字收起、「打开遥控」那行说明带上 12 小时，再选回不自动关又出来。
+// YF-10：「多久没消息就自动关」缺省「不自动关闭」带小字；选 12 小时小字收起、「打开遥控」那行说明带上 12 小时，再选回不自动关闭又出来。
 test('the phone remote card picks how long it may idle before closing, never by default', async () => {
-  const page = await fixture('page=settings&remoteReady=1')
+  const page = await fixture('page=remote&remoteReady=1')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
     const row = card.getByTestId('settings-remote-idle-close')
-    const neverHint = '只有你在电脑上、托盘里关，或者手机上发「关闭遥控」才会关。'
+    const neverHint = '仅在电脑端、托盘中关闭，或在手机上发送「关闭遥控」时才会关闭。'
     await row.getByText(neverHint, { exact: true }).waitFor()
-    const choice = row.getByRole('group', { name: '多久没消息就自动关', exact: true })
-    assert.equal(await choice.getByRole('button', { name: '不自动关', exact: true }).getAttribute('aria-pressed'), 'true')
-    await card.getByText('开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口缩到托盘也照样开着，退出星芒才断开，下次打开星芒要再打开一次。', { exact: true }).waitFor()
+    const choice = row.getByRole('group', { name: '无消息自动关闭时间', exact: true })
+    assert.equal(await choice.getByRole('button', { name: '不自动关闭', exact: true }).getAttribute('aria-pressed'), 'true')
+    await card.getByText('开启期间电脑不会自动休眠，但合上笔记本盖子后仍会休眠。窗口缩到托盘后仍保持开启，退出星芒后才会断开，下次打开星芒需重新开启。', { exact: true }).waitFor()
     await choice.getByRole('button', { name: '12 小时', exact: true }).click()
     await row.getByText(neverHint, { exact: true }).waitFor({ state: 'detached' })
     assert.equal(await choice.getByRole('button', { name: '12 小时', exact: true }).getAttribute('aria-pressed'), 'true')
-    await card.getByText('开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口缩到托盘也照样开着，退出星芒才断开，下次打开星芒要再打开一次；闲着 12 小时也会自动断开。', { exact: true }).waitFor()
-    await choice.getByRole('button', { name: '不自动关', exact: true }).click()
+    await card.getByText('开启期间电脑不会自动休眠，但合上笔记本盖子后仍会休眠。窗口缩到托盘后仍保持开启，退出星芒后才会断开，下次打开星芒需重新开启；无消息 12 小时后也会自动断开。', { exact: true }).waitFor()
+    await choice.getByRole('button', { name: '不自动关闭', exact: true }).click()
     await row.getByText(neverHint, { exact: true }).waitFor()
     assert.deepEqual((await callsNamed(page, 'remote-idle-close')).map((call) => call.args), [12, null])
   } finally {
@@ -4189,35 +4243,80 @@ test('the phone remote card picks how long it may idle before closing, never by 
   }
 })
 
-// YF-7：飞书登录过、微信没登录时微信收成一行，点标题才摊开说明和警告。
-test('the phone remote card folds a channel that is not logged in while the other one is', async () => {
-  const page = await fixture('page=settings&remoteReady=1')
+// 0.2.25：连接方式两张卡是一组页签，点哪张下面摆哪张的设置；方向键也能换。飞书登录过就先摆飞书，微信那一大块和警告不摊着（YF-7 的用意）。
+test('the phone remote page switches between the two ways to connect and shows only the chosen one\'s settings', async () => {
+  const page = await fixture('page=remote&remoteReady=1')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
-    const weixin = card.getByTestId('settings-remote-weixin')
-    const toggle = weixin.getByRole('button', { name: '微信', exact: true })
-    assert.equal(await toggle.getAttribute('aria-expanded'), 'false')
-    await weixin.getByText('没打开', { exact: true }).waitFor()
-    assert.equal(await weixin.getByTestId('settings-remote-weixin-warning').count(), 0)
-    assert.equal(await weixin.getByText('实验功能', { exact: true }).count(), 0)
-    await toggle.click()
-    await weixin.getByTestId('settings-remote-weixin-warning').getByText('实验功能，随时可能断', { exact: true }).waitFor()
-    assert.equal(await toggle.getAttribute('aria-expanded'), 'true')
-    await toggle.click()
-    await weixin.getByTestId('settings-remote-weixin-warning').waitFor({ state: 'detached' })
-    // 飞书登录过，不收。
-    assert.equal(await card.getByTestId('settings-remote-feishu').getByRole('button', { name: '飞书', exact: true }).count(), 0)
+    const feishuTab = card.getByTestId('remote-method-feishu')
+    const weixinTab = card.getByTestId('remote-method-weixin')
+    assert.equal(await feishuTab.getAttribute('aria-selected'), 'true')
+    await weixinTab.getByText('未开启', { exact: true }).waitFor()
+    await card.getByRole('heading', { name: '飞书设置', exact: true }).waitFor()
+    assert.equal(await card.getByTestId('settings-remote-weixin').count(), 0)
+    await weixinTab.click()
+    await card.getByTestId('settings-remote-weixin').getByTestId('settings-remote-weixin-warning').waitFor()
+    await card.getByRole('heading', { name: '微信设置', exact: true }).waitFor()
+    assert.equal(await card.getByTestId('settings-remote-feishu').count(), 0)
+    assert.equal(await weixinTab.getAttribute('aria-selected'), 'true')
+    assert.equal(await feishuTab.getAttribute('aria-selected'), 'false')
+    await weixinTab.press('ArrowLeft')
+    await card.getByTestId('settings-remote-feishu').waitFor()
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-testid')), 'remote-method-feishu')
+    // 「通用设置」一直在下面，不跟着换。
+    await page.getByTestId('remote-shared').getByTestId('settings-remote-workspace-row').waitFor()
   } finally {
     await page.close()
   }
 })
 
-// YF-13：「最近一次」只说几点发来的、做到哪儿了，不摆手机上的原话；「都拒绝」「停下这一轮」交给主进程，「在记录里看」去记录页。
-test('the phone remote card shows the last phone request and can stop it, decline what waits and open the records', async () => {
-  const page = await fixture('page=settings&remoteReady=1')
+// 「手机端使用的模型」：选项跟首页 Codex「配置」里那张单一样，第一项与电脑端相同；选了就交给主进程记下。
+test('the phone remote page picks the model for the phone from the Codex list and can follow the computer again', async () => {
+  const page = await fixture('page=remote&remoteReady=1')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const row = page.getByTestId('settings-remote-model')
+    const select = row.getByRole('combobox', { name: '手机端使用的模型', exact: true })
+    await row.getByText('如需更换，请前往首页 Codex 的「配置」修改，电脑端与手机端同时生效。', { exact: true }).waitFor()
+    await page.waitForFunction(() => document.querySelectorAll('[data-testid="settings-remote-model-choice"] option').length === 4)
+    assert.deepEqual(await select.locator('option').allInnerTexts(), ['与电脑端相同（fixture-model）', 'fixture-model', 'gpt-6.3-sol', 'gpt-6.1-mini'])
+    await select.selectOption('gpt-6.3-sol')
+    await row.getByText('仅手机端使用此模型，电脑端的 Codex 不受影响。', { exact: true }).waitFor()
+    assert.equal(await select.inputValue(), 'gpt-6.3-sol')
+    await select.selectOption('')
+    await row.getByText('如需更换，请前往首页 Codex 的「配置」修改，电脑端与手机端同时生效。', { exact: true }).waitFor()
+    assert.deepEqual((await callsNamed(page, 'remote-model')).map((call) => call.args), ['gpt-6.3-sol', null])
+    assert.equal(await page.getByRole('alert').count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+// 权限两档（yoyo 2026-11-22 亲手打字同意）：缺省「默认」，点「只读」说明跟着换、交给主进程记下，再点回「默认」。
+test('the phone remote page picks the default or read-only permission level', async () => {
+  const page = await fixture('page=remote&remoteReady=1')
+  try {
+    const row = page.getByTestId('settings-remote-permission')
+    const defaultHint = '与电脑端 Codex 一致：在所选文件夹内查看、修改文件和执行命令无需确认；联网或修改该文件夹以外的内容前，将先在手机上征求您的同意。'
+    const readOnlyHint = '仅查看：查看文件、获取本机信息无需确认；修改文件、执行会产生改动的命令或联网前，均将先在手机上征求您的同意。'
+    await row.getByText(defaultHint, { exact: true }).waitFor()
+    const choice = row.getByRole('group', { name: '权限', exact: true })
+    assert.equal(await choice.getByRole('button', { name: '默认', exact: true }).getAttribute('aria-pressed'), 'true')
+    await choice.getByRole('button', { name: '只读', exact: true }).click()
+    await row.getByText(readOnlyHint, { exact: true }).waitFor()
+    assert.equal(await choice.getByRole('button', { name: '只读', exact: true }).getAttribute('aria-pressed'), 'true')
+    await choice.getByRole('button', { name: '默认', exact: true }).click()
+    await row.getByText(defaultHint, { exact: true }).waitFor()
+    assert.deepEqual((await callsNamed(page, 'remote-permission')).map((call) => call.args), ['readOnly', 'default'])
+    assert.equal(await page.getByRole('alert').count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+// YF-13：「最近一次」只说几点发来的、做到哪儿了，不摆手机上的原话；「全部拒绝」「停止本轮」交给主进程，「查看记录」去记录页。
+test('the phone remote card shows the last phone request and can stop it, decline what waits and open the records', async () => {
+  const page = await fixture('page=remote&remoteReady=1')
+  try {
     const card = page.getByTestId('settings-remote-card')
     await page.evaluate(() => window.remoteHarness.phoneRequest({ minutesAgo: 3, state: 'running', pendingApprovals: 2 }))
     // 遥控没开着时不出这一行。
@@ -4226,17 +4325,17 @@ test('the phone remote card shows the last phone request and can stop it, declin
     const row = card.getByTestId('settings-remote-last-request')
     await row.getByText('最近一次', { exact: true }).waitFor()
     // 刚过零点那几分钟，几分钟前发来的算昨天，前面带上日期（「11 月 11 日 23:57」）。
-    assert.match(await row.getByTestId('settings-remote-last-request-text').innerText(), /^(?:\d{1,2} 月 \d{1,2} 日 )?\d\d:\d\d 发来一条，正在处理，已经 3 分钟$/)
-    await row.getByText('等你同意 2 条，要在手机上回。', { exact: true }).waitFor()
-    await row.getByRole('button', { name: '都拒绝', exact: true }).click()
+    assert.match(await row.getByTestId('settings-remote-last-request-text').innerText(), /^(?:\d{1,2} 月 \d{1,2} 日 )?\d\d:\d\d 收到指令，正在处理，已用时 3 分钟$/)
+    await row.getByText('待确认 2 条，请在手机上回复。', { exact: true }).waitFor()
+    await row.getByRole('button', { name: '全部拒绝', exact: true }).click()
     await row.getByTestId('settings-remote-last-request-waiting').waitFor({ state: 'detached' })
-    assert.equal(await row.getByRole('button', { name: '都拒绝', exact: true }).count(), 0)
-    await row.getByRole('button', { name: '停下这一轮', exact: true }).click()
-    await page.waitForFunction(() => /那一条停下了$/.test(document.querySelector('[data-testid="settings-remote-last-request-text"]')?.textContent ?? ''))
-    assert.equal(await row.getByRole('button', { name: '停下这一轮', exact: true }).count(), 0)
-    await page.evaluate(() => window.remoteHarness.phoneRequest({ minutesAgo: 20, state: 'failed', reason: '余额不够了，充值后再发一次。' }))
-    await page.waitForFunction(() => /^(?:\d{1,2} 月 \d{1,2} 日 )?\d\d:\d\d 那一条没做完：余额不够了，充值后再发一次。$/.test(document.querySelector('[data-testid="settings-remote-last-request-text"]')?.textContent ?? ''))
-    await row.getByRole('button', { name: '在记录里看', exact: true }).click()
+    assert.equal(await row.getByRole('button', { name: '全部拒绝', exact: true }).count(), 0)
+    await row.getByRole('button', { name: '停止本轮', exact: true }).click()
+    await page.waitForFunction(() => /已停止$/.test(document.querySelector('[data-testid="settings-remote-last-request-text"]')?.textContent ?? ''))
+    assert.equal(await row.getByRole('button', { name: '停止本轮', exact: true }).count(), 0)
+    await page.evaluate(() => window.remoteHarness.phoneRequest({ minutesAgo: 20, state: 'failed', reason: '余额不足，请充值后重新发送。' }))
+    await page.waitForFunction(() => /^(?:\d{1,2} 月 \d{1,2} 日 )?\d\d:\d\d 未完成：余额不足，请充值后重新发送。$/.test(document.querySelector('[data-testid="settings-remote-last-request-text"]')?.textContent ?? ''))
+    await row.getByRole('button', { name: '查看记录', exact: true }).click()
     assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'sessions')
     assert.deepEqual((await calls(page)).filter((call) => call.name === 'remote-decline-approvals' || call.name === 'remote-stop-turn').map((call) => call.name), ['remote-decline-approvals', 'remote-stop-turn'])
   } finally {
@@ -4244,19 +4343,18 @@ test('the phone remote card shows the last phone request and can stop it, declin
   }
 })
 
-// YF-12：遥控开着、余额不到 $1 时提醒出门前先充值，照样让开；点「去充值」到个人中心的充值。
+// YF-12：遥控开着、余额不到 $1 时提醒出门前先充值，照样让开；点「前往充值」到个人中心的充值。
 test('the phone remote card warns about a low balance once the remote is on and leads to the top-up', async () => {
-  const page = await fixture('page=settings&remoteReady=1&remoteLowBalance=1')
+  const page = await fixture('page=remote&remoteReady=1&remoteLowBalance=1')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
     await card.getByTestId('settings-remote-workspace-row').waitFor()
     assert.equal(await card.getByTestId('settings-remote-low-balance').count(), 0)
     await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).click()
     const notice = card.getByTestId('settings-remote-low-balance')
-    await notice.getByText('余额只剩 $0.80', { exact: true }).waitFor()
-    await notice.getByText('人不在电脑前时充不了值，建议先充一点再出门。', { exact: true }).waitFor()
-    await notice.getByRole('button', { name: '去充值', exact: true }).click()
+    await notice.getByText('余额仅剩 $0.80', { exact: true }).waitFor()
+    await notice.getByText('离开电脑后无法充值，建议外出前预先充值。', { exact: true }).waitFor()
+    await notice.getByRole('button', { name: '前往充值', exact: true }).click()
     assert.deepEqual((await callsNamed(page, 'navigate')).at(-1).args, ['account', 'recharge'])
   } finally {
     await page.close()
@@ -4264,11 +4362,10 @@ test('the phone remote card warns about a low balance once the remote is on and 
 })
 
 test('the phone remote card says why it cannot be turned on while the manager runs as administrator', async () => {
-  const page = await fixture('page=settings&remoteElevated=1&remoteReady=1')
+  const page = await fixture('page=remote&remoteElevated=1&remoteReady=1')
   try {
-    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
     const card = page.getByTestId('settings-remote-card')
-    await card.getByTestId('settings-remote-unavailable').getByText('星芒正以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒。').waitFor()
+    await card.getByTestId('settings-remote-unavailable').getByText('星芒正以管理员身份运行，为保障安全，此时无法开启遥控。请以普通方式重新打开星芒。').waitFor()
     assert.equal(await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).isDisabled(), true)
     assert.equal(await card.getByTestId('settings-remote-workspace').isDisabled(), true)
     assert.equal(await card.getByTestId('settings-remote-feishu-edit').isDisabled(), true)
@@ -4277,14 +4374,27 @@ test('the phone remote card says why it cannot be turned on while the manager ru
   }
 })
 
-test('searching the settings for Feishu finds the phone remote card', async () => {
+test('the phone remote page opens on a Windows account that is an administrator by itself, with a reminder under the page head', async () => {
+  const page = await fixture('page=remote&remoteAdminAccount=1&remoteReady=1')
+  try {
+    const card = page.getByTestId('settings-remote-card')
+    await card.getByTestId('settings-remote-admin-account').getByText('本机登录的 Windows 账号自带管理员权限，Codex 在此修改文件、执行命令时同样具有管理员权限。在手机上回复「同意」前，请确认其将执行的操作。').waitFor()
+    assert.equal(await card.getByTestId('settings-remote-unavailable').count(), 0)
+    assert.equal(await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).isDisabled(), false)
+    assert.equal(await card.getByTestId('settings-remote-workspace').isDisabled(), false)
+  } finally {
+    await page.close()
+  }
+})
+
+// 0.2.25 手机遥控挪到了左侧栏：设置里搜「飞书」不再落到一张卡上（顶部搜索落到那一页，见 command-search.test.ts）。
+test('searching the settings for Feishu no longer finds a phone remote card there', async () => {
   const page = await fixture('page=settings')
   try {
     await page.getByTestId('settings-search').fill('飞书')
-    const results = page.getByTestId('settings-search-results')
-    await results.waitFor()
-    assert.deepEqual(await results.locator('[data-anchor]').evaluateAll((rows) => rows.map((row) => row.dataset.anchor)), ['codex-remote'])
-    await results.getByTestId('settings-remote-card').waitFor()
+    await page.getByTestId('settings-search-empty').waitFor()
+    assert.equal(await page.getByTestId('settings-remote-card').count(), 0)
+    assert.equal(await page.locator('[data-anchor="codex-remote"]').count(), 0)
   } finally {
     await page.close()
   }
@@ -4390,7 +4500,7 @@ test('native preference errors retain the saved switch state', async () => {
 async function openAccountSwitcher(page) {
   await page.getByTestId('account-switch').click()
   const dialog = page.getByRole('dialog', { name: '切换账号', exact: true })
-  await dialog.getByText('切换后，下面勾上的工具会一起换成新账号的密钥。', { exact: true }).waitFor()
+  await dialog.getByText('切换后，下方勾选的工具将同步更换为新账号的密钥。', { exact: true }).waitFor()
   return dialog
 }
 
@@ -4437,7 +4547,7 @@ test('explicit CLI sync retains partial failure details after account refresh', 
       .getByRole('button', { name: '切换', exact: true, disabled: false })
       .click()
     await page
-      .getByText('账号已切换，部分工具没有同步', { exact: true })
+      .getByText('账号已切换，部分工具未同步', { exact: true })
       .waitFor()
     await page
       .getByText('Grok CLI：Grok 配置文件正在使用', { exact: true })
@@ -4472,7 +4582,7 @@ test('failed saved-account verification never writes selected CLI config', async
       .getByRole('button', { name: '切换', exact: true, disabled: false })
       .click()
     await page
-      .getByText('这个保存的账号登录已失效，当前账号没有变化。', { exact: false })
+      .getByText('该已保存账号的登录已失效，当前账号未变化。', { exact: false })
       .first()
       .waitFor()
     // 全面检测 Q12：不能套上「登录已过期」的标题，那读起来像当前账号掉线了。
@@ -4485,7 +4595,7 @@ test('failed saved-account verification never writes selected CLI config', async
       await page.getByTestId('account-sync-claude').isChecked(),
       true,
     )
-    await page.getByRole('button', { name: '重新登录这个账号', exact: true }).click()
+    await page.getByRole('button', { name: '重新登录该账号', exact: true }).click()
     assert.equal((await calls(page)).some((call) => call.name === 'login'), true)
   } finally {
     await page.close()
@@ -4547,7 +4657,7 @@ test('desktop notifications start on, the master switch gates test notifications
     await testNotice.click()
     // 系统里把星芒的通知关了也照样「发得出去」，所以不说「已发送」（决定单 D68）；旁边那颗按钮打开了，那句才收起。
     const handedOff = page.locator('.xm-toast', {
-      hasText: '已经交给系统了。没看到通知的话，去系统的通知设置里看看星芒有没有被关掉。',
+      hasText: '测试通知已提交给系统。如未收到，请在系统通知设置中确认星芒的通知已开启。',
     })
     await handedOff
       .getByRole('button', { name: '打开系统通知设置', exact: true })
@@ -4582,7 +4692,7 @@ test('desktop notifications start on, the master switch gates test notifications
     )
     await page
       .getByText(
-        '每天最多发一次版本、系统、装了哪些工具、安装和更新是否成功；不含账号、密钥、文件路径和对话内容，也没有电脑编号',
+        '每天最多发送一次版本、操作系统、已安装工具及安装更新结果；不包含账号、密钥、文件路径、对话内容及设备标识',
         { exact: true },
       )
       .waitFor()
@@ -4609,15 +4719,15 @@ test('desktop notifications start on, the master switch gates test notifications
   }
 })
 
-// X-3：「搬到新电脑」以前带走「自动发送错误报告：关」，却不带「匿名使用统计：关」。新电脑没动过的直接关上；
-// 这台关过、文件里是开的先问，点「保留这台电脑的」照旧关着，只有点了「换成文件里的」才打开。
+// X-3：「迁移到新电脑」以前带走「自动发送错误报告：关」，却不带「匿名使用统计：关」。新电脑没动过的直接关上；
+// 这台关过、文件里是开的先问，点「保留本机设置」照旧关着，只有点了「使用文件中的设置」才打开。
 test('importing a moved computer carries the usage-stats switch and asks before turning it back on', async () => {
   const privacyCalls = async (page) => (await calls(page)).filter((call) => call.name === 'platform-privacy').map((call) => call.args)
   let page = await fixture('page=settings&system=1&transfer=usage-off')
   try {
     await page.getByRole('tab', { name: '备份迁移', exact: true }).click()
     await page.getByTestId('settings-transfer-import').click()
-    await waitForToast(page, '导入了你的设置。')
+    await waitForToast(page, '已导入设置。')
     assert.deepEqual(await privacyCalls(page), [{ kind: 'anonymousUsage', enabled: false }])
     assert.equal((await calls(page)).filter((call) => call.name === 'settings').length, 0)
     await page.getByRole('tab', { name: '隐私数据', exact: true }).click()
@@ -4628,16 +4738,16 @@ test('importing a moved computer carries the usage-stats switch and asks before 
   page = await fixture('page=settings&system=1&usageOff=1&transfer=usage-on')
   try {
     await page.getByRole('tab', { name: '备份迁移', exact: true }).click()
-    const ask = page.getByText('这台电脑上你已经改过这几项，和文件里的不一样：匿名使用统计。', { exact: true })
+    const ask = page.getByText('以下设置在本机已修改，与文件中的不同：匿名使用统计。', { exact: true })
     await page.getByTestId('settings-transfer-import').click()
     await ask.waitFor()
     await page.getByTestId('settings-transfer-keep').click()
-    await waitForToast(page, '文件里的设置和这台电脑上的一样，没有要改的。')
+    await waitForToast(page, '文件中的设置与本机一致，无需修改。')
     assert.deepEqual(await privacyCalls(page), [])
     await page.getByTestId('settings-transfer-import').click()
     await ask.waitFor()
     await page.getByTestId('settings-transfer-overwrite').click()
-    await waitForToast(page, '导入了你的设置。')
+    await waitForToast(page, '已导入设置。')
     assert.deepEqual(await privacyCalls(page), [{ kind: 'anonymousUsage', enabled: true }])
     await page.getByRole('tab', { name: '隐私数据', exact: true }).click()
     assert.equal(await page.getByRole('switch', { name: '匿名使用统计偏好', exact: true }).getAttribute('aria-checked'), 'true')
@@ -4646,13 +4756,13 @@ test('importing a moved computer carries the usage-stats switch and asks before 
   }
 })
 
-// D24：导入「搬到新电脑」的文件，主题当下变了色，重开又变回原来的：只写了 settings.json，开机看的系统界面设置里那份主题偏好没动。
+// D24：导入「迁移到新电脑」的文件，主题当下变了色，重开又变回原来的：只写了 settings.json，开机看的系统界面设置里那份主题偏好没动。
 test('importing a moved computer keeps its theme after a restart by saving the system theme preference too', async () => {
   const page = await fixture('page=settings&system=1&transfer=theme-dark')
   try {
     await page.getByRole('tab', { name: '备份迁移', exact: true }).click()
     await page.getByTestId('settings-transfer-import').click()
-    await waitForToast(page, '导入了你的设置。')
+    await waitForToast(page, '已导入设置。')
     const recorded = await calls(page)
     assert.deepEqual(recorded.filter((call) => call.name === 'settings').map((call) => call.args), [{ version: 2, theme: 'dark' }])
     assert.deepEqual(recorded.filter((call) => call.name === 'platform-theme').map((call) => call.args), ['dark'])
@@ -4667,13 +4777,13 @@ test('a system notification settings page that will not open keeps the test noti
     await page.getByRole('tab', { name: '消息通知', exact: true }).click()
     await page.getByRole('button', { name: '发测试通知', exact: true }).click()
     const handedOff = page.locator('.xm-toast', {
-      hasText: '已经交给系统了。没看到通知的话，去系统的通知设置里看看星芒有没有被关掉。',
+      hasText: '测试通知已提交给系统。如未收到，请在系统通知设置中确认星芒的通知已开启。',
     })
     await handedOff
       .getByRole('button', { name: '打开系统通知设置', exact: true })
       .click()
     await page
-      .locator('.xm-toast', { hasText: '没能打开系统通知设置，请在系统设置里找「通知」。' })
+      .locator('.xm-toast', { hasText: '无法打开系统通知设置，请在系统设置中找到「通知」。' })
       .waitFor()
     assert.equal(await handedOff.count(), 1)
     assert.equal(
@@ -4762,7 +4872,7 @@ test('cancelling the password dialog drops the typed secrets and Esc confirms be
     await dialog.getByLabel('原密码', { exact: true }).fill('old-secret')
     await dialog.getByLabel('新密码', { exact: true }).fill('new-secret-value')
     await page.keyboard.press('Escape')
-    await dialog.getByText('有修改还没保存，关掉会丢掉这些修改', { exact: true }).waitFor()
+    await dialog.getByText('有未保存的修改，关闭后修改将丢失', { exact: true }).waitFor()
     await dialog.getByRole('button', { name: '继续编辑', exact: true }).click()
     assert.equal(
       await dialog.getByLabel('原密码', { exact: true }).inputValue(),
@@ -4775,10 +4885,306 @@ test('cancelling the password dialog drops the typed secrets and Esc confirms be
       await Promise.all([
         reopened.getByLabel('原密码', { exact: true }).inputValue(),
         reopened.getByLabel('新密码', { exact: true }).inputValue(),
-        reopened.getByLabel('再输一次', { exact: true }).inputValue(),
+        reopened.getByLabel('再次输入', { exact: true }).inputValue(),
       ]),
       ['', '', ''],
     )
+  } finally {
+    await page.close()
+  }
+})
+
+// 0.2.25 扩展合并方案第二版：精选、外接工具、技能、插件合成一页「插件」。
+const hub = 'page=extensions&installedProviders=claude,codex'
+
+test('the plugins page groups the recommended entries and folds each official group at four', async () => {
+  const page = await fixture(hub)
+  try {
+    const list = page.getByTestId('hub-plugins')
+    for (const group of ['common', 'coding', 'claude', 'codex']) await list.getByTestId(`hub-section-${group}`).waitFor()
+    // 逐步思考挪到「写代码」；官方插件分在各自那一组，只能装进那一家。
+    await list.getByTestId('hub-section-coding').getByTestId('hub-row-mcp-sequential-thinking').waitFor()
+    const claude = list.getByTestId('hub-section-claude')
+    await expect(claude.getByText('Anthropic 官方市场，只能装进 Claude', { exact: true })).toBeVisible()
+    assert.equal(await claude.locator('.v2-hub-row').count(), 4)
+    const toggle = claude.getByTestId('hub-section-claude-toggle')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await toggle.click()
+    assert.equal(await claude.locator('.v2-hub-row').count(), 5)
+    await expect(list.getByTestId('hub-section-codex').getByText('OpenAI 插件目录，只能装进 GPT', { exact: true })).toBeVisible()
+    // 读屏读整行那一句；装上了的有「…」，还能装的有「+」。
+    await expect(list.getByTestId('hub-open-mcp-browser')).toHaveAttribute('aria-label', '浏览器，能装到：Claude、GPT、Grok；已装到：Claude、GPT')
+    await list.getByTestId('hub-menu-mcp-browser').waitFor()
+    await list.getByTestId('hub-add-mcp-memory').waitFor()
+    // 左边「已安装」：连不上的那条有橙点，鼠标停上去说是哪种。
+    const installed = page.getByTestId('hub-installed')
+    await expect(page.locator('.v2-hub-side-label')).toContainText('5')
+    await expect(installed.getByRole('button', { name: /测试连接/ }).locator('.v2-hub-warn')).toHaveAttribute('title', '无法连接')
+    await expect(page.getByText('以下均为第三方软件，由各自作者维护和更新，不随星芒发布。安装前请确认其所需权限。', { exact: true }).first()).toBeVisible()
+    // 「自己加的」只放自己加的那条连接。
+    await page.getByTestId('hub-tab-custom').click()
+    await list.getByTestId('hub-row-mcp-test-extension').waitFor()
+    assert.equal(await list.locator('.v2-hub-row').count(), 1)
+  } finally {
+    await page.close()
+  }
+})
+
+test('installing from the plugins page puts a recommended connection into every family picked', async () => {
+  const page = await fixture(`${hub}&extensionOk`)
+  try {
+    await page.getByTestId('hub-add-mcp-sequential-thinking').click()
+    const dialog = page.getByRole('dialog', { name: '安装「逐步思考」', exact: true })
+    const tools = dialog.getByRole('group', { name: '装到哪里', exact: true })
+    await expect(tools.getByTestId('hub-install-tools-claude')).toHaveAttribute('aria-pressed', 'true')
+    await expect(tools.getByTestId('hub-install-tools-codex')).toHaveAttribute('aria-pressed', 'true')
+    await expect(tools.getByTestId('hub-install-tools-grok')).toBeDisabled()
+    await expect(tools.getByTestId('hub-install-tools-grok')).toContainText('本机尚未安装 Grok CLI')
+    await tools.getByTestId('hub-install-tools-grok-home').waitFor()
+    const submit = dialog.getByTestId('hub-install-submit')
+    await expect(submit).toHaveText('装到 2 个')
+    await tools.getByTestId('hub-install-tools-codex').click()
+    await expect(submit).toHaveText('安装')
+    await tools.getByTestId('hub-install-tools-codex').click()
+    await submit.click()
+    await waitForToast(page, '已安装「逐步思考」，给 Claude Code、Codex CLI 使用，下次打开工具时生效')
+    assert.deepEqual((await callsNamed(page, 'extension')).map((call) => [call.args.provider, call.args.kind, call.args.action, call.args.id]), [['claude', 'mcp', 'install', 'sequential-thinking']])
+    assert.deepEqual((await callsNamed(page, 'add-mcp')).map((call) => call.args.name), ['sequential-thinking'])
+  } finally {
+    await page.close()
+  }
+})
+
+test('a GPT official plugin installs only into GPT and the Claude row says why not', async () => {
+  const page = await fixture(`${hub}&extensionOk`)
+  try {
+    await page.getByTestId('hub-add-plugin-linear-openai-api-curated').click()
+    const dialog = page.getByRole('dialog', { name: '安装「Linear」', exact: true })
+    await expect(dialog.getByTestId('hub-install-tools-claude')).toBeDisabled()
+    await expect(dialog.getByTestId('hub-install-tools-claude')).toContainText('插件各家格式不通用，这一条只有 GPT 版')
+    await dialog.getByTestId('hub-install-submit').click()
+    await waitForToast(page, '已安装「Linear」，给 Codex CLI 使用，下次打开工具时生效')
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, { provider: 'codex', kind: 'plugin', action: 'install', id: 'linear@openai-api-curated' })
+  } finally {
+    await page.close()
+  }
+})
+
+test('an entry opens to where it is installed and what it does, and comes out of every tool at once', async () => {
+  const page = await fixture(`${hub}&extensionOk`)
+  try {
+    await page.getByTestId('hub-installed').getByRole('button', { name: /本地文件/ }).click()
+    const detail = page.getByTestId('hub-detail')
+    await expect(detail.getByRole('heading', { level: 2 })).toHaveText('本地文件')
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('已安装')
+    await expect(detail.getByTestId('hub-where-codex')).toContainText('未安装')
+    await detail.getByTestId('hub-where-add-codex').waitFor()
+    await expect(detail.getByTestId('hub-where-grok')).toContainText('本机尚未安装 Grok CLI')
+    await expect(detail.getByTestId('hub-detail-add')).toHaveText('装到 GPT')
+    await expect(detail.getByTestId('hub-detail-about')).toContainText('MCP 服务器')
+    await detail.getByTestId('hub-remove-all').click()
+    const confirm = page.getByRole('dialog', { name: '从所有工具里移除「本地文件」？', exact: true })
+    await expect(confirm).toContainText('将同时从 Claude Code 中移除。如需使用，可重新安装。')
+    await confirm.getByTestId('hub-remove-confirm').click()
+    await waitForToast(page, '已从 Claude Code 移除「本地文件」')
+    assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, { provider: 'claude', kind: 'mcp', action: 'uninstall', id: 'files', scope: 'user' })
+    // 推荐里的那一条还在，详情照旧开着，只是哪家都没装了；左边清单里没有它了。
+    await expect(detail.getByTestId('hub-where-claude')).toContainText('未安装')
+    assert.equal(await page.getByTestId('hub-installed').getByRole('button', { name: /本地文件/ }).count(), 0)
+    await detail.getByTestId('hub-back').click()
+    await page.getByTestId('hub-section-common').waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('the plugins page searches across groups, filters by family and says when nothing matches', async () => {
+  const page = await fixture(hub)
+  try {
+    const search = page.getByTestId('hub-search')
+    await search.fill('浏览器')
+    await page.getByTestId('hub-row-mcp-browser').waitFor()
+    assert.equal(await page.locator('.v2-hub-row').count(), 1)
+    await search.fill('插件 Stripe')
+    await page.getByTestId('hub-row-plugin-stripe-claude-plugins-official').waitFor()
+    await search.fill('找不到的东西')
+    await page.getByTestId('hub-search-empty').waitFor()
+    await page.getByTestId('hub-clear').click()
+    await page.getByTestId('hub-section-common').waitFor()
+    // 装到：GPT 时 Claude 官方那一组不放，没装的 Grok 写「还没装」。
+    await page.getByTestId('hub-filter').click()
+    await expect(page.getByTestId('hub-filter-grok')).toContainText('未安装')
+    await page.getByTestId('hub-filter-codex').click()
+    await expect(page.getByTestId('hub-filter')).toHaveText('装到：GPT')
+    assert.equal(await page.getByTestId('hub-section-claude').count(), 0)
+    await page.getByTestId('hub-section-codex').waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
+test('without the Codex CLI the GPT official group asks for it and offers the home page', async () => {
+  const page = await fixture('page=extensions&installedProviders=claude')
+  try {
+    await expect(page.getByTestId('hub-codex-missing')).toHaveText('安装 Codex CLI 后可查看 GPT 官方插件。前往首页安装')
+    await page.getByTestId('hub-codex-open-home').waitFor()
+    assert.equal(await page.getByTestId('hub-row-plugin-sentry-openai-api-curated').count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('a skill can come from a zip picked in the system window, then goes into each ticked tool', async () => {
+  const page = await fixture(`${hub}&extensionOk=1`)
+  const directory = 'C:/Users/test/AppData/Roaming/xingmang/skill-archives/a1/pdf-helper'
+  try {
+    await page.getByTestId('hub-nav-skills').click()
+    await page.getByTestId('hub-add').click()
+    await page.getByTestId('hub-add-skill-archive').click()
+    await expect(page.getByTestId('hub-skill-import')).toContainText('从压缩包导入')
+    // 还没选压缩包时不能点「添加」，也没有能手填路径的框。
+    assert.equal(await page.getByTestId('hub-skill-import-submit').isDisabled(), true)
+    assert.equal(await page.getByTestId('hub-skill-import-source').count(), 0)
+    await page.getByTestId('hub-skill-archive-choose').click()
+    await expect(page.getByTestId('hub-skill-archive-name')).toHaveValue('pdf-helper.zip')
+    await page.getByTestId('hub-skill-import-submit').click()
+    await page.getByText(/^已添加「pdf-helper」，给 .+ 使用，下次打开工具时生效$/).waitFor()
+    // 导入完表单关掉，解开的那份随即让主进程删掉，排在各家导入之后。
+    await page.waitForFunction(() => {
+      const recorded = JSON.parse(document.documentElement.dataset.calls || '[]').map((call) => call.name)
+      return recorded.lastIndexOf('discard-skill-archives') > recorded.lastIndexOf('extension')
+    })
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.find((call) => call.name === 'import-skill').args, { sourcePath: directory, scope: 'user' })
+    assert.deepEqual(
+      recorded.filter((call) => call.name === 'extension').map((call) => call.args),
+      [{ provider: 'claude', kind: 'skill', action: 'install', source: directory, scope: 'user' }],
+    )
+  } finally {
+    await page.close()
+  }
+})
+
+test('an unpacked zip stays while the form is open after a failed import and is discarded once the form closes', async () => {
+  const page = await fixture(hub)
+  const namesAfterChoosing = async () => {
+    const names = (await calls(page)).map((call) => call.name)
+    return names.slice(names.lastIndexOf('choose-skill-archive') + 1)
+  }
+  try {
+    await page.getByTestId('hub-nav-skills').click()
+    await page.getByTestId('hub-add').click()
+    await page.getByTestId('hub-add-skill-archive').click()
+    await page.getByTestId('hub-skill-archive-choose').click()
+    await expect(page.getByTestId('hub-skill-archive-name')).toHaveValue('pdf-helper.zip')
+    await page.getByTestId('hub-skill-import-submit').click()
+    await page.getByTestId('hub-skill-import').getByText('扩展操作失败，已有配置保留').first().waitFor()
+    // 失败了表单还开着，客户可以直接再点一次「添加」，解开的那份不能先删。
+    assert.equal(await page.getByTestId('hub-skill-import-submit').isDisabled(), false)
+    assert.equal((await namesAfterChoosing()).includes('discard-skill-archives'), false)
+    await page.getByTestId('hub-skill-import').getByRole('button', { name: '取消' }).click()
+    await page.getByTestId('hub-skill-import').waitFor({ state: 'detached' })
+    await page.waitForFunction(() => {
+      const names = JSON.parse(document.documentElement.dataset.calls || '[]').map((call) => call.name)
+      return names.lastIndexOf('discard-skill-archives') > names.lastIndexOf('choose-skill-archive')
+    })
+  } finally {
+    await page.close()
+  }
+})
+
+test('a zip with no skill in it says so inside the import form', async () => {
+  const page = await fixture(`${hub}&skillArchive=empty`)
+  try {
+    await page.getByTestId('hub-nav-skills').click()
+    await page.getByTestId('hub-add').click()
+    await page.getByTestId('hub-add-skill-archive').click()
+    await page.getByTestId('hub-skill-archive-choose').click()
+    await page.getByTestId('hub-skill-import').getByText('该压缩包中未找到技能（需包含一个 SKILL.md 文件）。').waitFor()
+    await expect(page.getByTestId('hub-skill-archive-name')).toHaveValue('')
+    assert.equal(await page.getByTestId('hub-skill-import-submit').isDisabled(), true)
+  } finally {
+    await page.close()
+  }
+})
+
+test('the skills view lists skills on this computer and sends OpenAI skills to the GPT official group', async () => {
+  const page = await fixture(hub)
+  try {
+    await page.getByTestId('hub-nav-skills').click()
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('技能')
+    await page.getByTestId('hub-section-skill').getByTestId('hub-row-skill-测试技能').waitFor()
+    await page.getByTestId('hub-add').click()
+    await page.getByTestId('hub-add-skill').waitFor()
+    await page.keyboard.press('Escape')
+    await page.getByTestId('skills-codex-plugins').click()
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('插件')
+    await expect(page.getByTestId('hub-section-codex-toggle')).toHaveAttribute('aria-expanded', 'true')
+  } finally {
+    await page.close()
+  }
+})
+
+// 接对话（yoyo 2026-11-22 北京 13:15「接对话字改」）：「通用设置」里「手机端的对话」，点「选择对话」弹出本机 Codex 最近的对话，
+// 第一项是新对话；选好点「确定」交给主进程，那一行跟着换成「继续「…」（文件夹，时间）」，干活的文件夹也换过去。
+test('the phone remote page continues an existing Codex conversation or goes back to a new one', async () => {
+  const page = await fixture('page=remote&remoteReady=1')
+  try {
+    const row = page.getByTestId('settings-remote-conversation-row')
+    await row.getByText('新对话，将在上方文件夹中开始。', { exact: true }).waitFor()
+    await page.getByTestId('settings-remote-conversation').click()
+    const dialog = page.getByTestId('settings-remote-conversation-dialog')
+    await dialog.getByText('选择手机端的对话', { exact: true }).waitFor()
+    await dialog.getByText('以下为本机 Codex 最近的对话，包括 Codex 桌面端和 Codex CLI 中的对话。选定后，手机端发送的消息将进入该对话，工作文件夹也将切换为该对话所在的文件夹。', { exact: true }).waitFor()
+    const list = dialog.getByRole('radiogroup', { name: '选择手机端的对话' })
+    await list.getByRole('radio', { name: /整理接口文档/ }).waitFor()
+    assert.deepEqual(await list.getByRole('radio').allTextContents(), [
+      '新对话在上方选择的文件夹中开始新对话。',
+      '修复登录页报错~/projects/demo · 11-21 18:30',
+      '整理接口文档~/projects/api · 11-20 09:12',
+    ])
+    assert.equal(await list.getByRole('radio', { name: /^新对话/ }).getAttribute('aria-checked'), 'true')
+    await dialog.getByText('继续已有对话时，如对话原有权限超出遥控允许的范围，将调整为「默认」，在电脑端继续时也将保持。遥控的规则（不发送密钥和密码、回复简洁等）也将保留在该对话中。请勿在电脑端和手机端同时向同一对话发送消息。', { exact: true }).waitFor()
+    await list.getByRole('radio', { name: /整理接口文档/ }).click()
+    await dialog.getByRole('button', { name: '确定', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
+    await row.getByText('继续「整理接口文档」（~/projects/api，11-20 09:12）', { exact: true }).waitFor()
+    await page.getByTestId('settings-remote-workspace-row').getByText('~/projects/api', { exact: true }).waitFor()
+    await page.getByTestId('settings-remote-conversation').click()
+    await list.getByRole('radio', { name: /^新对话/ }).click()
+    await dialog.getByRole('button', { name: '确定', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
+    await row.getByText('新对话，将在上方文件夹中开始。', { exact: true }).waitFor()
+    assert.deepEqual((await callsNamed(page, 'remote-conversation')).map((call) => call.args), ['01a20101-8c39-7c23-a0e8-2036f142d454', null])
+  } finally {
+    await page.close()
+  }
+})
+
+test('the phone remote conversation list explains an empty list, an unchecked Codex, a failed read and a refused folder', async () => {
+  for (const [query, status] of [
+    ['remoteConversations=none', '本机暂无 Codex 对话。'],
+    ['remoteConversations=old', '当前 Codex 版本暂不支持继续已有对话，请选择新对话。'],
+    ['remoteConversations=broken', '无法读取对话列表，请稍后重试。'],
+  ]) {
+    const page = await fixture(`page=remote&remoteReady=1&${query}`)
+    try {
+      await page.getByTestId('settings-remote-conversation').click()
+      const dialog = page.getByTestId('settings-remote-conversation-dialog')
+      await dialog.getByTestId('settings-remote-conversation-status').getByText(status, { exact: true }).waitFor()
+      assert.equal(await dialog.getByRole('radio').count(), 1)
+    } finally {
+      await page.close()
+    }
+  }
+  const page = await fixture('page=remote&remoteReady=1&remoteConversationFolderRefused=1')
+  try {
+    await page.getByTestId('settings-remote-conversation').click()
+    const dialog = page.getByTestId('settings-remote-conversation-dialog')
+    await dialog.getByRole('radio', { name: /整理接口文档/ }).click()
+    await dialog.getByRole('button', { name: '确定', exact: true }).click()
+    await dialog.getByRole('alert').getByText('该对话所在的文件夹不允许用于遥控，请选择其他对话。', { exact: true }).waitFor()
+    await page.getByTestId('settings-remote-conversation-row').getByText('新对话，将在上方文件夹中开始。', { exact: true }).waitFor()
   } finally {
     await page.close()
   }

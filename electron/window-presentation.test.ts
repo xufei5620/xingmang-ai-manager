@@ -55,12 +55,12 @@ describe('platform window presentation', () => {
   })
 
   it('tells each system where to quit from after the window kept crashing', () => {
-    expect(rendererCrashRecoveryDetail('win32')).toBe('可以再试一次重新加载。如果还是空白，请从任务栏右下角的星芒图标退出软件后重新打开，并在「反馈与客服」页把问题发给我们。正在进行的安装、下载和已保存的设置都不受影响。')
-    expect(rendererCrashRecoveryDetail('darwin')).toBe('可以再试一次重新加载。如果还是空白，请从屏幕顶部菜单栏的星芒图标退出软件后重新打开，并在「反馈与客服」页把问题发给我们。正在进行的安装、下载和已保存的设置都不受影响。')
+    expect(rendererCrashRecoveryDetail('win32')).toBe('可再次尝试重新加载。如仍为空白，请通过任务栏右下角的星芒图标退出软件后重新打开，并在「反馈与客服」页提交问题。正在进行的安装、下载和已保存的设置均不受影响。')
+    expect(rendererCrashRecoveryDetail('darwin')).toBe('可再次尝试重新加载。如仍为空白，请通过屏幕顶部菜单栏的星芒图标退出软件后重新打开，并在「反馈与客服」页提交问题。正在进行的安装、下载和已保存的设置均不受影响。')
     const linux = rendererCrashRecoveryDetail('linux')
     expect(linux).not.toContain('右下角')
     expect(linux).toContain('从应用菜单重新打开')
-    expect(linux).toContain('点「退出」')
+    expect(linux).toContain('点击「退出」')
   })
 
   it('does not apply a titlebar overlay while changing the macOS window theme', () => {
@@ -306,8 +306,8 @@ describe('asset menu failure presentation', () => {
       expect(assetMenuFailureDialog('image', new Error(message))).toEqual({ title: '图片操作失败', message })
     }
     // 文件在外面被删了时作品库说的那句（D37），右键菜单里点了也原样说。
-    expect(assetMenuFailureDialog('video', new Error('这段视频已经不在电脑上了，可能被移走或删掉了。')).message).toBe('这段视频已经不在电脑上了，可能被移走或删掉了。')
-    expect(assetMenuFailureDialog('image', new Error('这张图已经不在电脑上了，可能被移走或删掉了。')).message).toBe('这张图已经不在电脑上了，可能被移走或删掉了。')
+    expect(assetMenuFailureDialog('video', new Error('该视频已不在本机，可能已被移动或删除。')).message).toBe('该视频已不在本机，可能已被移动或删除。')
+    expect(assetMenuFailureDialog('image', new Error('该图片已不在本机，可能已被移动或删除。')).message).toBe('该图片已不在本机，可能已被移动或删除。')
     expect(assetMenuFailureDialog('audio', new Error('音频另存失败，请检查目标目录写入权限')).message).toBe('音频另存失败，请检查目标目录写入权限')
   })
 

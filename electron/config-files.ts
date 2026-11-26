@@ -8,6 +8,7 @@ import { providerBaseUrls, type ProviderId } from './catalog'
 import { relayProviderBaseUrlEquals, relayProviderBaseUrlMatches, relaySiteEndpointIdForBaseUrl, relaySites } from './relay-sites'
 import { readEnvLineValue, readJsonString, readTomlBoolean, readTomlString, rewriteEnvValue, rewriteJsonStrings, rewriteTomlStrings, rewriteTomlValues, type StringValueEdit, type ValueEdit } from './tool-route-rewrite'
 import { readBoundedFileSync } from './bounded-file'
+import { type RecordedConfigRead, statStamp } from './config-read-cache'
 import { isCodexConfigBroken, salvageCodexConfigText } from './codex-config-syntax'
 import { isClaudeSettingsBroken, isCodexAuthBroken, isGeminiSettingsBroken } from './cli-config-health'
 import { tomlErrorLocation } from './toml-error-location'
@@ -84,6 +85,7 @@ import {
 } from './cli-hooks'
 import { applyClaudeRelayModelPicker, claudeRelayModelPickerOutdated, claudeRelayModelPickerUpdates, removeClaudeRelayModelPicker } from './claude-model-picker'
 import { projectInstructionsDigest } from './project-instructions'
+import { withoutStandingInstructions } from './standing-instructions'
 import {
   applyCodexRelayModelCatalog,
   codexModelCatalogFileName,
@@ -152,7 +154,7 @@ export interface NativeConfigInspection {
    * 工具自己也读不了它的主配置（Codex 的 config.toml、Claude Code 与 Gemini CLI 的 settings.json；
    * 判定见 codex-config-syntax.ts、cli-config-health.ts）：Codex 桌面端停在「无法加载组织设置」、
    * 命令行报错，Claude Code 弹「Settings Error」整份不用，Gemini CLI 报错退出。这时读出来的 Key、
-   * 地址都不作数，首页据此说「配置文件坏了」并给「修好它」。Grok 不判；缺省 = 没发现。
+   * 地址都不作数，首页据此说「配置文件坏了」并给「立即修复」。Grok 不判；缺省 = 没发现。
    */
   configBroken?: boolean
   /**
@@ -165,6 +167,12 @@ export interface NativeConfigInspection {
    * 登录时填的 xAI Key）；null = 没登录。只读这一个字段，令牌与 Key 不读。
    */
   grokLoginMode?: string | null
+  /**
+   * Grok 的 config.toml 里只有它自己的 npm 安装包装完写下的那一两行（isGrokInstallerOnlyConfig），旁边也没有
+   * auth.json：客户一个字没填过、也没登录过 Grok 账号。来源记录据此当成「还没配置」，自动写入照样放行
+   * （总单 17）。只给 Grok；缺省 = 不是这种文件。
+   */
+  grokInstallerOnly?: boolean
   dataDirectory: string
   dataDirectoryExists: boolean
   files: NativeConfigFile[]
@@ -202,7 +210,7 @@ export interface NativeConfigSummary extends Omit<NativeConfigInspection, 'apiKe
   ccSwitchLeftover?: 'proxy' | 'provider'
   /**
    * 本软件写进这份配置的钩子或状态行指向了不存在的程序、脚本，或不是这次安装带的那份
-   * （卸载后换目录重装、挪了 app、换装了 Node.js）。首页据此给「修好它」。缺省 = 没发现。
+   * （卸载后换目录重装、挪了 app、换装了 Node.js）。首页据此给「立即修复」。缺省 = 没发现。
    */
   cliHooksStale?: boolean
   /**
@@ -212,7 +220,7 @@ export interface NativeConfigSummary extends Omit<NativeConfigInspection, 'apiKe
   cliHooksShellChanged?: boolean
   /**
    * 只给 Windows 上的 Grok：配置是本软件写的，但做完提醒、防睡那几条钩子一条都没有——只装 Grok
-   * 时电脑上还没有运行环境，钩子写不出来。首页据此说一句缺什么、给「补上」。缺省 = 不缺。
+   * 时电脑上还没有运行环境，钩子写不出来。首页据此说一句缺什么、给「启用」。缺省 = 不缺。
    */
   cliHooksMissing?: boolean
   /**
@@ -263,7 +271,7 @@ export interface CodexWorkspacePermissionWriteResult extends NativeConfigSaveRes
 export type NativeConfigSaveMode = 'merge' | 'reset'
 
 /**
- * 首页「配置文件坏了」的「修好它」和碰上坏文件的「改用当前账号」多一种：repair。工具读不了的那份照重置重建，
+ * 首页「配置文件坏了」的「立即修复」和碰上坏文件的「改用当前账号」多一种：repair。工具读不了的那份照重置重建，
  * 读得懂的那份照合并，只改账号、地址、型号那几处（0.2.24 深查 X-1）。只有 Codex 有两份文件（config.toml、
  * auth.json），别的工具坏的就是唯一那份，跟重置一样。配置窗口的「保存」「重置为初始状态」不走这里。
  */
@@ -300,6 +308,8 @@ export { executeFilePlans, providerConfigPaths }
 // 写之前那份。
 interface InspectionReads {
   files: Map<string, Buffer | null>
+  // 读每一份之前它的样子（config-read-cache.ts 的 statStamp），config:get 的缓存拿它看文件动没动。
+  stamps: Map<string, string | null>
   json: Map<string, Record<string, unknown> | null>
   toml: Map<string, { parsed: Record<string, unknown> } | { error: unknown }>
 }
@@ -308,7 +318,7 @@ let inspectionReads: InspectionReads | null = null
 
 export function withSharedConfigReads<T>(inspect: () => T): T {
   if (inspectionReads) return inspect()
-  inspectionReads = { files: new Map(), json: new Map(), toml: new Map() }
+  inspectionReads = { files: new Map(), stamps: new Map(), json: new Map(), toml: new Map() }
   try {
     return inspect()
   } finally {
@@ -316,20 +326,35 @@ export function withSharedConfigReads<T>(inspect: () => T): T {
   }
 }
 
+/**
+ * 同 withSharedConfigReads，另外交回这一遍读过哪几份文件、读之前各是什么样（config:get 几秒内接着用读下的那份，
+ * 靠它看文件被外面改过没有，0.2.24 深查 R3）。已经在一遍里时交回的是那一遍到这里为止读过的，只会多不会少。
+ */
+export function withRecordedConfigReads<T>(inspect: () => T): RecordedConfigRead<T> {
+  return withSharedConfigReads(() => {
+    const value = inspect()
+    return { value, stamps: new Map(inspectionReads?.stamps) }
+  })
+}
+
 // 和 readText 同一套：不是单链接普通文件、读不了都当没有。
 function readConfigBytes(filePath: string): Buffer | null {
-  const reads = inspectionReads?.files
-  if (reads?.has(filePath)) return reads.get(filePath) ?? null
+  const reads = inspectionReads
+  if (reads?.files.has(filePath)) return reads.files.get(filePath) ?? null
   let content: Buffer | null = null
+  let stamp: string | null = null
   try {
     const info = fs.lstatSync(filePath)
+    if (reads) stamp = statStamp(info)
     if (info.isFile() && info.nlink <= 1 && !info.isSymbolicLink()) {
       content = readBoundedFileSync(filePath, MAX_NATIVE_CONFIG_BYTES, '配置文件')
     }
-  } catch {
+  } catch (error) {
     content = null
+    if (stamp === null && (error as NodeJS.ErrnoException).code === 'ENOENT') stamp = 'missing'
   }
-  reads?.set(filePath, content)
+  reads?.files.set(filePath, content)
+  reads?.stamps.set(filePath, stamp)
   return content
 }
 
@@ -562,7 +587,7 @@ export type ClaudeFilledDefault = 'permissions.defaultMode' | 'skipDangerousMode
  * 设置里两个默认关的开关，开着时星芒才写进 Claude Code settings.json 的那一项，默认不写。跟「不逐条确认」一样
  * 记进快照，关掉、开关关着时接当前账号、切回官方账号，都只撤记下的而且值还是星芒写的那个的；客户自己写过的
  * （快照里没记）一律不动。
- * - 「只让 Claude Code 改项目文件夹里的文件」（Fable 第二轮 Q6）：permissions.blockWritesOutsideWorkingDirectories = true（2.1.314 起）。
+ * - 「仅允许 Claude Code 修改项目文件夹内的文件」（Fable 第二轮 Q6）：permissions.blockWritesOutsideWorkingDirectories = true（2.1.314 起）。
  * - 「Claude Code 提交代码时不署名」（同类对比 备选 6）：attribution = { commit: '', pr: '' }。2.1.319 也认 false，
  *   但它自己的说明讲旧版本见到 true / false 会报错，而 Claude Code 遇到设置文件有错是整份不读（连星芒写的
  *   地址和密钥一起），所以写对象形式。
@@ -787,7 +812,7 @@ function pinGrokModelsToRelay(parsed: Record<string, unknown>, relayModelName: s
 }
 
 // Claude Code 与 Gemini CLI 都会自己删本机会话记录，默认都是 30 天，而记录页、首页
-// 「最近」卡、「接着聊」、导出记录全都建立在那些文件还在的前提上——用户只会看到
+// 「最近」卡、「继续对话」、导出记录全都建立在那些文件还在的前提上——用户只会看到
 // 「上个月那条对话不见了」。本软件替用户把保留期放长到一年。
 //
 // 沙箱实测（Claude Code 2.1.277 的 settings schema）：cleanupPeriodDays 是正整数、
@@ -861,7 +886,7 @@ export interface SeededToolDefaults {
   /** Codex、Grok 配置目录里星芒放的那份「用中文回复」。 */
   responseLanguage?: boolean
   /**
-   * 设置里「只让 Claude Code 改项目文件夹里的文件」开着（Fable 第二轮 Q6）。这一项不是「出现过」的记号，
+   * 设置里「仅允许 Claude Code 修改项目文件夹内的文件」开着（Fable 第二轮 Q6）。这一项不是「出现过」的记号，
    * 是客户现在的选择，放在这里只是跟着写配置的各条路一起传。缺省 = 关。
    */
   claudeWritesInsideProject?: boolean
@@ -880,10 +905,18 @@ export function managedGlobalResponseLanguagePresent(provider: ProviderId, roots
   try {
     const roots = normalizeProviderConfigRoots(rootsInput)
     const content = readSafeUtf8FileSync(path.join(providerConfigRoot(provider, roots), 'AGENTS.md'), '工具全局说明', MAX_GLOBAL_RESPONSE_LANGUAGE_BYTES)
-    return content !== null && PUBLISHED_GLOBAL_RESPONSE_LANGUAGE_DIGESTS.includes(projectInstructionsDigest(content))
+    return content !== null && PUBLISHED_GLOBAL_RESPONSE_LANGUAGE_DIGESTS.includes(projectInstructionsDigest(languageInstructionsPart(content)))
   } catch {
     return false
   }
+}
+
+/**
+ * 文件里去掉星芒「长期嘱咐」那一段（standing-instructions.ts）以后剩下的，末尾的空行收成一个：那一段接在
+ * 「用中文回复」后面时垫了一个空行，拿掉以后还认得出是星芒放的那一版。
+ */
+function languageInstructionsPart(content: string): string {
+  return withoutStandingInstructions(content).replace(/(?:\r?\n)+$/, '\n')
 }
 
 function globalInstructionFileNames(provider: ProviderId): readonly string[] {
@@ -914,8 +947,22 @@ function globalResponseLanguagePlans(provider: ProviderId, roots: ProviderConfig
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return []
   }
   const wanted = new Set(names.map((name) => name.toLowerCase()))
-  if (entries.some((entry) => wanted.has(entry.toLowerCase()))) return []
-  return [{ path: path.join(providerRoot, 'AGENTS.md'), content: MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS }]
+  const present = entries.filter((entry) => wanted.has(entry.toLowerCase()))
+  const agentsPath = path.join(providerRoot, 'AGENTS.md')
+  if (present.length === 0) return [{ path: agentsPath, content: MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS }]
+  // 只有星芒「长期嘱咐」那一段的 AGENTS.md（总单 Q4 C5，客户还没登录星芒账号时就存了嘱咐）不算客户自己的说明：
+  // 照样放「用中文回复」，那一段原样接在后面。读不了的宁可不放。
+  if (present.length === 1 && present[0] === 'AGENTS.md') {
+    try {
+      const content = readSafeUtf8FileSync(agentsPath, '工具全局说明', MAX_GLOBAL_RESPONSE_LANGUAGE_BYTES)
+      if (content !== null && content.trim() !== '' && withoutStandingInstructions(content).trim() === '') {
+        return [{ path: agentsPath, content: `${MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS}\n${content}` }]
+      }
+    } catch {
+      return []
+    }
+  }
+  return []
 }
 
 function nestedString(source: Record<string, unknown> | null, keys: string[]): string {
@@ -995,6 +1042,35 @@ function readProviderAuthType(provider: ProviderId, paths: string[]): string | u
 interface GrokLogin {
   mode: string
   email: string | null
+}
+
+// Grok 的 npm 安装包（1.0.77 的 bin/postinstall.js）装完会自己写 ~/.grok/config.toml：读出原有内容（读不出就当空的），
+// 往 [cli] 里放 installer = "npm"，npm 给 @xai-official 配了源（或设了 GROK_NPM_REGISTRY）时再放 npm_registry，然后整份写回。
+// 所以从没配置过的电脑上，装完就多出一份只有这一两行的文件：没有密钥、地址、型号，客户一个字没填过。以前它被当成
+// 「来源不明」挡住自动写入，Mac、Linux 新装的 Grok 不会自动连上，只能点「确认连接」（全面检查 I-1）。
+// 只认这一种样子：只有 [cli] 一张表，里面只有这两个键、都是字符串，installer 一定在。多一张表、多一个键（包括星芒
+// 自己写的 auto_update）都不算，照旧当来源不明保护起来。合并写入只往里加，这一两行原样留着。
+const grokInstallerKeys = new Set(['installer', 'npm_registry'])
+
+export function isGrokInstallerOnlyConfig(parsed: Record<string, unknown> | null): boolean {
+  if (!parsed) return false
+  const tables = Object.keys(parsed)
+  if (tables.length !== 1 || tables[0] !== 'cli') return false
+  const cli = parsed.cli
+  if (!isJsonRecord(cli) || typeof cli.installer !== 'string') return false
+  return Object.entries(cli).every(([key, value]) => grokInstallerKeys.has(key) && typeof value === 'string')
+}
+
+// 旁边有 auth.json（登录过 Grok 账号，或读不出是什么）就不算：那份文件加上安装那几行，可能正是客户在用的官方登录。
+function readGrokInstallerOnly(file: NativeConfigFile): boolean {
+  if (!file.exists || file.notUtf8) return false
+  try {
+    fs.lstatSync(path.join(path.dirname(file.path), 'auth.json'))
+    return false
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false
+  }
+  return isGrokInstallerOnlyConfig(readToml(file.path))
 }
 
 // auth.json 按「签发方::客户端」分区，例如 `https://auth.x.ai::<uuid>`，每个分区里是
@@ -1410,7 +1486,7 @@ function readStoredCodexConfig(filePath: string, label: string): string | null {
     TOML.parse(text)
   } catch {
     // 只在 merge 时读它（切回当前账号要用这份），读不懂就指去重置（第三十批 C）。
-    throw new Error(describeConfigReset('Codex', '星芒替 Codex 存的那份配置读不出来了'))
+    throw new Error(describeConfigReset('Codex', '星芒为 Codex 保存的配置无法读取'))
   }
   return withTrailingNewline(text)
 }
@@ -1424,7 +1500,7 @@ function createCodexRelayConfigPlans(
   // 本软件管的型号名单（codex-model-catalog.ts）：字符串 = 写这份文件并指向它；null = 收回
   // 本软件写的那一行；缺省 = 那一行和文件都原样不动，与从前一致。
   modelCatalog?: string | null,
-  // 「修好它」从读不了的 config.toml 里救回来的那份（salvagedCodexConfigForRepair），当作现在的配置来合并；
+  // 「立即修复」从读不了的 config.toml 里救回来的那份（salvagedCodexConfigForRepair），当作现在的配置来合并；
   // 缺省 = 读文件本身。
   salvaged?: string,
 ): FilePlan[] {
@@ -1504,7 +1580,7 @@ function createCodexOfficialConfigPlans(
   const currentText = salvaged ?? (fs.existsSync(paths.active)
     ? requireConfigText(paths.active, '现有 Codex config.toml')
     : null)
-  // 重置是读不懂的配置唯一的出路（首页「配置文件坏了」的「修好它」也走这里），登录 ChatGPT 的
+  // 重置是读不懂的配置唯一的出路（首页「配置文件坏了」的「立即修复」也走这里），登录 ChatGPT 的
   // 客户也一样：坏文件照旧先备份再整份换掉。只更新（merge）仍然拒绝，不悄悄重置客户的设置。
   const currentParsed = !currentText ? null
     : mode === 'reset' ? parseTomlOrNull(currentText)
@@ -1544,7 +1620,7 @@ function createCodexOfficialConfigPlans(
 }
 
 /**
- * 「修好它」时 Codex 的 config.toml 怎么写（X-1）。Codex 和星芒都读得懂（或者还没有这份文件）就照合并：客户自己
+ * 「立即修复」时 Codex 的 config.toml 怎么写（X-1）。Codex 和星芒都读得懂（或者还没有这份文件）就照合并：客户自己
  * 加的连接、信任过的文件夹、推理强度都留着。只坏了 auth.json 也整份重建 config.toml，客户的设置就全没了；从修之前
  * 的备份里找回又会把坏的 auth.json 一起放回去。任何一边读不懂才整份重建，跟重置一样。
  */
@@ -1556,10 +1632,10 @@ function codexConfigRepairMode(roots: ProviderConfigRoots): NativeConfigSaveMode
 }
 
 /**
- * 「修好它」碰上读不了的 config.toml（codexConfigRepairMode 说要整份重建）时，先看能不能只去掉坏的那几行
+ * 「立即修复」碰上读不了的 config.toml（codexConfigRepairMode 说要整份重建）时，先看能不能只去掉坏的那几行
  * （salvageCodexConfigText）：能就返回救回来的那份，照合并修，客户自己的设置照留；救不了返回 null，照旧整份重建。
  * 不是合法 UTF-8 的不救：解码会把中文换成「�」，救回来的路径也是坏的。原文件照旧由 executeFilePlans 先备份。
- * 只用在「修好它」上，配置窗口里的「重置为初始状态」照旧整份重建。
+ * 只用在「立即修复」上，配置窗口里的「重置为初始状态」照旧整份重建。
  */
 function salvagedCodexConfigForRepair(roots: ProviderConfigRoots): string | null {
   if (codexConfigRepairMode(roots) !== 'reset') return null
@@ -1569,7 +1645,7 @@ function salvagedCodexConfigForRepair(roots: ProviderConfigRoots): string | null
 }
 
 /**
- * 「修好它」按当前账号修、config.toml 又读得懂（codexConfigRepairMode），或者读不了但救得回来（salvaged）：
+ * 「立即修复」按当前账号修、config.toml 又读得懂（codexConfigRepairMode），或者读不了但救得回来（salvaged）：
  * config.toml 照合并，只有 auth.json 照重置重建。
  */
 function createCodexRelayRepairPlans(
@@ -1588,7 +1664,7 @@ function createCodexRelayRepairPlans(
 }
 
 /**
- * 「修好它」按官方账号修、config.toml 读不了但救得回来：同 createCodexOfficialRepairPlans，只是救回来的那份一定要写回去
+ * 「立即修复」按官方账号修、config.toml 读不了但救得回来：同 createCodexOfficialRepairPlans，只是救回来的那份一定要写回去
  * （原文件 Codex 读不了）。还接着当前账号的照「切回官方账号」拿掉当前账号那几处，不接着的原样写回。
  */
 function createCodexOfficialSalvagePlans(roots: ProviderConfigRoots, siteBaseUrls: Record<ProviderId, string>, salvaged: string): FilePlan[] {
@@ -1602,7 +1678,7 @@ function createCodexOfficialSalvagePlans(roots: ProviderConfigRoots, siteBaseUrl
 }
 
 /**
- * 「修好它」按官方账号修、config.toml 又读得懂：不再整份换成三行初始值。还接着当前账号的照「切回官方账号」只拿掉
+ * 「立即修复」按官方账号修、config.toml 又读得懂：不再整份换成三行初始值。还接着当前账号的照「切回官方账号」只拿掉
  * 当前账号那几处（不接着当前账号的，合并会拿存着的官方那份盖掉现在这份，所以一个字不动），auth.json 照重置重建。
  */
 function createCodexOfficialRepairPlans(roots: ProviderConfigRoots, siteBaseUrls: Record<ProviderId, string>): FilePlan[] {
@@ -1978,7 +2054,10 @@ function inspectProviderConfigFiles(
       ...readCodexProviderSelection(paths, baseUrl),
     } : {}),
     ...readConfigFilesBroken(provider, paths),
-    ...(provider === 'grok' ? { grokLoginMode: readGrokLogin(path.dirname(paths[0]))?.mode ?? null } : {}),
+    ...(provider === 'grok' ? {
+      grokLoginMode: readGrokLogin(path.dirname(paths[0]))?.mode ?? null,
+      ...(readGrokInstallerOnly(files[0]) ? { grokInstallerOnly: true } : {}),
+    } : {}),
     dataDirectory,
     dataDirectoryExists: (() => {
       try {
@@ -2353,7 +2432,7 @@ export function trustCodexWorkspaceInConfigText(
   workspace: string,
 ): { content: string; changed: boolean } {
   const trimmedWorkspace = workspace.trim()
-  if (!trimmedWorkspace) throw new Error('Codex 工作目录不能为空')
+  if (!trimmedWorkspace) throw new Error('请先为 Codex 选择项目文件夹')
   let parsed: Record<string, unknown> = {}
   if (content?.trim()) {
     try {
@@ -2467,7 +2546,7 @@ export function trustClaudeWorkspaceInRootConfigText(
   options: ManagedWorkspaceTrustOptions = {},
 ): { content: string; changed: boolean } {
   const trimmedWorkspace = workspace.trim()
-  if (!trimmedWorkspace) throw new Error('Claude Code 工作目录不能为空')
+  if (!trimmedWorkspace) throw new Error('请先为 Claude Code 选择项目文件夹')
   const label = '现有 Claude Code ~/.claude.json'
   const parsed = requireWorkspaceTrustJson(content, label)
   // ensureRecord 会把不是对象的值直接换成空对象。对一份只补一个布尔值的
@@ -2691,7 +2770,7 @@ export function trustManagedWorkspace(
 }
 
 /**
- * 检查页「个人文件夹里早先留下的设置」（已知36）看哪几个工具记着「信任整个个人文件夹」。
+ * 检查页「个人文件夹中早期遗留的设置」（已知36）看哪几个工具记着「信任整个个人文件夹」。
  * #321 以前客户选个人文件夹打开工具时，本软件替他写过 Claude Code 与 Gemini CLI 的信任；
  * Codex 的来自配置窗口那颗按钮，或者 Codex 自己问过之后写下的。只读不改：信任是客户的
  * 设置，这里只说一声。哪一家读不了、读不懂就当它没记着，那份配置坏没坏由那个工具自己
@@ -3007,7 +3086,7 @@ function createMergePlans(
       const models = ensureRecord(parsed, 'model')
       const target = models[defaultModel]
       if (!target || typeof target !== 'object' || Array.isArray(target)) {
-        throw new Error(describeConfigReset('Grok CLI', 'Grok CLI 的配置文件里默认模型那一段不对'))
+        throw new Error(describeConfigReset('Grok CLI', 'Grok CLI 配置文件中的默认模型部分有误'))
       }
       const targetModel = target as Record<string, unknown>
       targetModel.api_key = apiKey
@@ -3070,7 +3149,7 @@ export function saveProviderConfig(
 
   const statusLineCommand = claudeStatusLineCommand?.trim() || undefined
   if (statusLineCommand && /\r|\n/.test(statusLineCommand)) throw new Error('状态行命令不能包含换行符')
-  // 「修好它」只在 Codex 的 config.toml 读得懂、坏的只有 auth.json 时跟重置不一样（X-1）；config.toml 读不了但
+  // 「立即修复」只在 Codex 的 config.toml 读得懂、坏的只有 auth.json 时跟重置不一样（X-1）；config.toml 读不了但
   // 只坏了几行的，去掉那几行照合并修（salvagedCodexConfigForRepair）。
   const codexAuthOnlyRepair = mode === 'repair' && provider === 'codex' && codexConfigRepairMode(roots) === 'merge'
   const codexSalvaged = mode === 'repair' && provider === 'codex' && !codexAuthOnlyRepair ? salvagedCodexConfigForRepair(roots) : null
@@ -3185,12 +3264,12 @@ export function applyProviderRouteFollow(
 ): void {
   const roots = normalizeProviderConfigRoots(rootsInput)
   const providerRoot = providerConfigRoot(provider, roots)
-  if (!providerConfigPaths(provider, roots).includes(plan.file)) throw new Error('工具配置路径不对，已拒绝写入')
+  if (!providerConfigPaths(provider, roots).includes(plan.file)) throw new Error('工具配置路径有误，已拒绝写入')
   assertSafeConfigPath(plan.file, providerRoot, 'file')
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   executeFilePlans([{ path: plan.file, content: plan.content }], {
     beforeReplace: () => {
-      if (requireRawConfigText(plan.file, '工具配置') !== plan.original) throw new Error('工具配置在改线路时被别的程序改了，这次先不改')
+      if (requireRawConfigText(plan.file, '工具配置') !== plan.original) throw new Error('工具配置在切换线路时被其他程序修改，本次暂不修改')
     },
   }, providerRoot, 'discard')
 }
@@ -3296,7 +3375,7 @@ export function applyProviderModelReplace(
   plan: ProviderModelRewrite,
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
 ): NativeConfigSaveResult {
-  return commitProviderRewrite(provider, plan, rootsInput, '工具配置在换型号时被别的程序改了，这次先不换')
+  return commitProviderRewrite(provider, plan, rootsInput, '工具配置在更换型号时被其他程序修改，本次暂不更换')
 }
 
 /**
@@ -3312,8 +3391,8 @@ function commitProviderRewrite(
 ): NativeConfigSaveResult {
   const roots = normalizeProviderConfigRoots(rootsInput)
   const providerRoot = providerConfigRoot(provider, roots)
-  if (providerConfigPaths(provider, roots)[0] !== plan.file) throw new Error('工具配置路径不对，已拒绝写入')
-  if (plan.catalog && (provider !== 'codex' || plan.catalog.path !== codexModelCatalogPath(roots))) throw new Error('型号名单路径不对，已拒绝写入')
+  if (providerConfigPaths(provider, roots)[0] !== plan.file) throw new Error('工具配置路径有误，已拒绝写入')
+  if (plan.catalog && (provider !== 'codex' || plan.catalog.path !== codexModelCatalogPath(roots))) throw new Error('型号列表路径有误，已拒绝写入')
   assertSafeConfigPath(plan.file, providerRoot, 'file')
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   const plans: FilePlan[] = [
@@ -3403,7 +3482,7 @@ export function applyProviderPickerRefresh(
   plan: ProviderPickerRewrite,
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
 ): NativeConfigSaveResult {
-  return commitProviderRewrite(provider, plan, rootsInput, '工具配置在刷新型号菜单时被别的程序改了，这次先不刷新')
+  return commitProviderRewrite(provider, plan, rootsInput, '工具配置在刷新型号菜单时被其他程序修改，本次暂不刷新')
 }
 
 /**
@@ -3895,7 +3974,7 @@ export interface ManagedCliHookRestore {
 
 /**
  * 卸载时收回、重装后补回：只补现在没有的那几样。已经有的（哪怕指向旧位置）一个字不动，那归
- * 「修好它」那条路；客户自己设过的状态行、Codex notify 也不顶掉。Gemini CLI 已下线，不补。
+ * 「立即修复」那条路；客户自己设过的状态行、Codex notify 也不顶掉。Gemini CLI 已下线，不补。
  */
 function managedCliHookRestorePlan(
   provider: ProviderId,
@@ -3957,7 +4036,7 @@ function executeManagedCliHookPlan(
   return executeFilePlans([plan], {}, providerRoot)
 }
 
-/** 首页「修好它」：把本软件那几条改成这次的路径（写不出来就收回），其余原样。 */
+/** 首页「立即修复」：把本软件那几条改成这次的路径（写不出来就收回），其余原样。 */
 export function rewriteManagedCliHooks(
   provider: ProviderId,
   rootsInput: ProviderConfigRoots,
@@ -4020,13 +4099,13 @@ export function canLaunchManagedProvider(
 export function managedProviderLaunchBlockedMessage(provider: ProviderId): string {
   switch (provider) {
     case 'codex':
-      return 'Codex 当前用的是自定义接口，请先切到星芒中转或 ChatGPT 账号'
+      return 'Codex 当前使用自定义接口，请先切换至星芒中转或 ChatGPT 账号'
     case 'claude':
-      return 'Claude 当前用的是自定义接口，请先切到星芒中转或 Claude 账号'
+      return 'Claude 当前使用自定义接口，请先切换至星芒中转或 Claude 账号'
     case 'gemini':
       return 'Gemini 当前用的是自定义接口，请先切到星芒中转或 Google 账号'
     case 'grok':
-      return 'Grok 当前用的是自定义接口，请先切到星芒中转或 Grok 账号'
+      return 'Grok 当前使用自定义接口，请先切换至星芒中转或 Grok 账号'
   }
 }
 
@@ -4160,7 +4239,7 @@ export function switchProviderToOfficialAccount(
   const configuredPaths = providerConfigPaths(provider, roots)
   for (const filePath of configuredPaths) assertSafeConfigPath(filePath, providerRoot, 'file')
 
-  // 「修好它」照重置的口子过（它本来就是给坏文件用的），只在 Codex 的 config.toml 读得懂、坏的只有 auth.json 时
+  // 「立即修复」照重置的口子过（它本来就是给坏文件用的），只在 Codex 的 config.toml 读得懂、坏的只有 auth.json 时
   // 换一份计划（X-1）。
   const saveMode: NativeConfigSaveMode = writeMode === 'merge' ? 'merge' : 'reset'
   const codexAuthOnlyRepair = writeMode === 'repair' && provider === 'codex' && codexConfigRepairMode(roots) === 'merge'
@@ -4173,7 +4252,7 @@ export function switchProviderToOfficialAccount(
     && isKnownCodexRelayBaseUrl(inspection.actualBaseUrl, siteBaseUrlsInput.codex)
   // 登录 ChatGPT 换来的那把 Key 常和令牌一起留在 auth.json 里（auth_mode 说了算，Codex 不用它），
   // config.toml 又坏到 Codex 读不了：看着像「有 Key、地址不是星芒」的第三方，其实用的就是官方
-  // 账号。首页「配置文件坏了」的「修好它」走的是这条重置，先备份，坏文件里没有能用的设置可护。
+  // 账号。首页「配置文件坏了」的「立即修复」走的是这条重置，先备份，坏文件里没有能用的设置可护。
   const brokenChatgptLogin = provider === 'codex' && saveMode === 'reset'
     && inspection.configBroken === true && inspection.codexAuthMode === 'chatgpt'
   const mode = knownCodexRelay ? 'relay' : brokenChatgptLogin ? 'official' : providerAccountMode(inspection)
@@ -4183,9 +4262,9 @@ export function switchProviderToOfficialAccount(
   if (mode !== 'relay' && saveMode !== 'reset' && (inspection.configBroken === true || inspection.codexAuthBroken === true)) {
     throw new Error(describeBrokenConfig(brokenConfigToolNames[provider]))
   }
-  if (mode === 'official' && saveMode !== 'reset') throw new Error('当前已经在使用你自己的官方订阅账号，无需切换')
+  if (mode === 'official' && saveMode !== 'reset') throw new Error('当前已在使用您自己的官方订阅账号，无需切换')
   if (mode === 'unknown') {
-    throw new Error('当前配置不是星芒中转（可能是你自己填的第三方地址），为避免改坏配置已取消切换')
+    throw new Error('当前配置不是星芒中转（可能是您自行填写的第三方地址），为避免损坏配置，已取消切换')
   }
 
   const plans = codexAuthOnlyRepair
@@ -4429,7 +4508,7 @@ export function inspectClaudeOfficialSkipsConfirmation(rootsInput: ProviderConfi
   }
 }
 
-export const claudeNotOfficialMessage = 'Claude Code 现在没在用官方账号，这次没有改。'
+export const claudeNotOfficialMessage = 'Claude Code 当前未使用官方账号，本次未修改。'
 
 /**
  * 客户在「要不要让官方 Claude Code 先问再执行？」里点了「改回先问我」：撤掉 permissions.defaultMode = bypassPermissions
@@ -4492,12 +4571,12 @@ function claudeForeignSettingsAsidePlans(
   return [{ path: claudeForeignSnapshotPath(roots), content: snapshot }]
 }
 
-/** 设置里切「只让 Claude Code 改项目文件夹里的文件」时，当场改 settings.json 的结果。 */
+/** 设置里切「仅允许 Claude Code 修改项目文件夹内的文件」时，当场改 settings.json 的结果。 */
 /** 设置里切这两个开关时，当场改 settings.json 的结果。 */
 export type ClaudeToggleOutcome = 'written' | 'unchanged' | 'kept'
 
 /**
- * 设置里切「只让 Claude Code 改项目文件夹里的文件」「Claude Code 提交代码时不署名」时当场对齐：只动那一项和
+ * 设置里切「仅允许 Claude Code 修改项目文件夹内的文件」「Claude Code 提交代码时不署名」时当场对齐：只动那一项和
  * 快照里的记号，其余一个字不动，写之前照旧备份、两阶段提交（I9）。调用方先确认 Claude Code 现在接的是当前账号。
  * - 打开：没有那一项就写上、记进快照；已经是星芒写的那个不动；客户写成了别的值，不动，返回 kept。
  * - 关掉：快照记着是星芒写的、值还是星芒写的那个就撤掉并划掉记号；客户自己写的同样的值不动，返回 kept。

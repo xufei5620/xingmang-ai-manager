@@ -7,6 +7,13 @@ import { resolveUsableSubscription, subscriptionSummaryText } from './subscripti
 export interface ApplicationTraySnapshot {
   accountLabel?: string | null
   balanceUsd?: number | null
+  /**
+   * 上面那个余额是什么时候读到的（毫秒时间戳）。读到太久还没再读到时，余额后面写「（23 分钟前）」（F8-3）。
+   * 缺省或 null：不写多久以前，跟原来一样。
+   */
+  balanceReadAt?: number | null
+  /** 登录着。登录了却一个余额都没读到时写「暂未读到」，没登录才是「—」。缺省 = 跟原来一样写「—」。 */
+  signedIn?: boolean
   /** 「剩余 USD 12.30 · 10月3日到期」；没有能用的订阅时缺省，菜单就不多这一行。 */
   subscriptionLabel?: string | null
   installedTools: readonly { id: string; label: string; enabled?: boolean }[]
@@ -26,7 +33,7 @@ export interface ApplicationTraySnapshot {
 }
 
 /** 托盘里点「打开手机遥控」一个都没打开时那条系统通知的标题；正文是打不开的原因原句（YF-8）。 */
-export const trayRemoteControlOpenFailedTitle = '手机遥控没打开'
+export const trayRemoteControlOpenFailedTitle = '遥控开启失败'
 
 export interface TrayKeepAwakeState {
   /** 终端里正在干活的工具名（Claude Code、Gemini CLI、Grok CLI）。 */
@@ -44,11 +51,11 @@ export interface TrayKeepAwakeState {
  * 挡睡眠，不归星芒管，不在这里说。
  */
 export function trayKeepAwakeLabel(state: TrayKeepAwakeState): string | null {
-  if (state.tools.length === 1) return `${state.tools[0]} 正在干活，暂不让电脑自动睡眠`
-  if (state.tools.length > 1) return 'AI 工具正在干活，暂不让电脑自动睡眠'
-  if (state.remoteControl) return '手机遥控开着，暂不让电脑自动睡眠'
-  if (state.installing) return '正在安装，暂不让电脑自动睡眠'
-  if (state.downloadingUpdate) return '正在下载星芒新版本，暂不让电脑自动睡眠'
+  if (state.tools.length === 1) return `${state.tools[0]} 正在运行，已暂停系统自动睡眠`
+  if (state.tools.length > 1) return 'AI 工具正在运行，已暂停系统自动睡眠'
+  if (state.remoteControl) return '遥控已开启，已暂停系统自动睡眠'
+  if (state.installing) return '正在安装，已暂停系统自动睡眠'
+  if (state.downloadingUpdate) return '正在下载星芒新版本，已暂停系统自动睡眠'
   return null
 }
 
@@ -104,17 +111,17 @@ function updateItem(
   switch (entry.kind) {
     case 'available':
       return entry.waitingForDisk
-        ? { label: rollback ? `版本更新：建议退回的 ${rollback} 版等电脑腾出空间再下载` : `版本更新：${named}等电脑腾出空间再下载`, click: openPage }
-        : { label: rollback ? `版本更新：建议退回 ${rollback} 版` : `版本更新：有${named}`.trimEnd(), click: openPage }
+        ? { label: rollback ? `版本更新：建议回退的 ${rollback} 版待磁盘空间充足后下载` : `版本更新：${named}待磁盘空间充足后下载`, click: openPage }
+        : { label: rollback ? `版本更新：建议回退至 ${rollback} 版` : `版本更新：发现${named}`.trimEnd(), click: openPage }
     case 'downloading':
-      return { label: rollback ? `版本更新：正在下载建议退回的 ${rollback} 版` : `版本更新：正在下载${named}`.trimEnd(), click: openPage }
+      return { label: rollback ? `版本更新：正在下载建议回退的 ${rollback} 版` : `版本更新：正在下载${named}`.trimEnd(), click: openPage }
     case 'downloaded':
       // 和更新页「确认重启安装」走同一条 install()，不另开安装路径；没接安装动作时退回更新页。
       return install
-        ? { label: rollback ? `${entry.systemInstaller ? '' : '重启并'}退回 ${rollback} 版` : `${entry.systemInstaller ? '安装' : '重启并安装'}${named}`.trimEnd(), click: () => run(install) }
-        : { label: rollback ? `版本更新：建议退回的 ${rollback} 版已下载好` : `版本更新：${named}已下载好`, click: openPage }
+        ? { label: rollback ? `${entry.systemInstaller ? '' : '重启并'}回退至 ${rollback} 版` : `${entry.systemInstaller ? '安装' : '重启并安装'}${named}`.trimEnd(), click: () => run(install) }
+        : { label: rollback ? `版本更新：建议回退的 ${rollback} 版已下载` : `版本更新：${named}已下载`, click: openPage }
     case 'failed':
-      return { label: rollback ? `版本更新：退回 ${rollback} 版没成功，点开看看` : `版本更新：${named}没更新成功，点开看看`, click: openPage }
+      return { label: rollback ? `版本更新：回退至 ${rollback} 版失败，点击查看` : `版本更新：${named}更新失败，点击查看`, click: openPage }
   }
 }
 
@@ -206,6 +213,60 @@ export function trayBalanceLabel(balance: number | null | undefined): string {
     : '\u2014'
 }
 
+/**
+ * 托盘里的余额是主进程最后一次读到的那个数，后来一直读不到也照旧显示，客户会当成现在的余额（F8-3）。
+ * 读到超过这么久就在后面写多久以前。缩到托盘以后本来就每 10 分钟读一次（spend-spike.ts 的
+ * backgroundBalanceInterval），定 10 分钟会在每次快读到时闪一下；15 分钟等于后台真漏了一次。
+ */
+export const trayBalanceStaleAfterMs = 15 * 60_000
+
+const minuteMs = 60_000
+const hourMs = 60 * minuteMs
+const dayMs = 24 * hourMs
+
+type TrayBalanceState = Pick<ApplicationTraySnapshot, 'balanceUsd' | 'balanceReadAt' | 'signedIn'>
+
+function hasBalance(snapshot: TrayBalanceState): snapshot is TrayBalanceState & { balanceUsd: number } {
+  return typeof snapshot.balanceUsd === 'number' && Number.isFinite(snapshot.balanceUsd)
+}
+
+/**
+ * 读到多久了；没读到、时间读不出就是 null。本机时钟往回拨过时是负的，当刚读到算，
+ * 等钟走过了读到的时间再往上数。
+ */
+function balanceAge(snapshot: TrayBalanceState, now: number): number | null {
+  const readAt = snapshot.balanceReadAt
+  if (!hasBalance(snapshot) || typeof readAt !== 'number' || !Number.isFinite(readAt) || !Number.isFinite(now)) return null
+  return now - readAt
+}
+
+/** 托盘菜单和图标提示里「余额：」后面那一段。 */
+export function trayBalanceText(snapshot: TrayBalanceState, now: number): string {
+  if (!hasBalance(snapshot)) return snapshot.signedIn ? '暂未获取' : trayBalanceLabel(null)
+  const amount = trayBalanceLabel(snapshot.balanceUsd)
+  const age = balanceAge(snapshot, now)
+  if (age === null || age < trayBalanceStaleAfterMs) return amount
+  // 跟画布余额条一样分三档，免得写出「（135 分钟前）」。
+  const ago = age < hourMs ? `${Math.floor(age / minuteMs)} 分钟前`
+    : age < dayMs ? `${Math.floor(age / hourMs)} 小时前`
+      : '1 天前'
+  return `${amount}（${ago}）`
+}
+
+/**
+ * 上面那段字下一次会变的时刻；之后不会再变了（没读到，或者已经写到「一天多以前」）就是 null。
+ * Windows 右键弹的是早就设好的菜单、不先通知（下面 createApplicationTray 的 menuOpened 收不到），
+ * 只能到点自己重建一次菜单；最多一分钟一次，比下载更新时每秒重建少得多。
+ */
+export function nextTrayBalanceTextChangeAt(snapshot: TrayBalanceState, now: number): number | null {
+  const age = balanceAge(snapshot, now)
+  if (age === null || age >= dayMs) return null
+  const readAt = now - age
+  if (age < trayBalanceStaleAfterMs) return readAt + trayBalanceStaleAfterMs
+  const step = age < hourMs ? minuteMs : hourMs
+  return readAt + (Math.floor(age / step) + 1) * step
+}
+
 /** 托盘那一行订阅；和首页用同一个「能不能用」的判断，没有能用的订阅时 null。 */
 export function traySubscriptionLabel(self: NewApiSubscriptionSelf | null, quotaPerUnit: number, now: number): string | null {
   const subscription = resolveUsableSubscription(self, { now, quotaPerUnit })
@@ -247,6 +308,7 @@ export function buildApplicationTrayMenu(
   actions: Pick<ApplicationTrayOptions, 'onOpen' | 'onLaunchTool' | 'onNavigate' | 'onQuit' | 'onAccelerationToggle' | 'onInstallUpdate' | 'onRemoteControlOff' | 'onRemoteControlOn'>,
   run: (action: TrayAction) => void,
   appName = '星芒AI管理工具',
+  now = Date.now(),
 ): MenuItemConstructorOptions[] {
   const navigate = (target: TrayNavigationTarget) => run(async () => { await actions.onOpen(); await actions.onNavigate(target) })
   const keepAwake = menuLabel(snapshot.keepAwakeLabel, '')
@@ -258,11 +320,11 @@ export function buildApplicationTrayMenu(
   return [
     { label: `打开${appName}`, click: () => run(actions.onOpen) },
     ...(keepAwake ? [{ label: keepAwake, enabled: false }] : []),
-    ...(remoteOff ? [{ label: '关掉手机遥控', click: () => run(remoteOff) }] : []),
-    ...(remoteOn ? [{ label: '打开手机遥控', click: () => run(remoteOn) }] : []),
+    ...(remoteOff ? [{ label: '关闭遥控', click: () => run(remoteOff) }] : []),
+    ...(remoteOn ? [{ label: '开启遥控', click: () => run(remoteOn) }] : []),
     { type: 'separator' },
     { label: menuLabel(snapshot.accountLabel, '未登录'), enabled: false },
-    { label: `余额：${trayBalanceLabel(snapshot.balanceUsd)}`, enabled: false },
+    { label: `余额：${trayBalanceText(snapshot, now)}`, enabled: false },
     ...(snapshot.subscriptionLabel ? [{ label: `订阅：${menuLabel(snapshot.subscriptionLabel, '')}`, enabled: false }] : []),
     { type: 'separator' },
     {
@@ -316,6 +378,8 @@ export function createApplicationTray(
   let windowsIcon: 'standard' | 'darkTaskbar' | null = null
   let windowsIconRead: Promise<void> | null = null
   let windowsIconReadAgain = false
+  // 余额后面那段「（23 分钟前）」到点会变，到时候自己重建一次菜单和提示（F8-3）。
+  let balanceTextTimer: NodeJS.Timeout | null = null
 
   const report = (error: unknown) => {
     try { options.onError(error) } catch { /* Tray callbacks cannot report through a rejected event handler. */ }
@@ -329,7 +393,12 @@ export function createApplicationTray(
     available = next
     try { options.onAvailabilityChange?.(next) } catch (error) { report(error) }
   }
+  const clearBalanceTextTimer = () => {
+    if (balanceTextTimer !== null) clearTimeout(balanceTextTimer)
+    balanceTextTimer = null
+  }
   const destroy = () => {
+    clearBalanceTextTimer()
     const current = tray
     tray = null
     if (!current) return
@@ -357,9 +426,22 @@ export function createApplicationTray(
       snapshot = copySnapshot(next ?? options.getSnapshot())
       if (!checkAvailable() || !tray) return
       const keepAwake = menuLabel(snapshot.keepAwakeLabel, '')
-      tray.setToolTip(`${appName}\n余额：${trayBalanceLabel(snapshot.balanceUsd)}${snapshot.subscriptionLabel ? `\n订阅：${snapshot.subscriptionLabel}` : ''}${keepAwake ? `\n${keepAwake}` : ''}`)
-      tray.setContextMenu(runtime.buildMenu(buildApplicationTrayMenu(snapshot, options, run, appName)))
+      const now = Date.now()
+      tray.setToolTip(`${appName}\n余额：${trayBalanceText(snapshot, now)}${snapshot.subscriptionLabel ? `\n订阅：${snapshot.subscriptionLabel}` : ''}${keepAwake ? `\n${keepAwake}` : ''}`)
+      tray.setContextMenu(runtime.buildMenu(buildApplicationTrayMenu(snapshot, options, run, appName, now)))
+      scheduleBalanceText(now)
     } catch (error) { unavailable(error) }
+  }
+  const scheduleBalanceText = (now: number) => {
+    clearBalanceTextTimer()
+    const at = nextTrayBalanceTextChangeAt(snapshot, now)
+    if (at === null) return
+    // 到点重新要一份快照：这期间读到新余额的话，那边早已重建过、这次就按新的算。
+    balanceTextTimer = setTimeout(() => {
+      balanceTextTimer = null
+      updateSnapshot()
+    }, Math.max(0, at - now))
+    balanceTextTimer.unref()
   }
   const showWindowsIcon = (variant: 'standard' | 'darkTaskbar') => {
     if (!windowsIcons || windowsIcon === null || windowsIcon === variant || !checkAvailable() || !tray) return

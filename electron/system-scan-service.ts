@@ -109,6 +109,8 @@ const maximumGrokVersionMetadataBytes = 16 * 1024
  * update check repairs the gap on its own, regardless of how grok ended up
  * without its companion link — independent of, and in addition to, the
  * transaction every install/reinstall already runs.
+ * 11-18 复核 D19 起，ensure 也会把留在旧版上的官方 `agent` 链接挪到 `grok` 那一版，所以以前更新过、
+ * `agent` 已经指歪的 Mac，下一次扫描就自己对上了。
  *
  * Best-effort by design: a failure here (permissions, a mid-scan uninstall,
  * a non-canonical install) must never turn a healthy "installed" status into
@@ -182,7 +184,7 @@ export interface DarwinGrokVersionProbe {
 /**
  * Mac 上 Grok 的版本只认 ~/.grok/bin/grok 那条链接选中的、xAI 签过名的程序。读不出来分两种：
  * 认不出它（不是这几种布局、签名或版本不对）和一时没核成（抄盘、起进程失败），只有前一种让首页
- * 改给「用星芒装一份」。
+ * 改给「使用星芒安装」。
  */
 export async function probeDarwinGrokVersion(
   homeDirectory: string,
@@ -594,7 +596,7 @@ function containsComparableVersion(value: string | null): boolean {
 export const offlineLatestVersionBudgetMs = 3_000
 
 /** 预算到点仍未返回时，版本列上显示的那句话。 */
-export const latestVersionUncheckedMessage = '当前可能没有网络，这次没有检查最新版本'
+export const latestVersionUncheckedMessage = '当前可能未连接网络，本次未检查最新版本'
 
 /**
  * 网络位置探测没能给出结果 = 这会儿八成没网。离线时每家 CLI 的最新版探测都会各自
@@ -998,7 +1000,7 @@ export function createSystemScanService(context: ServiceContext, dependencies: S
         installation: null,
       }
     }
-    // Mac 上认不出来路的 Codex / Grok（R1）：首页改给「用星芒装一份」，见 ToolStatus.unrecognizedInstall。
+    // Mac 上认不出来路的 Codex / Grok（R1）：首页改给「使用星芒安装」，见 ToolStatus.unrecognizedInstall。
     let unrecognized = false
     const safeNativeCommand = installation.source === 'native' && provider !== 'grok'
       ? await resolveVerifiedCliCommand(provider, cliEnvironment, windowsExecutionMode, {

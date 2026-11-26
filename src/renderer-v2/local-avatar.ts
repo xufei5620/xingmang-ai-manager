@@ -199,7 +199,7 @@ export function writeSavedAvatar(
     )
   } catch {
     throw new Error(
-      '头像没有保存成功，裁剪预览已保留。请释放本机存储空间后重试。',
+      '头像保存失败，裁剪预览已保留。请释放本机存储空间后重试。',
     )
   }
 }

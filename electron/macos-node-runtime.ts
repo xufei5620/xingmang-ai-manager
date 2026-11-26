@@ -223,7 +223,7 @@ async function installFromSource(
 
   stage.current = 'verify'
   report(options, { phase: 'verifying', source: source.id, message: '正在核对文件', percent: null })
-  if (download.sha256 !== release.sha256) throw new Error('下载的 Node.js 压缩包和官方校验值对不上')
+  if (download.sha256 !== release.sha256) throw new Error('下载的 Node.js 压缩包与官方校验值不一致')
 
   report(options, { phase: 'installing', source: source.id, message: '正在解压 Node.js', percent: null })
   const extractDirectory = path.join(sourceDirectory, 'extract')
@@ -231,7 +231,7 @@ async function installFromSource(
   await runProcess(buildDarwinNodeExtractPlan(archivePath, extractDirectory), options.signal)
   const topName = darwinNodeArchiveTopDirectory(release.version, architecture)
   const entries = await fs.promises.readdir(extractDirectory)
-  if (entries.length !== 1 || entries[0] !== topName) throw new Error('Node.js 压缩包的内容和预期不一致')
+  if (entries.length !== 1 || entries[0] !== topName) throw new Error('Node.js 压缩包的内容与预期不一致')
   const extracted = path.join(extractDirectory, topName)
   assertPlainDirectory(extracted, 'darwin')
   const nodeExecutable = path.join(extracted, 'bin', 'node')
@@ -246,7 +246,7 @@ async function installFromSource(
     await runProcess(buildDarwinNodeSignaturePlan(nodeExecutable), options.signal)
   } catch (error) {
     if (error instanceof CommandRunnerError && error.exitCode !== null) {
-      throw new Error('下载的 Node.js 没有通过官方签名核对，已停止使用')
+      throw new Error('下载的 Node.js 未通过官方签名核对，已停止使用')
     }
     throw error
   }
@@ -256,7 +256,7 @@ async function installFromSource(
   )
   const version = versionResult.stdout.trim()
   if (version !== release.version || nodeVersionStatus(version) !== 'supported') {
-    throw new Error('解压出来的 Node.js 版本和下载的不一致')
+    throw new Error('解压出的 Node.js 版本与下载版本不一致')
   }
 
   await replaceDarwinNodeRuntime(extracted, target, staging)
@@ -271,8 +271,8 @@ export function darwinNodeRuntimeFailureMessage(
 ): string {
   const details = failures.map((failure) => failure.detail).join('；')
   const headline = failures.length > 0 && failures.every((failure) => failure.stage === 'network')
-    ? 'Node.js 没有下载成功，可能是网络不稳，可以再点一次「准备 Node.js」。'
-    : 'Node.js 没有准备好，可以再点一次「准备 Node.js」；还不行请联系客服。'
+    ? 'Node.js 下载失败，可能是网络不稳定，请再次点击「准备 Node.js」。'
+    : 'Node.js 准备失败，请再次点击「准备 Node.js」；如仍失败，请联系客服。'
   return details ? `${headline}（${details}）` : headline
 }
 
@@ -315,7 +315,7 @@ export async function installDarwinNodeRuntime(
         report(options, {
           phase: 'complete',
           source: source.id,
-          message: `Node.js ${release.version} 准备好了`,
+          message: `Node.js ${release.version} 已准备就绪`,
           percent: 100,
         })
         return {
@@ -335,7 +335,7 @@ export async function installDarwinNodeRuntime(
         report(options, {
           phase: 'resolving',
           source: source.id,
-          message: `${source.label}没有成功，正在换一个下载地址`,
+          message: `${source.label}下载失败，正在更换下载地址`,
           percent: null,
         })
       }

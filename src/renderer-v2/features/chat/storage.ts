@@ -1,12 +1,14 @@
 import { currentAccountGroupName } from '../../../../electron/catalog'
 import { redactSecretShapes } from '../../../../electron/redaction-patterns'
 import { AI_CHAT_LIMITS, AI_CHAT_TEXT_FILE_LIMITS } from '../../../../electron/ai-chat-protocol'
+import { aiVideoUnconfirmedSubmissionMessage } from '../../../../electron/ai-video-submission'
 import type { AiChatAsset, AiChatHistorySnapshot, AiChatHistoryWrite, AiChatTextFile, ChatConversationExportInput, XingmangApi } from '../../../../electron/ipc-contract'
-import { addChatPhrase, createConversation, createId, createWorkspace, defaultChatSettings, MAX_CHAT_PHRASE_LENGTH, MAX_CHAT_PHRASES, type ChatMessage, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
+import { readVideoClip, readVideoRequestId } from '../video-studio/clip'
+import { addChatPhrase, createConversation, createId, createWorkspace, defaultChatSettings, MAX_CHAT_PHRASE_LENGTH, MAX_CHAT_PHRASES, type ChatMessage, type ChatSettings, type ChatVideo, type ChatWorkspace, type Conversation } from './state'
 
 // 读不出来时那条红条的前半句；后半句「现在聊的内容不会保存……」在 useChatController 里接上。
 // 下面各处 ChatStorageError 的原文是给排查看的，只写进日志，上屏一律说这一句（W24）。
-const unreadableHistory = '以前的聊天记录暂时读不出来，原文件没动'
+const unreadableHistory = '历史聊天记录暂时无法读取，原文件未作修改'
 
 // localStorage 现在只是旧版本留下的迁移来源，新记录一律写到主进程的文件里。读迁移来源时只读；
 // 文件里有了这个账号的记录之后，才把旧副本删掉并记一个「已迁移」标记（forgetLegacyHistory）。
@@ -20,8 +22,8 @@ const FILE_KEY = /^[A-Za-z0-9_-]{1,64}$/
 export class ChatStorageError extends Error {}
 // 超过上限是唯一一种原文就是说给客户听的：读的时候、存的时候都照这句上屏（W24）。
 class ChatHistoryLimitError extends ChatStorageError {}
-const limitMessage = `聊天记录超过 ${MAX_CONVERSATIONS} 个，这台电脑存不下，原来的记录没动`
-// 存满以后点「新对话」、在草稿里发第一句时说的。
+const limitMessage = `聊天记录超过 ${MAX_CONVERSATIONS} 个，本机无法保存，原有记录未作修改`
+// 存满以后点「新建」、在草稿里发第一句时说的。
 export const conversationLimitMessage = `最多保存 ${MAX_CONVERSATIONS} 个对话，请先删除不再需要的对话`
 
 export function historyKey(scope: string): string { return `xingmang-ui-v2:chat:${encodeURIComponent(scope)}` }
@@ -68,12 +70,15 @@ function readSettings(value: unknown): ChatSettings {
     return defaultChatSettings()
   }
   // xm 站删了的老分组名换成现在的名字（catalog.ts 的 retiredAccountGroups），老对话打开就能接着聊，不用重选分组。
-  const result = { ...defaultChatSettings(), mode: settings.mode === 'image' ? 'image' as const : 'text' as const, group: currentAccountGroupName(text(settings.group)), model: text(settings.model), systemPrompt: text(settings.systemPrompt) }
+  const result: ChatSettings = { ...defaultChatSettings(), mode: settings.mode === 'image' || settings.mode === 'video' ? settings.mode : 'text', group: currentAccountGroupName(text(settings.group)), model: text(settings.model), systemPrompt: text(settings.systemPrompt) }
   const parameters = object(settings.parameters)
   for (const key of ['temperature', 'topP', 'maxTokens', 'frequencyPenalty', 'presencePenalty', 'seed'] as const) if (parameters && typeof parameters[key] === 'number' && Number.isFinite(parameters[key])) result.parameters[key] = parameters[key]
   if (typeof settings.size === 'string' && /^(auto|\d{3,4}x\d{3,4})$/.test(settings.size)) result.size = settings.size
   if (settings.quality === 'low' || settings.quality === 'medium' || settings.quality === 'high' || settings.quality === 'auto') result.quality = settings.quality
   if (settings.imageResolution === '1K' || settings.imageResolution === '2K' || settings.imageResolution === '4K') result.imageResolution = settings.imageResolution
+  // 「生成视频」的画面和时长：只收页面给得出的那几种；时长跟不跟得上型号，用的时候再按型号挪。
+  if (settings.videoAspect === '16:9' || settings.videoAspect === '9:16' || settings.videoAspect === '1:1') result.videoAspect = settings.videoAspect
+  if (typeof settings.videoSeconds === 'number' && Number.isInteger(settings.videoSeconds) && settings.videoSeconds >= 1 && settings.videoSeconds <= 15) result.videoSeconds = settings.videoSeconds
   return result
 }
 function readAsset(value: unknown): AiChatAsset {
@@ -96,6 +101,17 @@ function readTextFiles(value: unknown): AiChatTextFile[] {
   if (!Array.isArray(value) || value.length > AI_CHAT_TEXT_FILE_LIMITS.filesPerMessage) throw new ChatStorageError('聊天消息格式无效，原始记录已保留')
   return value.map(readTextFile)
 }
+// 对话里出的视频。读不懂的那一半当没有（同视频工作台读镜头）：这一条只是少了片段，整段对话照样读得出来。
+// 片段出来了就不再带请求号；没出来的，请求号留着，结果不明的那句提醒跟着请求号走。
+function readVideo(value: unknown): ChatVideo | undefined {
+  const video = object(value)
+  if (!video) return undefined
+  const clip = readVideoClip(video.clip)
+  if (clip) return { clip }
+  const requestId = readVideoRequestId(video.requestId)
+  if (!requestId) return {}
+  return { requestId, ...(video.unconfirmed === true ? { unconfirmed: true } : {}), ...(video.unrecorded === true ? { unrecorded: true } : {}) }
+}
 function readMessage(value: unknown): ChatMessage {
   const message = object(value)
   if (!message || (message.role !== 'user' && message.role !== 'assistant')) throw new ChatStorageError('聊天消息格式无效，原始记录已保留')
@@ -103,8 +119,12 @@ function readMessage(value: unknown): ChatMessage {
   if ((message.assets !== undefined && !Array.isArray(message.assets)) || (message.images !== undefined && !Array.isArray(message.images))) throw new ChatStorageError('聊天图片列表无效，原始记录已保留')
   const assets = images.map(readAsset)
   const files = readTextFiles(message.files)
-  const status = message.status === 'complete' || message.status === 'error' || message.status === 'canceled' ? message.status : 'canceled'
-  return { id: id(message.id), role: message.role, content: text(message.content), reasoning: text(message.reasoning), status, createdAt: timestamp(message.createdAt), ...(assets.length ? { assets } : {}), ...(files.length ? { files } : {}), ...(message.settings ? { settings: readSettings(message.settings) } : {}), ...(status === 'error' ? { error: text(message.error) || '上次请求未完成，可以重新生成' } : {}), ...(message.mayStillComplete === true ? { mayStillComplete: true } : {}) }
+  const video = message.role === 'assistant' ? readVideo(message.video) : undefined
+  // 没等到结果的那一段视频：请求号还记着，就当它还在出，页面打开时拿请求号回主进程接回来（只查不交，不会再扣一次，
+  // 同视频工作台）。上一次提交结果不明的接不回来，照「没成功」留着那句提醒，等客户自己点重新生成。
+  const waiting = Boolean(video?.requestId) && !video?.unconfirmed
+  const status = waiting ? 'pending' : video?.clip ? 'complete' : message.status === 'complete' || message.status === 'error' || message.status === 'canceled' ? message.status : video?.unconfirmed ? 'error' : 'canceled'
+  return { id: id(message.id), role: message.role, content: text(message.content), reasoning: text(message.reasoning), status, createdAt: timestamp(message.createdAt), ...(waiting ? { requestId: video?.requestId } : {}), ...(assets.length ? { assets } : {}), ...(files.length ? { files } : {}), ...(video ? { video } : {}), ...(message.settings ? { settings: readSettings(message.settings) } : {}), ...(status === 'error' ? { error: text(message.error) || (video?.unconfirmed ? aiVideoUnconfirmedSubmissionMessage : '上次请求未完成，可以重新生成') } : {}), ...(message.mayStillComplete === true ? { mayStillComplete: true } : {}), ...(status === 'complete' && (message.cutOff === 'length' || message.cutOff === 'filtered') ? { cutOff: message.cutOff } : {}) }
 }
 function assertUniqueIds(items: { id: string }[]): void {
   if (new Set(items.map((item) => item.id)).size !== items.length) throw new ChatStorageError('聊天记录包含重复标识，原始记录已保留')
@@ -199,7 +219,7 @@ export function chatHistoryLogger(bridge: Pick<XingmangApi, 'reportRendererError
 }
 /** 有几段对话读不出来、已经挪开时，页面上那句（D40）。 */
 export function unreadableConversationsNotice(count: number): string {
-  return `有 ${count} 段对话读不出来，已经单独留着，其余照常。`
+  return `有 ${count} 段对话无法读取，已单独保留，其余对话不受影响。`
 }
 // The history files sit unencrypted in the user profile, and chat text is the one
 // surface where a pasted key, an Authorization header or a whole base64 image
@@ -322,6 +342,8 @@ function persistedTextFile(file: AiChatTextFile): AiChatTextFile {
 function persistedMessage(message: ChatMessage) {
   return {
     ...message,
+    // 运行时的请求号不存。视频那条回复的请求号另在 video 里，那一份要存：没等到结果时靠它接回已经付了钱的
+    // 那一段（见 state.ts 的 ChatVideo）。
     requestId: undefined,
     content: redactPersistentChatText(message.content),
     reasoning: redactPersistentChatText(message.reasoning),
@@ -346,7 +368,7 @@ export interface SavedHistory { index: string; keys: ReadonlyMap<string, string>
 // before any migration): the writer runs it once the first save has succeeded.
 // warning = 整份读不出来，这一回不往本机写；unreadable = 只有这几段读不出来、已经挪开，其余照常读写（D40）。
 export interface LoadedChatHistory { state: ChatWorkspace; exists: boolean; warning?: string; unreadable?: number; saved: SavedHistory | null; afterFirstSave?: () => void }
-// 读的时候只要能读；日志是可选的（设置页「搬到新电脑」、测试里不一定接）。
+// 读的时候只要能读；日志是可选的（设置页「迁移到新电脑」、测试里不一定接）。
 export interface ChatHistoryReader { readHistory: (scope: string) => Promise<AiChatHistorySnapshot>; logHistoryProblem?: (detail: string) => void }
 
 export function planHistoryWrite(state: ChatWorkspace, previous: SavedHistory | null): { write: AiChatHistoryWrite; saved: SavedHistory } | null {
@@ -416,7 +438,7 @@ export function parseHistorySnapshot(snapshot: AiChatHistorySnapshot, scope: str
 }
 
 // 常用的话坏了不连累聊天记录：不是一串字的那几条丢掉，超过上限的截掉，整份索引照常读。
-// 「搬到新电脑」导进来的也按这一套筛（主进程已经挡过不成样的文件）。
+// 「迁移到新电脑」导进来的也按这一套筛（主进程已经挡过不成样的文件）。
 export function readChatPhrases(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   return value.filter((item): item is string => typeof item === 'string' && item.trim() !== '' && item.length <= MAX_CHAT_PHRASE_LENGTH).slice(0, MAX_CHAT_PHRASES)
@@ -594,20 +616,36 @@ export function importLegacyHistory(storage: ChatStorage, scope: string, userId:
   } catch (error) { throw error instanceof ChatStorageError ? error : new ChatStorageError('之前的聊天记录暂时无法读取，原始数据已保留') }
 }
 
-// ---- 搬到新电脑 ----
-const transferInvalidMessage = '这个文件不是星芒导出的，或者已经损坏，没有导入任何内容。'
-const imageLeftBehind = '[图片没有一起搬过来]'
+// ---- 迁移到新电脑 ----
+const transferInvalidMessage = '该文件并非由星芒导出或已损坏，未导入任何内容。'
+const imageLeftBehind = '[图片未随记录迁移]'
+const videoLeftBehind = '[视频未随记录迁移]'
 
-function portableMessage(message: ReturnType<typeof persistedMessage>) {
-  // 图片文件只在这台电脑上，带过去也打不开；留一句说明代替。还在等的请求到了新电脑上
-  // 也不会再回来，不带「可能还会完成」。
-  const { assets, requestId: _requestId, mayStillComplete: _pending, ...rest } = message
-  if (!assets?.length) return rest
-  return { ...rest, content: rest.content ? `${rest.content}\n\n${imageLeftBehind}` : imageLeftBehind }
+/**
+ * 「迁移到新电脑」的对话带不带作品。withWorks：作品库跟着一起导出、导入（「搬作品改」），作品编号、日期、
+ * 文件名都不变，对话里的图片、视频按编号在新电脑的作品库里照样找得到，就原样带上。
+ * 缺省 = 不带作品，跟以前一样换成一句说明。
+ */
+export interface ChatTransferOptions { withWorks?: boolean }
+
+// 不带作品时，图片、视频在新电脑上打不开：去掉，在正文后面接一句说明。
+function leaveMediaBehind<T extends { content: string; assets?: unknown[]; video?: ChatVideo }>(message: T) {
+  const { assets, video, ...rest } = message
+  const notes = [...(assets?.length ? [imageLeftBehind] : []), ...(video?.clip ? [videoLeftBehind] : [])]
+  if (!notes.length) return rest
+  return { ...rest, content: [...(rest.content ? [rest.content] : []), ...notes].join('\n\n') }
 }
 
-/** 导出给新电脑的对话：和存盘时一样去掉密钥样的文字，再去掉图片和运行时字段。 */
-/** 「搬到新电脑」带走的常用的话：本机记录里存的就是脱敏过的，原样带上。 */
+function portableMessage(message: ReturnType<typeof persistedMessage>, withWorks: boolean) {
+  // 还在等的请求到了新电脑上也不会再回来，不带「可能还会完成」；还在等的那一单视频按请求号只在这台电脑上
+  // 查得到，带作品时也只带出好的片段。
+  const { requestId: _requestId, mayStillComplete: _pending, ...rest } = message
+  if (!withWorks) return leaveMediaBehind(rest)
+  const { video, ...kept } = rest
+  return video?.clip ? { ...kept, video: { clip: video.clip } } : kept
+}
+
+/** 「迁移到新电脑」带走的常用的话：本机记录里存的就是脱敏过的，原样带上。 */
 export function exportablePhrases(state: ChatWorkspace): string[] {
   return [...(state.phrases ?? [])]
 }
@@ -625,24 +663,37 @@ export function mergeImportedPhrases(present: readonly string[] | undefined, imp
   return list.length === (present?.length ?? 0) ? null : list
 }
 
-export function exportableConversations(state: ChatWorkspace): unknown[] {
+/** 导出给新电脑的对话：和存盘时一样去掉密钥样的文字，再去掉运行时字段；不带作品时图片、视频换成一句说明。 */
+export function exportableConversations(state: ChatWorkspace, options: ChatTransferOptions = {}): unknown[] {
   return state.conversations.map((conversation) => {
     // 输入框里加了还没发的图片也只在这台电脑上：带过去是一个空白方块，点发送还会说图片找不到了（设置 X-6）。
-    // 打了的字和加的文字文件照带。
+    // 打了的字和加的文字文件照带。带作品时也不带：导入那边认不出文件是不是 0.2.24 以前的，一律去掉。
     const { draftImages: _localOnly, ...persisted } = persistedConversation(conversation)
-    return { ...persisted, messages: persisted.messages.map(portableMessage) }
+    return { ...persisted, messages: persisted.messages.map((message) => portableMessage(message, options.withWorks === true)) }
   })
+}
+
+// 导进来的一条消息：还在等的请求接不回来，停在「已停止」。视频只认出好的片段，请求号、结果不明那些
+// 是别的电脑、别的账号的，在这里接不回来。
+function importedMessage({ mayStillComplete: _pending, requestId: _requestId, ...message }: ChatMessage, withWorks: boolean): ChatMessage {
+  const settled = message.status === 'pending' ? { ...message, status: 'canceled' as const } : message
+  if (!withWorks) return leaveMediaBehind(settled)
+  const { video, ...rest } = settled
+  return video?.clip ? { ...rest, video: { clip: video.clip } } : rest
 }
 
 // 文件是用户随便选来的：每个对话都按读本机记录的同一套规则严格校验，有一个不对就
 // 整份不导入，不写一半（I5）。
-export function parseImportedConversations(values: unknown[]): Conversation[] {
+// withWorks = 文件旁边的作品这次会一起导进来：对话里的图片、视频原样留着。作品没跟过来（只拷了那一份文件、
+// 「作品」文件夹读不出来）就跟不带作品的导出一样换成那句说明，不留一格打不开的图；以后带着作品再导一次，
+// mergeImportedConversations 会把图换回来。
+export function parseImportedConversations(values: unknown[], options: ChatTransferOptions = {}): Conversation[] {
   if (values.length > MAX_CONVERSATIONS) throw new ChatStorageError(transferInvalidMessage)
   try {
     // 0.2.24 以前导出的文件里还带着输入框里没发的图片，到这台电脑上打不开，导入时也去掉（设置 X-6）。
     const conversations = values.map(readConversation).map(({ draftImages: _localOnly, ...conversation }) => ({
       ...conversation,
-      messages: conversation.messages.map(({ mayStillComplete: _pending, ...message }) => message),
+      messages: conversation.messages.map((message) => importedMessage(message, options.withWorks === true)),
     }))
     assertUniqueIds(conversations)
     return conversations
@@ -655,9 +706,33 @@ export function parseImportedConversations(values: unknown[]): Conversation[] {
  */
 export interface ChatImportResult { added: number; updated: number; skipped: number }
 
-// 两边比的是说了什么：图片、请求编号这些只在本机，导出时已经去掉或换成一句说明，两边按同一套规则存过。
+// 不带作品的导出（0.2.25 以前每一次都是）把图片、视频换成了接在正文后面的那一两句说明。比两边是不是同一条时
+// 去掉它：那样导过一次、现在带着作品再导，同一条消息一边是说明、一边是图，不去掉就被当成两边各聊各的，另存一份。
+function withoutLeftBehindNotes(content: string): string {
+  let rest = content
+  for (const note of [videoLeftBehind, imageLeftBehind]) {
+    if (rest === note) return ''
+    if (rest.endsWith(`\n\n${note}`)) rest = rest.slice(0, -(note.length + 2))
+  }
+  return rest
+}
+
+// 两边比的是说了什么：图片、视频、请求编号不比，两边按同一套规则存过。
 function messageFingerprint(message: ChatMessage): string {
-  return JSON.stringify([message.id, message.role, message.status, message.content, message.reasoning, message.error ?? '', (message.files ?? []).map((file) => [file.name, file.text])])
+  return JSON.stringify([message.id, message.role, message.status, withoutLeftBehindNotes(message.content), message.reasoning, message.error ?? '', (message.files ?? []).map((file) => [file.name, file.text])])
+}
+
+// 同一条消息（指纹一样）一边只剩那句说明、另一边带着图片或视频：换成带着的那份，作品跟着导过来了，对话里照常显示。
+// target 里已经有图片、视频（含还在等的那一单）的不动。返回 null 表示没有要换的。
+function withMediaFrom(target: readonly ChatMessage[], donor: readonly ChatMessage[]): ChatMessage[] | null {
+  let changed = false
+  const messages = target.map((message, index) => {
+    const other = donor[index]
+    if (!other || message.assets?.length || message.video || (!other.assets?.length && !other.video?.clip)) return message
+    changed = true
+    return { ...message, content: other.content, ...(other.assets?.length ? { assets: other.assets } : {}), ...(other.video?.clip ? { video: { clip: other.video.clip } } : {}) }
+  })
+  return changed ? messages : null
 }
 
 type ImportedRelation = 'same' | 'local-newer' | 'file-newer' | 'diverged'
@@ -715,6 +790,7 @@ function draftFromFile(local: Conversation, incoming: Conversation): Conversatio
  * 换成文件里的；两边各自又聊过，文件里那份另存一份、标题加「（导入）」，两边的都留着（设置 X-4：
  * 以前同号的一律跳过，先导一次、旧电脑接着聊几天再导，后来聊的一条都过不来）。同一个文件导两次不会多出一份。
  * 新对话还有几个空位就导几个，先导最近改过的，放不下的数进 skipped，删掉一些后再导一次就能补上。
+ * 比的时候不看图片、视频换成的那句说明：同一条消息一边是说明、一边带着图，留带着图的那份，算一个「更新」。
  */
 export function mergeImportedConversations(state: ChatWorkspace, imported: Conversation[]): { state: ChatWorkspace } & ChatImportResult {
   const present = new Map(state.conversations.map((conversation) => [conversation.id, conversation]))
@@ -730,13 +806,19 @@ export function mergeImportedConversations(state: ChatWorkspace, imported: Conve
       const local = present.get(incoming.id)
       if (!local) { fresh.push(incoming); claimed.add(incoming.id); break }
       const relation = relationOf(local.messages, incoming.messages)
-      if (relation === 'same') {
-        const drafted = draftFromFile(local, incoming)
-        if (drafted) { replaced.set(local.id, drafted); claimed.add(local.id) }
+      if (relation === 'same' || relation === 'local-newer') {
+        // 以前不带作品导过一次的，这次带着作品：这台电脑上那几条说明换回图片、视频。
+        const restored = withMediaFrom(local.messages, incoming.messages)
+        const base = restored ? { ...local, messages: restored } : local
+        const next = (relation === 'same' ? draftFromFile(base, incoming) : null) ?? (restored ? base : null)
+        if (next) { replaced.set(local.id, next); claimed.add(local.id) }
         break
       }
-      if (relation === 'local-newer') break
-      if (relation === 'file-newer') { replaced.set(local.id, updatedFromFile(local, incoming)); claimed.add(local.id); break }
+      if (relation === 'file-newer') {
+        // 反过来，这台电脑上带着图、文件里是不带作品导出的那句说明：图留着。
+        const kept = withMediaFrom(incoming.messages, local.messages)
+        replaced.set(local.id, updatedFromFile(local, kept ? { ...incoming, messages: kept } : incoming)); claimed.add(local.id); break
+      }
       let copyId = importedCopyId(conversation.id, attempt)
       while (fileIds.has(copyId) || claimed.has(copyId) || copyId === state.draftConversation.id) copyId = importedCopyId(conversation.id, ++attempt)
       incoming = importedCopy(conversation, copyId)
@@ -792,7 +874,7 @@ export async function importConversationsIntoHistory(
 ): Promise<ChatImportResult> {
   // Not loadChatHistory: inside runHistoryImport that would wait on itself.
   const loaded = await readChatHistory(api, storage, scope)
-  if (loaded.warning) throw new ChatStorageError('这台电脑上的聊天记录现在读不出来，为了不弄丢它，这次没有导入对话')
+  if (loaded.warning) throw new ChatStorageError('本机聊天记录当前无法读取，为避免数据丢失，本次未导入对话')
   const { state: merged, added, updated, skipped } = mergeImportedConversations(loaded.state, imported)
   const phrases = mergeImportedPhrases(merged.phrases, importedPhrases)
   if (!added && !updated && !phrases) return { added, updated, skipped }
@@ -821,8 +903,9 @@ export function conversationPlainText(conversation: Conversation): string {
     const content = redactPersistentChatText(message.content)
     if (content) lines.push(content)
     for (const file of message.files ?? []) lines.push(`附件：${redactPersistentChatText(file.name)}`)
-    if (message.assets?.length) lines.push(`[${message.assets.length} 张图片，没有放进这个文件]`)
-    if (message.status === 'error' && message.error) lines.push(`[没有回复成功：${redactPersistentChatText(message.error)}]`)
+    if (message.assets?.length) lines.push(`[${message.assets.length} 张图片，未包含在此文件中]`)
+    if (message.video?.clip) lines.push('[1 段视频，未包含在此文件中]')
+    if (message.status === 'error' && message.error) lines.push(`[回复失败：${redactPersistentChatText(message.error)}]`)
     lines.push('')
   }
   return lines.join('\n')

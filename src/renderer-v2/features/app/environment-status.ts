@@ -41,7 +41,7 @@ export function buildEnvironmentStatus(counts: StartupDiagnosticsCounts | null, 
 
 function runtimeState(probe: RuntimeProbe): string {
   if (probe.detectionFailed) return '检测失败'
-  if (!probe.installed) return '没装'
+  if (!probe.installed) return '未安装'
   return probe.version ?? '已装'
 }
 

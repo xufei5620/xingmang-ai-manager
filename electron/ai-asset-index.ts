@@ -1,9 +1,18 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { mapWithConcurrency } from './async-map'
 import { assertNoReparseComponents } from './safe-local-data'
 
 const DATE_DIRECTORY_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 const MAXIMUM_DIRECTORY_ENTRIES = 4_096
+// The lstat for each file's creation time is the only per-file cost and the
+// calls are independent. Awaited one by one, a library of a few thousand items
+// took seconds on Windows, where a scanner can hold each call for a
+// millisecond, and the create page asks again every time the window regains
+// focus. A window keeps the order, the newest-copy rule and the ceiling exactly
+// as the serial walk had them while wasting at most one window at the ceiling.
+const LSTAT_CONCURRENCY = 8
+const LSTAT_WINDOW = 64
 
 // The library index is capped at 20,000 assets. Enumerating this many
 // directory entries costs one lstat each and reads no file contents, so the
@@ -69,25 +78,31 @@ export async function indexOwnedAssetFiles(options: AiAssetIndexOptions): Promis
     assertNoReparseComponents(directory, options.label)
     const files = await fs.promises.readdir(directory, { withFileTypes: true })
     if (files.length > MAXIMUM_DIRECTORY_ENTRIES) throw new Error(`${options.label}目录条目过多`)
-    for (const file of files.sort((left, right) => right.name.localeCompare(left.name))) {
-      if (entries.length >= maximum) break
+    const candidates = files.sort((left, right) => right.name.localeCompare(left.name)).flatMap((file) => {
       const match = file.name.match(options.filePattern)
-      if (!match || !file.isFile() || file.isSymbolicLink()) continue
-      const assetId = match[1]
-      // The same identifier can appear under two date directories after a
-      // restore. The newest directory wins because dates sort descending.
-      if (seen.has(assetId)) continue
-      const filePath = path.join(directory, file.name)
-      let createdAt: string
-      try {
-        createdAt = (await fs.promises.lstat(filePath)).birthtime.toISOString()
-      } catch {
-        // A file removed between readdir and lstat is simply not in the library.
-        continue
+      return match && file.isFile() && !file.isSymbolicLink() ? [{ fileName: file.name, filePath: path.join(directory, file.name), assetId: match[1], extension: match[2] }] : []
+    })
+    for (let start = 0; start < candidates.length && entries.length < maximum; start += LSTAT_WINDOW) {
+      const window = candidates.slice(start, start + LSTAT_WINDOW)
+      const created = await mapWithConcurrency(window, LSTAT_CONCURRENCY, async (candidate) => {
+        if (seen.has(candidate.assetId)) return null
+        try {
+          return (await fs.promises.lstat(candidate.filePath)).birthtime.toISOString()
+        } catch {
+          // A file removed between readdir and lstat is simply not in the library.
+          return null
+        }
+      })
+      for (const [position, candidate] of window.entries()) {
+        if (entries.length >= maximum) break
+        const createdAt = created[position]
+        // The same identifier can appear under two date directories after a
+        // restore. The newest directory wins because dates sort descending.
+        if (createdAt === null || seen.has(candidate.assetId)) continue
+        seen.add(candidate.assetId)
+        options.onFile?.(candidate.assetId, candidate.filePath)
+        entries.push({ assetId: candidate.assetId, fileName: candidate.fileName, extension: candidate.extension, createdAt, mediaType: options.mediaType })
       }
-      seen.add(assetId)
-      options.onFile?.(assetId, filePath)
-      entries.push({ assetId, fileName: file.name, extension: match[2], createdAt, mediaType: options.mediaType })
     }
   }
   return entries

@@ -62,8 +62,8 @@ describe('startup failure dialog', () => {
   it('explains a full disk in plain Chinese without the user name or raw error', () => {
     const dialog = buildStartupFailureDialog(diskFull, options)
     expect(dialog.kind).toBe('disk-full')
-    expect(dialog.title).toBe('星芒AI管理工具打不开')
-    expect(dialog.message).toContain('C 盘空间不够了')
+    expect(dialog.title).toBe('星芒AI管理工具无法打开')
+    expect(dialog.message).toContain('C 盘空间不足')
     for (const text of [dialog.title, dialog.message, dialog.detail]) {
       expect(text).not.toContain('张三')
       expect(text).not.toMatch(/ENOSPC|AppData|settings\.json/)
@@ -86,8 +86,8 @@ describe('startup failure dialog', () => {
   it('has a sentence for each kind of failure', () => {
     expect(buildStartupFailureDialog(errnoError('EPERM', 'EPERM'), options).message).toContain('杀毒软件')
     expect(buildStartupFailureDialog(errnoError('MODULE_NOT_FOUND', 'x'), options).message).toContain('重新下载安装包')
-    expect(buildStartupFailureDialog(new Error('x'), options).message).toContain('出了点问题')
+    expect(buildStartupFailureDialog(new Error('x'), options).message).toContain('出现异常')
     expect(buildStartupFailureDialog(diskFull, { ...options, platform: 'darwin', dataDirectory: '/Users/a/Library' }).message)
-      .toContain('磁盘空间不够了')
+      .toContain('磁盘空间不足')
   })
 })

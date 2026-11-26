@@ -56,7 +56,9 @@ function runPowerShell(argv, env = process.env) {
     const child = execFile(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', ...argv], {
       env, encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024, timeout: probeBudgetMs,
     }, (error, stdout, stderr) => {
-      if (error) reject(new Error(`${error.message}${error.killed ? ` (killed after ${probeBudgetMs}ms)` : ''}\n${stderr}`))
+      // What the script had printed before it was killed tells a script that
+      // never got to its output from one that printed it and then did not exit.
+      if (error) reject(new Error(`${error.message}${error.killed ? ` (killed after ${probeBudgetMs}ms)` : ''}\n${stderr}${error.killed ? `\nstdout before the kill: ${stdout ? stdout.slice(0, 2000) : '(nothing)'}` : ''}`))
       else resolve(stdout)
     })
     // Nothing is piped in; a console host waiting on stdin must not hold the probe.
@@ -165,10 +167,16 @@ const checks = [
   // escaping, which has to come back ASCII-only and read as the same text; the
   // stand-in for an installed Codex is built from Select-Object alone, which
   // ConstrainedLanguage allows, so the version still reaches the parser.
+  //
+  // Each segment is its own powershell.exe and prints its own time. Twice
+  // (#1897, #2000) this check ran out the 90 s budget and the log could not say
+  // which of the five had hung (#2041); a segment that fails now names itself
+  // and the ones before it.
   ['Codex merged and package probes still answer in ConstrainedLanguage', async () => {
     const failingAppx = "function Get-AppxPackage { throw 'The AppX Deployment Service is not running.' }\n"
     const installedAppx = String.raw`function Get-AppxPackage { 'x' | Select-Object @{n='Name';e={'OpenAI.Codex'}}, @{n='Version';e={'26.1103.4239.0'}}, @{n='PackageFullName';e={'OpenAI.Codex_26.1103.4239.0_x64__2p2nqsd0c76g0'}}, @{n='PackageFamilyName';e={'OpenAI.Codex_2p2nqsd0c76g0'}}, @{n='InstallLocation';e={'C:\Program Files\WindowsApps\OpenAI.Codex_26.1103.4239.0_x64__2p2nqsd0c76g0'}} }
 `
+    const timings = []
     for (const [label, script, combined, expect] of [
       ['merged', buildCodexDesktopCombinedProbeScript(), true, 'conclusion'],
       ['package', buildCodexDesktopPackageProbeScript(), false, 'conclusion'],
@@ -176,12 +184,16 @@ const checks = [
       ['merged with Codex installed', installedAppx + buildCodexDesktopCombinedProbeScript(), true, 'installed'],
       ['package with Codex installed', installedAppx + buildCodexDesktopPackageProbeScript(), false, 'installed'],
     ]) {
-      const output = await runConstrained(script)
+      const startedAt = Date.now()
+      const output = await runConstrained(script).catch((error) => {
+        throw new Error(`segment "${label}" failed after ${Date.now() - startedAt}ms (before it: ${timings.join(', ') || 'none'}): ${error?.message ?? error}`)
+      })
+      timings.push(`${label} ${Date.now() - startedAt}ms`)
       assert.match(output.trim(), /^[\x00-\x7F]+$/, `${label}: ${output}`)
       const probe = combined ? parseCodexDesktopCombinedProbeJson(output).packageProbe : parseCodexDesktopPackageProbeJson(output)
       if (expect === 'error') {
         assert.equal(probe.confirmedAbsent, false, label)
-        assert.match(String(probe.error), /^读不到这台电脑上 Codex 桌面端的安装信息/, label)
+        assert.match(String(probe.error), /^无法读取本机 Codex 桌面端的安装信息/, label)
       } else if (expect === 'installed') {
         assert.equal(probe.value?.version, '26.1103.4239.0', `${label}: ${output}`)
         assert.equal(probe.value?.packageFamilyName, 'OpenAI.Codex_2p2nqsd0c76g0', label)
@@ -189,6 +201,7 @@ const checks = [
         assert.ok(probe.value !== null || probe.confirmedAbsent === true || probe.error !== null, `${label}: ${output}`)
       }
     }
+    console.log(`info Codex merged and package probes in ConstrainedLanguage, per segment: ${timings.join(', ')}`)
   }],
   // The process segment names this user and session with two .NET calls that
   // ConstrainedLanguage refuses, so it failed whole there and the home page
@@ -196,7 +209,8 @@ const checks = [
   // PowerShell process instead. The stand-in window is node.exe copied under a
   // WindowsApps-shaped folder as Codex.exe: the real query, WMI owner check
   // included, has to find it from both language modes as the same entry, the
-  // parser has to keep it, and the close path's probe has to see it too.
+  // parser has to keep it, and the close path's probe and the one 打开 waits on
+  // have to see it too.
   ['Codex process probes find a running window in ConstrainedLanguage as in FullLanguage', async () => {
     const standInRoot = path.join(scratch, 'running-codex')
     const appDir = path.join(standInRoot, 'WindowsApps', 'OpenAI.Codex_26.1103.4239.0_x64__2p2nqsd0c76g0', 'app')
@@ -222,6 +236,18 @@ const checks = [
       }
       const closing = await runConstrained(buildCodexDesktopProcessProbeScript('all'))
       assert.deepEqual(parseWindowsProcessesJson(closing).map((entry) => entry.processId), [standIn.pid], closing)
+      // The probe 打开 waits on asked for this session through .NET and wrote
+      // [pscustomobject] results, so under ConstrainedLanguage it found nothing
+      // and 打开 said Codex had not started while it ran. It has to find the
+      // same window from both language modes, with the same JSON.
+      const launchScript = buildCodexDesktopSessionProcessProbeScript()
+      const launchFull = await runPowerShell(['-Command', launchScript], trustedCommandEnvironment())
+      const launchConstrained = await runConstrained(launchScript)
+      assert.match(launchConstrained.trim(), /^[\x00-\x7F]+$/, launchConstrained)
+      assert.deepEqual(JSON.parse(launchConstrained.trim()), JSON.parse(launchFull.trim()), `${launchFull}\n${launchConstrained}`)
+      for (const output of [launchFull, launchConstrained]) {
+        assert.deepEqual(parseCodexDesktopSessionProcessIds(output, 'OpenAI.Codex_2p2nqsd0c76g0'), [standIn.pid], output)
+      }
     } finally {
       standIn.kill()
       await gone
@@ -877,6 +903,11 @@ try { Get-ItemProperty -LiteralPath 'Registry::${key}' | Out-Null; 'read' } catc
 const { buildEnsureUserPathScript, buildRemoveUserPathScript } = compiled('windows-cli-shell-access')
 const { buildClearUserProxyScript } = compiled('stale-proxy-environment')
 const { buildClearProviderOverridesScript } = compiled('diagnostic-fixes')
+const {
+  antigravityEnvironmentValueVariable,
+  buildReadWindowsAntigravityEnvironmentScript,
+  buildWriteWindowsAntigravityEnvironmentScript,
+} = compiled('antigravity-windows-environment')
 
 // reg export writes UTF-16LE whatever the console code page is, so what comes
 // back is what is stored: the kind, and the text with %VAR% left as written.
@@ -932,6 +963,15 @@ checks.push(['the user environment scripts leave the same registry values behind
   const stored = 'C:\\xingmang-smoke-keep;%USERPROFILE%\\xingmang-smoke-ref;C:\\中文工具\\bin;%XINGMANG_SMOKE_UNSET%\\x'
   const watchedProxies = ['HTTP_PROXY', 'ALL_PROXY', 'HTTPS_PROXY', 'NO_PROXY']
   const watchedOverrides = ['ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL', 'CODEX_HOME']
+  // Antigravity's gateway settings: the four it writes, plus one of the user's
+  // own gateway variables that must be left exactly as it was.
+  const watchedAntigravity = ['AGY_LLM_GATEWAY_URL', 'AGY_LLM_GATEWAY_API_KEY', 'AGY_LLM_GATEWAY_WIRE_PROTOCOL', 'AGY_LLM_GATEWAY_MODELS', 'AGY_LLM_GATEWAY_HEADERS']
+  const antigravityValues = (models) => Object.fromEntries(Object.entries({
+    AGY_LLM_GATEWAY_URL: 'https://xm.solov.cc',
+    AGY_LLM_GATEWAY_API_KEY: 'sk-smoke0123456789',
+    AGY_LLM_GATEWAY_WIRE_PROTOCOL: 'genai',
+    AGY_LLM_GATEWAY_MODELS: models,
+  }).map(([name, value]) => [antigravityEnvironmentValueVariable(name), value]))
   fs.mkdirSync(target, { recursive: true })
   // [label, setup, script, extra environment, watched values]
   const steps = [
@@ -958,6 +998,16 @@ checks.push(['the user environment scripts leave the same registry values behind
       await setUserEnvironmentValue('OPENAI_BASE_URL', 'REG_EXPAND_SZ', 'http://%XINGMANG_SMOKE_HOST%:9')
       await setUserEnvironmentValue('CODEX_HOME', 'REG_DWORD', '1')
     }, buildClearProviderOverridesScript(), { XINGMANG_CLEAR_OVERRIDES: 'ANTHROPIC_BASE_URL;OPENAI_BASE_URL;CODEX_HOME;NOT_AN_OVERRIDE' }, watchedOverrides],
+    ['write the Antigravity settings', async () => {
+      await setUserEnvironmentValue('AGY_LLM_GATEWAY_URL', 'REG_EXPAND_SZ', 'https://%XINGMANG_SMOKE_HOST%')
+      await setUserEnvironmentValue('AGY_LLM_GATEWAY_API_KEY', 'REG_DWORD', '1')
+      await deleteUserEnvironmentValue('AGY_LLM_GATEWAY_WIRE_PROTOCOL')
+      await setUserEnvironmentValue('AGY_LLM_GATEWAY_MODELS', 'REG_SZ', 'gemini-3.8-flash')
+      await setUserEnvironmentValue('AGY_LLM_GATEWAY_HEADERS', 'REG_SZ', 'X-Team: 中文')
+    }, buildWriteWindowsAntigravityEnvironmentScript(), antigravityValues('gemini-3.8-flash,gemini-4-argon-high'), watchedAntigravity],
+    ['write the same Antigravity settings again', null, buildWriteWindowsAntigravityEnvironmentScript(), antigravityValues('gemini-3.8-flash,gemini-4-argon-high'), watchedAntigravity],
+    ['change the Antigravity menu', null, buildWriteWindowsAntigravityEnvironmentScript(), antigravityValues('gemini-3.8-flash'), watchedAntigravity],
+    ['read the Antigravity settings', null, buildReadWindowsAntigravityEnvironmentScript(), {}, []],
   ]
   const original = await readUserEnvironment()
   const outcomes = { full: [], constrained: [] }
@@ -972,14 +1022,16 @@ checks.push(['the user environment scripts leave the same registry values behind
         if (mode === 'constrained') assert.match(stdout, /^[\x00-\x7F]*$/, `${label}: ${stdout}`)
         const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
         // The proxy reader answers in UTF-8 in FullLanguage and with \uXXXX escapes otherwise.
-        const answer = script === buildReadProxyScopesScript() ? JSON.parse(lines.at(-1)).user : lines
+        const answer = script === buildReadProxyScopesScript()
+          ? JSON.parse(lines.at(-1)).user
+          : script === buildReadWindowsAntigravityEnvironmentScript() ? JSON.parse(lines.at(-1)) : lines
         const values = await readUserEnvironment()
         assert.equal(values.has('xingmang_environment_refresh') || values.has('xingmang_path_refresh'), false, `${mode} ${label} left its refresh value behind`)
         outcomes[mode].push({ label, answer, state: Object.fromEntries(watched.map((name) => [name, values.get(name.toLowerCase()) ?? null])) })
       }
     }
   } finally {
-    for (const name of [...watchedProxies, ...watchedOverrides]) {
+    for (const name of [...watchedProxies, ...watchedOverrides, ...watchedAntigravity]) {
       const entry = original.get(name.toLowerCase())
       if (entry) await setUserEnvironmentValue(name, entry.kind, entry.value)
       else await deleteUserEnvironmentValue(name)
@@ -1004,6 +1056,26 @@ checks.push(['the user environment scripts leave the same registry values behind
     label: 'clear the proxy settings',
     answer: ['cleared:HTTP_PROXY;ALL_PROXY;HTTPS_PROXY'],
     state: { HTTP_PROXY: null, ALL_PROXY: null, HTTPS_PROXY: null, NO_PROXY: { kind: 'REG_SZ', value: 'localhost' } },
+  })
+  const written = (models) => ({
+    AGY_LLM_GATEWAY_URL: { kind: 'REG_SZ', value: 'https://xm.solov.cc' },
+    AGY_LLM_GATEWAY_API_KEY: { kind: 'REG_SZ', value: 'sk-smoke0123456789' },
+    AGY_LLM_GATEWAY_WIRE_PROTOCOL: { kind: 'REG_SZ', value: 'genai' },
+    AGY_LLM_GATEWAY_MODELS: { kind: 'REG_SZ', value: models },
+    AGY_LLM_GATEWAY_HEADERS: { kind: 'REG_SZ', value: 'X-Team: 中文' },
+  })
+  assert.deepEqual(byLabel.get('write the Antigravity settings'), {
+    label: 'write the Antigravity settings', answer: ['written'], state: written('gemini-3.8-flash,gemini-4-argon-high'),
+  })
+  assert.deepEqual(byLabel.get('write the same Antigravity settings again').answer, ['unchanged'])
+  assert.deepEqual(byLabel.get('change the Antigravity menu'), {
+    label: 'change the Antigravity menu', answer: ['written'], state: written('gemini-3.8-flash'),
+  })
+  assert.deepEqual(byLabel.get('read the Antigravity settings').answer, {
+    AGY_LLM_GATEWAY_URL: 'https://xm.solov.cc',
+    AGY_LLM_GATEWAY_API_KEY: 'sk-smoke0123456789',
+    AGY_LLM_GATEWAY_WIRE_PROTOCOL: 'genai',
+    AGY_LLM_GATEWAY_MODELS: 'gemini-3.8-flash',
   })
   assert.deepEqual(byLabel.get('clear the provider overrides'), {
     label: 'clear the provider overrides',
@@ -1137,6 +1209,52 @@ function runLaunchBroker(shell, script, cwd) {
   })
 }
 
+const { buildAntigravityDesktopWindowsProcessScript, parseAntigravityDesktopWindowsProcesses } = compiled('antigravity-service')
+
+// Before opening the Antigravity desktop app the main process asks whether this
+// very Antigravity.exe is already running: a second copy exits at once and the
+// new settings never reach the running one, so the customer is asked to quit it
+// first. The question runs under trustedCommandEnvironment and, where an
+// application-control policy is enforced, in ConstrainedLanguage. A copy of
+// node.exe named Antigravity.exe under a Chinese folder name has to be found in
+// both modes, so the \uXXXX escaping is exercised on a real path too. Only a
+// copy that started before the settings last changed is asked to quit (复查 A
+// 第 2 轮第 2 条), so each entry also carries its start time: a hashtable and
+// DateTime's own method, both allowed in ConstrainedLanguage, and both modes
+// have to give the same time, between the spawn and the answer.
+checks.push(['the Antigravity running check finds the app and when it started in ConstrainedLanguage as in FullLanguage', async () => {
+  const executable = path.join(fs.realpathSync.native(scratch), '星芒 程序', 'Antigravity.exe')
+  fs.mkdirSync(path.dirname(executable), { recursive: true })
+  fs.copyFileSync(process.execPath, executable)
+  const script = buildAntigravityDesktopWindowsProcessScript()
+  const idle = await runConstrained(script)
+  assert.deepEqual(parseAntigravityDesktopWindowsProcesses(idle, executable), [], idle)
+  const spawnedAt = Date.now()
+  const app = spawn(executable, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'ignore', windowsHide: true })
+  try {
+    const started = Date.now()
+    const full = await runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(script)], trustedEnv())
+    console.log(`info Antigravity running check in FullLanguage took ${Date.now() - started} ms`)
+    const constrained = await runConstrained(script)
+    const answeredAt = Date.now()
+    assert.match(constrained.trim(), /^[\x00-\x7F]+$/, constrained)
+    const fullStarts = parseAntigravityDesktopWindowsProcesses(full, executable)
+    assert.deepEqual(parseAntigravityDesktopWindowsProcesses(constrained, executable), fullStarts, `${full}\n${constrained}`)
+    assert.equal(fullStarts?.length, 1, full)
+    // Same clock on both sides; a second of slack for FILETIME against Date.now() rounding.
+    const startedAt = fullStarts[0]
+    assert.ok(startedAt !== null && startedAt >= spawnedAt - 1_000 && startedAt <= answeredAt, `${full} (spawned ${spawnedAt}, answered ${answeredAt})`)
+  } finally {
+    // The copy stays locked until it has exited, and the scratch folder is removed at the end.
+    if (app.exitCode === null && app.signalCode === null) {
+      await new Promise((resolve) => {
+        app.once('exit', resolve)
+        app.kill()
+      })
+    }
+  }
+}])
+
 checks.push(['the CLI launch broker opens a folder whose name has brackets, and reports a failure by its cause', async () => {
   const folder = path.join(scratch, '作业[1]', 'a`[b]')
   fs.mkdirSync(folder, { recursive: true })
@@ -1174,7 +1292,7 @@ checks.push(['the CLI launch broker opens a folder whose name has brackets, and 
     if (isChineseSentence(parseWindowsCliLaunchCause(unescaped.stderr) ?? '')) {
       assert.ok(dialog.startsWith('Windows 无法启动 PowerShell：') && dialog.includes('作业'), `${name}: ${dialog}`)
     } else {
-      assert.equal(dialog, 'Windows 没能启动 PowerShell，原因已经记进运行日志。', `${name}: ${dialog}`)
+      assert.equal(dialog, 'Windows 未能启动 PowerShell，原因已记录到运行日志。', `${name}: ${dialog}`)
     }
     assert.doesNotMatch(dialog, /Command failed|EncodedCommand|CLIXML|<S /, `${name}: ${dialog}`)
     assert.ok(buildWindowsCliLaunchOutput(failure).stderr?.includes('作'), `${name}: the log lost the folder's name: ${unescaped.stderr}`)
@@ -1435,6 +1553,49 @@ Write-Output ('RECOVERY_CHECKS=' + $script:checks)
 `
   const output = await runPowerShell(['-ExecutionPolicy', 'Bypass', '-EncodedCommand', encodeWindowsPowerShellCommand(source)])
   assert.match(output, /RECOVERY_CHECKS=35/)
+}])
+
+// The development shadow-home launcher (T01). A developer's own shell often
+// carries CODEX_HOME or XINGMANG_CODEX_HOME_OVERRIDE pointing at the everyday
+// ~/.codex, and both outrank USERPROFILE, so the dev build kept writing the real
+// Codex configuration. -CheckOnly prints the environment the script would start
+// the dev build with and stops before creating, clearing or launching anything;
+// the app's own resolvers then have to land inside the shadow folder whichever
+// variable was inherited. Windows PowerShell 5.1 is the one the script's usage
+// line names, and it is also the one that misreads a script saved without a BOM.
+const { defaultProviderConfigRoots, resolveCodexHomeContext } = compiled('codex-home')
+const shadowHomeScript = path.join(repo, 'scripts', 'dev-shadow-home.ps1')
+checks.push(['the dev shadow-home launcher points every Codex folder at the shadow folder', async () => {
+  // The long-name form: the runner's TEMP is an 8.3 short path, which .NET expands.
+  const root = fs.realpathSync.native(scratch)
+  const shadow = path.join(root, 'shadow home')
+  const expected = path.join(shadow, '.codex')
+  const inheritedCodexHome = path.join(root, 'everyday home', '.codex')
+  const inheritedOverride = path.join(root, 'everyday override', '.codex')
+  const codexVariables = new Set(['CODEX_HOME', 'XINGMANG_CODEX_HOME_OVERRIDE'])
+  const base = Object.fromEntries(Object.entries(process.env).filter(([name]) => !codexVariables.has(name.toUpperCase())))
+  const cases = [
+    ['nothing inherited', {}],
+    ['CODEX_HOME inherited', { CODEX_HOME: inheritedCodexHome }],
+    ['the development override inherited', { XINGMANG_CODEX_HOME_OVERRIDE: inheritedOverride }],
+    ['both inherited', { CODEX_HOME: inheritedCodexHome, XINGMANG_CODEX_HOME_OVERRIDE: inheritedOverride }],
+  ]
+  for (const [label, inherited] of cases) {
+    const output = await runPowerShell(['-ExecutionPolicy', 'Bypass', '-File', shadowHomeScript, '-Shadow', shadow, '-CheckOnly'], { ...base, ...inherited })
+    const launched = JSON.parse(output.trim())
+    const env = { ...base, ...inherited, ...launched }
+    assert.equal(launched.USERPROFILE, shadow, label)
+    const context = resolveCodexHomeContext({ isPackaged: false, env, userHome: launched.USERPROFILE })
+    assert.equal(context.codexHome, expected, label)
+    assert.equal(context.codexEnv.CODEX_HOME, expected, label)
+    assert.equal(defaultProviderConfigRoots(launched.USERPROFILE, env).codexHome, expected, label)
+  }
+  // A relative -Shadow comes from the PowerShell location, not the process
+  // folder: the app refuses to start on a relative development override.
+  const relative = await runPowerShell(['-ExecutionPolicy', 'Bypass', '-Command',
+    `Set-Location -LiteralPath '${root.replaceAll("'", "''")}'; & '${shadowHomeScript.replaceAll("'", "''")}' -Shadow 'shadow home' -CheckOnly`], base)
+  assert.equal(JSON.parse(relative.trim()).XINGMANG_CODEX_HOME_OVERRIDE, expected)
+  assert.equal(fs.existsSync(shadow), false, '-CheckOnly must not create the shadow folder')
 }])
 
 // The same probes with autoloading switched off right after their imports, so

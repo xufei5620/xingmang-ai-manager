@@ -1,7 +1,10 @@
 html, body, #root { margin: 0; width: 100%; height: 100%; }
 * { box-sizing: border-box; }
-body { color: var(--text); background: var(--win); font: var(--font-body)/var(--line-body) var(--font); letter-spacing: 0; }
+body { color: var(--text); background: var(--win); font: var(--font-body)/var(--line-body) var(--font); letter-spacing: 0; text-wrap: pretty; }
 button, input, select, textarea { font: inherit; }
+/* 段落最后一行只剩一个字（「……共用同一账」「号。」）看着像排版出错。整个界面按浏览器自带的「避免孤字」折行，
+   只动每段最后几行，字和位置都不变；登录页原来就这么排。客户正在打字的地方不这么排，免得每敲一个字前面那行跟着跳。 */
+textarea, input, [contenteditable] { text-wrap-style: auto; }
 /* 外壳铺满窗口（v4）：标题栏并进 44 高的顶栏，侧栏 224（收起 60）、状态栏 28，每页正文最宽 1000、在侧栏右边居中。
    Windows/Linux 的窗口按钮由系统画在顶栏右上角，和顶栏一样高、底色跟顶栏走；Mac 的红黄绿三个点落在侧栏顶上。 */
 .v2-root { width: 100%; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
@@ -127,6 +130,9 @@ button, input, select, textarea { font: inherit; }
 .v2-content { --v2-content-padding-top: 28px; min-height: 0; min-width: 0; flex: 1; overflow: auto; padding: var(--v2-content-padding-top) max(16px, calc((100% - 1000px) / 2)) 40px; }
 .v2-content-chat { padding: 0; overflow: hidden; }
 .v2-content-chat .v2-page-host, .v2-chat-host { height: 100%; min-height: 0; }
+/* 「插件」页铺满侧栏右边、自己分左右两栏各自滚（同聊天页），右栏内容自己居中限宽。 */
+.v2-content-extensions { padding: 0; overflow: hidden; }
+.v2-content-extensions .v2-page-host, .v2-content-extensions .v2-page-host > div:not([hidden]) { height: 100%; min-height: 0; }
 .v2-chat-host[hidden] { display: none; }
 .v2-statusbar { flex: none; height: var(--statusbar-height); display: flex; align-items: center; gap: 16px; padding: 0 14px; box-shadow: inset 0 1px 0 var(--line); background: var(--status); color: var(--text-3); font-size: var(--font-small-compact); white-space: nowrap; }
 .v2-statusbar > span, .v2-statusbar > button { display: flex; align-items: center; gap: 6px; white-space: nowrap; }

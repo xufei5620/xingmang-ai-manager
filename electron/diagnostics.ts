@@ -125,7 +125,7 @@ export interface DiagnosticsDependencies {
   inspectElevationCapability?: (signal: AbortSignal) => Promise<WindowsElevationCapability>
   inspectPowerShell?: (signal: AbortSignal) => Promise<DiagnosticToolStatus>
   /**
-   * Linux 上「打开工具用的命令窗口」一项：点「打开」时会用哪个命令窗口程序（linux-terminal.ts）。
+   * Linux 上「打开工具使用的命令窗口」一项：点「打开」时会用哪个命令窗口程序（linux-terminal.ts）。
    * 缺省 = 按这台电脑的 PATH 和桌面现找；测试用它造「装了哪个」「一个都没有」。
    */
   findLinuxTerminal?: () => LinuxTerminalCandidate | null
@@ -140,7 +140,7 @@ export interface DiagnosticsDependencies {
    */
   readClaudeConfigOwnership?: () => ToolConfigOwnership | null | undefined
   /**
-   * 用户最近一次在本软件里选的项目文件夹。「项目文件夹里的设置」一项看它里面有没有
+   * 用户最近一次在本软件里选的项目文件夹。「项目文件夹中的设置」一项看它里面有没有
    * 会盖过当前账号的设置；不给就只看这台电脑上统一下发的那几份。
    */
   workspace?: string
@@ -160,12 +160,12 @@ export interface DiagnosticsDependencies {
    * 「星芒 AI 网络」一项：relaySite 这会儿走的线路（relay-route-controller.ts）。给了就在结论里写明
    * 用的是直连还是默认线路；选「自动」、这会儿走先走的那条却没连上时，改查同一个站的备用那条，查通了
    * 算能连上、说清已经自动改走备用那条，并把先走那条的失败报给线路那边。缺省 = 不提线路（旧行为）。
-   * 「电脑里另外设过的工具地址或密钥」也看它：选「自动」时指着默认线路的地址也算指向当前账号
+   * 「电脑中另行设置的工具地址或密钥」也看它：选「自动」时指着默认线路的地址也算指向当前账号
    * （environmentAccountBaseUrls）。缺省 = 只认 relaySite 那一份。
    */
   relayRoute?: DiagnosticsRelayRoute
   /**
-   * xm 三线路：各工具「连接设置」那几项、「电脑里另外设过的工具地址或密钥」比的是写进工具配置的那条线路
+   * xm 三线路：各工具「连接设置」那几项、「电脑中另行设置的工具地址或密钥」比的是写进工具配置的那条线路
    * （工具线路），它可以和「星芒 AI 网络」用的那条（应用线路）不一样。缺省 = 和 relaySite、relayRoute
    * 同一份（旧行为，历史账号也一直是这样）。
    */
@@ -188,25 +188,25 @@ export interface DiagnosticsDependencies {
   fetch?: typeof globalThis.fetch
   clashConfigPaths?: readonly string[]
   /**
-   * Windows 上「电脑里的代理设置」一项读当前账号与整台电脑各设了哪几条，用来判断
+   * Windows 上「电脑中的代理设置」一项读当前账号与整台电脑各设了哪几条，用来判断
    * 能不能给「清掉这条旧设置」按钮。缺省 = 起 PowerShell 读（异步）；读不到按不知道处理。
    */
   readProxyScopes?: () => Promise<ProxyVariableScopes | null>
   /** 试连代理设置指向的本机端口；缺省 = 真的去连。 */
   probeLoopbackProxy?: LoopbackProbe
   /**
-   * 「别的代理软件」一项问系统代理对星芒这个地址生不生效：宿主交给只跟随系统代理的那个会话的
+   * 「其他代理软件」一项问系统代理对星芒这个地址生不生效：宿主交给只跟随系统代理的那个会话的
    * `resolveProxy`（network-routes.ts 的 resolveSystemProxy），系统设置里勾的 HTTP / HTTPS / SOCKS /
    * 自动代理配置都已经算进去，不起任何外部命令。不问默认会话：星芒自己改了直连以后它答 DIRECT，
    * 会把一个没在运行的代理说成没有。下面三样都给了才有这一项；缺省 = 没有这一项。
    */
   resolveSystemProxy?: (url: string) => Promise<string>
-  /** 「别的代理软件」：只经系统代理的会话发请求（network-routes.ts 的 systemProxyFetch）。 */
+  /** 「其他代理软件」：只经系统代理的会话发请求（network-routes.ts 的 systemProxyFetch）。 */
   fetchThroughSystemProxy?: typeof globalThis.fetch
-  /** 「别的代理软件」：只直接连的会话发请求（network-routes.ts 的 siteDirectFetch）。 */
+  /** 「其他代理软件」：只直接连的会话发请求（network-routes.ts 的 siteDirectFetch）。 */
   fetchDirect?: typeof globalThis.fetch
   /**
-   * 「查网址的服务（DNS）」一项：用电脑自己的 DNS、公共 DNS 各查一个域名（diagnostics-dns-check.ts 的
+   * 「域名解析服务（DNS）」一项：用电脑自己的 DNS、公共 DNS 各查一个域名（diagnostics-dns-check.ts 的
    * lookupWithSystemDns、lookupWithPublicDns）。两样都给了才有这一项；缺省 = 没有这一项，测试不会对外发查询。
    */
   lookupHost?: (host: string) => Promise<string[]>
@@ -237,7 +237,7 @@ export interface DiagnosticsDependencies {
   aiOutputPlacement?: () => { movedFromDocuments: boolean, earlierWorksLeftInDocuments: boolean, earlierWorksLeftInSyncedDocuments?: 'onedrive' | 'icloud' } | null
   /**
    * 系统「文档」目录（app.getPath('documents')）；拿不到传 null。给了（含 null）才在
-   * Windows 上有「「文档」文件夹能不能写」这一项。
+   * Windows 上有「「文档」文件夹是否可写入」这一项。
    */
   documentsDirectory?: string | null
   /** 测试用：模拟「文档」能写、不让写、写不进。 */

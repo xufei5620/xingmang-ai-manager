@@ -60,14 +60,15 @@ export function resolveInterruptibleInstallTask(
 /**
  * 重启装更新会停下、重开以后又不会自己接着做的事（D10）。聊天、视频剪辑的拼片在界面里跑，由界面报上来；
  * 画布出图在主进程里，宿主自己看。交给服务端在生成的视频不算：重开以后会接着取回来。
+ * 「立即重启」电脑停下的也是这几样，用同一句问（confirmWindowsRestartWork）。
  */
 export type UnfinishedRestartWork = RendererRestartWork | 'canvas'
 
 // 顺序和单子上那句一样；只列真在跑的那几样。
 const unfinishedRestartWorkPhrases: ReadonlyArray<readonly [UnfinishedRestartWork, string]> = [
-  ['chat', '对话还在回复或出图'],
-  ['video-compose', '视频剪辑还在拼接'],
-  ['canvas', '画布还在生成'],
+  ['chat', '对话仍在回复或生成图片'],
+  ['video-compose', '视频剪辑仍在合成'],
+  ['canvas', '画布仍在生成'],
 ]
 
 export interface UnfinishedRestartWorkPrompt {
@@ -86,12 +87,12 @@ export function buildUnfinishedRestartWorkPrompt(running: Iterable<UnfinishedRes
   if (listed.length === 0) return null
   const phrases = listed.map(([, phrase]) => phrase)
   const last = phrases[phrases.length - 1]
-  const sentence = phrases.length === 1 ? last : `${phrases.slice(0, -1).join('，')}，或者${last}`
+  const sentence = phrases.length === 1 ? last : `${phrases.slice(0, -1).join('，')}，或${last}`
   return {
     kinds: listed.map(([kind]) => kind),
-    message: '还有任务没做完',
-    detail: `${sentence}。现在重启会把它们停下，出到一半的图可能已经扣费。`,
-    buttons: ['等它做完', '仍然重启'],
+    message: '仍有任务未完成',
+    detail: `${sentence}。现在重启将停止这些任务，生成中的图片可能已产生扣费。`,
+    buttons: ['等待完成', '仍然重启'],
   }
 }
 
@@ -108,7 +109,7 @@ export interface UpdateRestartConfirmation {
 /**
  * 更新页「重启并安装」、托盘「重启并安装」、跳框里的「现在安装」都先过这里：true = 照常装。
  * 先问工具在装，再问聊天、视频剪辑、画布在做的事。两问说的是不同的东西会被停下，所以都问；
- * 哪一问点了「继续安装」「等它做完」，这次就不装，新版本留着（已知31、D10）。
+ * 哪一问点了「继续安装」「等待完成」，这次就不装，新版本留着（已知31、D10）。
  */
 export async function confirmUpdateRestart(steps: UpdateRestartConfirmation): Promise<boolean> {
   const task = steps.installTask()
@@ -129,9 +130,35 @@ export async function confirmUpdateRestart(steps: UpdateRestartConfirmation): Pr
   return true
 }
 
+export interface WindowsRestartConfirmation {
+  /** 安装队列里还有事（装、卸、打开工具都算）：重启这次本来就发不出去（runtime-install-service.ts 的 restartWindows）。 */
+  queueBusy(): boolean
+  unfinishedWork(): UnfinishedRestartWorkPrompt | null
+  /** 「还有任务没做完」那一问；true = 仍然重启。 */
+  confirmWork(prompt: UnfinishedRestartWorkPrompt): Promise<boolean>
+  log(event: string, message: string): void
+}
+
+/**
+ * Node.js 装完、Codex 桌面端打不开那两个重启框点「立即重启」时先过这里：true = 照常发重启。
+ * 重启电脑停下的跟重启装更新是同一批事，所以用 D10 那一问、看同一份忙闲。队列里还有事时重启会被拦下、
+ * 框里说明原因，这时先问「等不等对话说完」是白问，等那道闸放行了再问。
+ */
+export async function confirmWindowsRestartWork(steps: WindowsRestartConfirmation): Promise<boolean> {
+  if (steps.queueBusy()) return true
+  const work = steps.unfinishedWork()
+  if (!work) return true
+  steps.log('restart.work-in-progress', `重启电脑前确认：${work.kinds.join(',')}`)
+  if (!await steps.confirmWork(work)) {
+    steps.log('restart.postponed', '还有任务没做完，这次不重启电脑')
+    return false
+  }
+  return true
+}
+
 export interface ChatReplyQuitPrompt {
   message: string
-  /** 0 = 等它说完（这次不退），1 = 仍然退出。 */
+  /** 0 = 等待完成（这次不退），1 = 仍然退出。 */
   buttons: [string, string]
 }
 
@@ -142,7 +169,7 @@ export interface ChatReplyQuitPrompt {
  */
 export function buildChatReplyQuitPrompt(running: Iterable<UnfinishedRestartWork>): ChatReplyQuitPrompt | null {
   for (const kind of running) {
-    if (kind === 'chat') return { message: '正在回复，退出会停下这条回复。', buttons: ['等它说完', '仍然退出'] }
+    if (kind === 'chat') return { message: '对话仍在回复，现在退出将中断本次回复。', buttons: ['等待完成', '仍然退出'] }
   }
   return null
 }
@@ -162,7 +189,7 @@ export interface QuitInterruptionConfirmation {
 
 /**
  * 托盘、菜单「退出」和「直接退出」偏好放行前，先问会被打断的事：工具在装（已知31），聊天在回复（D39）。
- * 两问说的是不同的东西会被停下，跟重启装更新一样都问；哪一问点了「继续安装」「等它说完」这次就不退。
+ * 两问说的是不同的东西会被停下，跟重启装更新一样都问；哪一问点了「继续安装」「等待完成」这次就不退。
  * 问过的人不再接着被问要不要顺手装更新（返回 quit），下好的更新留到下次。
  */
 export async function confirmQuitInterruptions(steps: QuitInterruptionConfirmation): Promise<QuitInterruptionAnswer> {
@@ -209,6 +236,35 @@ export function resolveInstallableUpdateOnQuit(snapshot: UpdateSnapshot): Instal
 export function isRollbackInstall(snapshot: UpdateSnapshot | null, version: string): boolean {
   const installable = snapshot ? resolveInstallableUpdateOnQuit(snapshot) : null
   return installable !== null && installable.version === version && installable.rollback
+}
+
+/**
+ * 退出时把下好的更新交给 Windows 的提权脚本以后（S01），等到不会再装的那一刻：授权窗口里点了「否」、
+ * 交接失败、安装前发现安装包变了。这时落定，让退出照常走完。核对通过时由更新器自己发起退出，这里等不到
+ * 结果也无妨，退出流程有自己的上限。install() 一开始会清掉旧的出错，所以调用时已经挂着的出错就是这一次的。
+ */
+export function waitForWindowsUpdateHandoff(updates: {
+  getState(): UpdateSnapshot
+  subscribe(listener: (snapshot: UpdateSnapshot) => void): () => void
+}): Promise<void> {
+  function settledBy(snapshot: UpdateSnapshot): boolean {
+    return Boolean(snapshot.error) && (snapshot.failedStep === 'install' || snapshot.phase === 'error')
+  }
+  return new Promise((resolve) => {
+    if (settledBy(updates.getState())) {
+      resolve()
+      return
+    }
+    let settled = false
+    let unsubscribe: (() => void) | null = null
+    unsubscribe = updates.subscribe((snapshot) => {
+      if (settled || !settledBy(snapshot)) return
+      settled = true
+      unsubscribe?.()
+      resolve()
+    })
+    if (settled) unsubscribe()
+  })
 }
 
 /**

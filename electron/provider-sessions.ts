@@ -10,6 +10,7 @@ import {
   type CodexSessionPage,
   type CodexSessionsCapabilities,
 } from './codex-sessions'
+import { mapWithConcurrency } from './async-map'
 import { DirectoryEntryLimitError, readDirectoryEntries } from './bounded-directory'
 import { isRetiredProviderId } from './catalog'
 import type {
@@ -17,6 +18,11 @@ import type {
   ProviderSessionProbeState,
 } from './provider-session-probe-cache'
 import { ProviderSessionProbeCache } from './provider-session-probe-cache'
+import {
+  createSessionActivityTracker,
+  observeClaudeActivity,
+  type SessionTurnActivity,
+} from './session-activity'
 import { exportSessionMarkdown, sessionMarkdownFileName } from './session-markdown-export'
 
 export const providerSessionProviders = ['codex', 'claude', 'gemini', 'grok'] as const
@@ -72,6 +78,11 @@ export interface ProviderSessionMessage {
   role: string
   text: string
   timestamp: string | null
+  /**
+   * 只挂在一轮里最后一条 AI 回复上：这一轮跑了哪些命令（只有程序名）、改了哪些文件（只有文件名）。
+   * 只有详情会填，目前读得出的是 Claude Code 和 Codex。缺省 = 这一轮没有，或这家工具读不出（旧行为）。
+   */
+  activity?: SessionTurnActivity
 }
 
 export interface ProviderSessionMessageStats {
@@ -94,8 +105,18 @@ export interface ProviderSessionDetail {
 export interface ProviderSessionListQuery {
   provider?: ProviderSessionProvider | 'all'
   search?: string
+  /**
+   * 记录页「同时搜索对话内容」：标题、文件夹、模型都对不上的，再翻最近一批对话的内容。
+   * 缺省 = 只比对标题、文件夹、模型（旧行为）。
+   */
+  searchContent?: boolean
   page?: number
   pageSize?: number
+  /**
+   * true = 只是换了搜索词、工具或页码：几秒内刚扫过一遍的话直接拿那份重新筛、分页，
+   * 不再把各工具的会话文件夹从头扫一遍（R-3）。缺省 = 每次现扫（旧行为）。
+   */
+  reuseRecentScan?: boolean
 }
 
 export interface ProviderSessionPage {
@@ -109,6 +130,14 @@ export interface ProviderSessionPage {
     byProvider: Record<ProviderSessionProvider, number>
   }
   capabilities: Record<ProviderSessionProvider, ProviderSessionCapability>
+}
+
+/** 「继续对话」按记录接上那一条要的两样，见 ProviderSessionsService.resolveResumeTarget。 */
+export interface ProviderSessionResumeTarget {
+  /** 这条对话当时在哪个文件夹里跑的。 */
+  workspace: string
+  /** 交给命令行的对话编号（裸 UUID）；认不出时为 null，打开时退回按文件夹接最近一条。 */
+  sessionId: string | null
 }
 
 export interface ProviderSessionExportResult {
@@ -136,6 +165,8 @@ export interface CodexSessionReader {
     truncated?: boolean
   }>
   delete(sessionId: string): Promise<CodexSessionDeleteResult>
+  /** 缺省 = 这份读取器不会翻内容，Codex 的记录就只按标题搜（旧行为）。 */
+  contentMatches?(sessionId: string, needle: string, maxBytes: number): Promise<boolean>
 }
 
 export interface ProviderSessionsOptions {
@@ -151,6 +182,8 @@ export interface ProviderSessionsOptions {
   /** Omitted keeps the probe cache memory-only, as it was before 0.2.9. */
   probeCacheFile?: string
   onProbeCacheWarning?: (warning: ProviderSessionProbeCacheWarning) => void
+  /** Clock for the recent-scan reuse window; omitted uses Date.now. */
+  now?: () => number
 }
 
 interface ProviderRoots {
@@ -170,6 +203,18 @@ interface DiscoveryResult {
   files: string[]
   skipped: number
   errors: number
+}
+
+/** 一个工具扫一遍的结果：它的全部会话，外部工具另记扫完时会话目录还在不在。 */
+interface ProviderSweep {
+  items: ProviderSessionSummary[]
+  available: boolean
+}
+
+interface ProviderSweepEntry {
+  promise: Promise<ProviderSweep>
+  /** 扫完的时刻；还在扫时是 null。 */
+  settledAt: number | null
 }
 
 interface JsonLineScanResult {
@@ -198,6 +243,21 @@ const MAX_DISCOVERY_ENTRIES = 500_000
 const DETAIL_MESSAGE_LIMIT = 250
 const MESSAGE_TEXT_LIMIT = 24_000
 const MAX_PROBE_CACHE_ENTRIES = 10_000
+// 「同时搜索对话内容」只翻最近这么多条，每条只读开头这么多：不建索引、不常驻，客户点一下
+// 勾就要等的事，得在几秒内翻完。更早的、更长的照旧只按标题找得到。
+const CONTENT_SEARCH_SESSION_LIMIT = 100
+const CONTENT_SEARCH_BYTE_LIMIT = 16 * 1024 * 1024
+const CONTENT_SEARCH_CONCURRENCY = 4
+// 翻页、切回这一页都会再搜一遍；同一条记录没变、搜的词也没变时直接用上次的结论。
+const MAX_CONTENT_SEARCH_CACHE_ENTRIES = 2_000
+
+// Thrown out of a message consumer to stop reading a transcript at the first
+// match; scanJsonLines closes the file in its finally block on the way out.
+const contentFound = new Error('content found')
+
+// 会话页换搜索词、换工具、翻页时，扫完不到这么久的那份直接拿来筛（R-3）。进页、再显示、
+// 点重新加载都不带 reuseRecentScan，照旧现扫，所以这里只管一次搜索、翻页的那十几秒。
+const RECENT_SCAN_REUSE_MS = 10_000
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -318,7 +378,7 @@ async function existingDirectory(root: string): Promise<boolean> {
 }
 
 /**
- * 「接着聊」要用的那个工作目录还在不在。判断条件和主进程真正打开工具时的
+ * 「继续对话」要用的那个工作目录还在不在。判断条件和主进程真正打开工具时的
  * 那一处（provider-launch-service.ts 的 launchProviderOperation）逐字对齐：跟随符号
  * 链接、只认目录。对不齐的话界面要么把一颗其实按得动的按钮置灰，要么反过来
  * 留一颗按下去必报错的按钮。
@@ -346,7 +406,7 @@ export async function annotateWorkspaceExistence(
   const checked = new Map<string, Promise<boolean>>()
   return Promise.all(items.map(async (item) => {
     const target = item.cwd.trim()
-    // 没记录过文件夹的老记录本来就没有「接着聊」，不值得为它做一次 stat。
+    // 没记录过文件夹的老记录本来就没有「继续对话」，不值得为它做一次 stat。
     if (target === '') return item
     let pending = checked.get(target)
     if (!pending) {
@@ -740,10 +800,32 @@ function finalizeExternalSummary(
   }
 }
 
+// Codex surfaces (the desktop app's attachments, the IDE extension's editor
+// context) put model-only context before this delimiter and the user's own
+// words after it. Same literal as USER_MESSAGE_BEGIN in openai/codex
+// codex-rs/protocol, whose strip_user_message_prefix also cuts at the first one.
+const codexRequestDelimiter = '## My request for Codex:'
+const codexFilesHeading = '# Files mentioned by the user:'
+
+/**
+ * 只附了文件、没打字的那一句，标题里没有分隔行，只剩「# Files mentioned by the user:」
+ * 加一串「## 文件名: 路径」。这时拿文件名当标题，比整段英文加路径好认。
+ */
+function codexMentionedFileNames(title: string): string {
+  const trimmed = title.trimStart()
+  if (!trimmed.startsWith(codexFilesHeading)) return ''
+  const section = trimmed.slice(codexFilesHeading.length).split(codexRequestDelimiter)[0]
+  const names = Array.from(section.matchAll(/##\s+(.+?):\s/g), (match) => cleanText(match[1], 60))
+  return names.filter(Boolean).join('、')
+}
+
 /**
  * Codex 把会话标题原样存成第一句话。定时任务（Codex 的 Automation）那一句是整段任务说明：
  * 「Automation: 每日制作头像 Automation ID: … Automation memory: … Last run: …」再接几百字的
- * 指令，原样上屏会把首页「最近」那张卡撑破。定时任务只留任务名；其余标题收成一行、限长。
+ * 指令，原样上屏会把首页「最近」那张卡撑破。定时任务只留任务名。
+ * Codex 桌面端附了文件的那一句前面垫着「# Files mentioned by the user: …」，客户打的字在
+ * 「## My request for Codex:」后面，首页「最近」只露出前面那段英文；只取客户打的字。
+ * 其余标题收成一行、限长。
  */
 export function codexSessionTitle(title: string, sessionId: string): string {
   const automation = /^\s*Automation:\s*(.+?)\s+Automation ID:/s.exec(title)
@@ -751,7 +833,9 @@ export function codexSessionTitle(title: string, sessionId: string): string {
     const name = cleanText(automation[1], 60)
     if (name) return `定时任务：${name}`
   }
-  return cleanText(title) || sessionId
+  const delimiter = title.indexOf(codexRequestDelimiter)
+  const request = delimiter >= 0 ? cleanText(title.slice(delimiter + codexRequestDelimiter.length)) : ''
+  return request || codexMentionedFileNames(title) || cleanText(title) || sessionId
 }
 
 function codexSummary(summary: CodexSessionPage['items'][number], readonly: boolean): ProviderSessionSummary {
@@ -770,6 +854,13 @@ function codexSummary(summary: CodexSessionPage['items'][number], readonly: bool
     sourcePath: '',
     detailAvailable: summary.rolloutAvailable,
   }
+}
+
+const cliSessionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** 挑第一个像命令行对话编号的；argv 那边（tool-installation.ts 的 cliResumeArgv）还会再核一次。 */
+function resumableSessionId(candidates: readonly string[]): string | null {
+  return candidates.find((candidate) => cliSessionIdPattern.test(candidate)) ?? null
 }
 
 function providerFromId(id: string): ProviderSessionProvider {
@@ -925,9 +1016,13 @@ export class ProviderSessionsService {
   private readonly maxFilesPerProvider: number
   private readonly probeCache: ProviderSessionProbeCache
   private readonly candidateIndex = new Map<string, SourceCandidate>()
+  private readonly contentSearchCache = new Map<string, boolean>()
+  private readonly sweeps = new Map<ProviderSessionProvider, ProviderSweepEntry>()
+  private readonly now: () => number
 
   constructor(options: ProviderSessionsOptions = {}) {
     const home = os.homedir()
+    this.now = options.now ?? Date.now
     this.codexService = options.codexService ?? new CodexSessionsService({ codexHome: options.codexHome })
     this.roots = {
       claude: path.resolve(options.claudeProjectsRoot ?? path.join(home, '.claude', 'projects')),
@@ -983,17 +1078,20 @@ export class ProviderSessionsService {
   async list(query: ProviderSessionListQuery = {}): Promise<ProviderSessionPage> {
     const provider = query.provider ?? 'all'
     const selected = provider === 'all' ? [...listedProviderSessionProviders] : [provider]
+    // Claimed before the first await, so a request sent alongside this one
+    // (the records page reads its page and the latest 100 together) joins the
+    // same sweeps instead of racing them.
+    const claimed = this.claimSweeps(selected, query.reuseRecentScan === true)
     const capabilities = await this.capabilities()
     const items: ProviderSessionSummary[] = []
-    for (const current of selected) {
+    for (const [index, current] of selected.entries()) {
       try {
-        const providerItems = current === 'codex'
-          ? await this.listCodexSessions()
-          : await this.listExternalSessions(current)
+        const sweep = await claimed[index]
+        const providerItems = sweep.items
         items.push(...providerItems)
         if (current !== 'codex') {
           const capability = capabilities[current]
-          capability.available = await existingDirectory(this.roots[current])
+          capability.available = sweep.available
           capability.readable = capability.available
           capability.reason = capability.available
             ? `已读取 ${providerItems.length} 个本地会话；该 Provider 仅开放只读管理`
@@ -1015,10 +1113,13 @@ export class ProviderSessionsService {
     }
 
     const search = query.search?.trim().toLocaleLowerCase() ?? ''
-    const filtered = search
-      ? items.filter((item) => [item.title, item.cwd, item.model, item.nativeId, item.provider]
-        .some((value) => value.toLocaleLowerCase().includes(search)))
-      : items
+    const metadataMatches = (item: ProviderSessionSummary) => [item.title, item.cwd, item.model, item.nativeId, item.provider]
+      .some((value) => value.toLocaleLowerCase().includes(search))
+    let filtered = search ? items.filter(metadataMatches) : items
+    if (search && query.searchContent) {
+      const contentHits = await this.searchContent(items.filter((item) => !metadataMatches(item)), search)
+      filtered = items.filter((item) => metadataMatches(item) || contentHits.has(item.id))
+    }
     filtered.sort((left, right) => (
       (right.updatedAt ?? right.createdAt ?? 0) - (left.updatedAt ?? left.createdAt ?? 0)
       || left.provider.localeCompare(right.provider)
@@ -1077,6 +1178,49 @@ export class ProviderSessionsService {
   }
 
   /**
+   * 最近 CONTENT_SEARCH_SESSION_LIMIT 条里，对话内容说过 `needle` 的那几条的 id。一条读不了
+   * （被占用、被删、格式不认识）就当没说过，不让整页搜索报错。
+   */
+  private async searchContent(candidates: readonly ProviderSessionSummary[], needle: string): Promise<Set<string>> {
+    const recent = [...candidates]
+      .filter((item) => item.detailAvailable)
+      .sort((left, right) => (right.updatedAt ?? right.createdAt ?? 0) - (left.updatedAt ?? left.createdAt ?? 0))
+      .slice(0, CONTENT_SEARCH_SESSION_LIMIT)
+    const verdicts = await mapWithConcurrency(recent, CONTENT_SEARCH_CONCURRENCY, async (item) => {
+      const key = `${item.id}\u0000${item.updatedAt ?? ''}\u0000${item.messageCount ?? ''}\u0000${needle}`
+      const cached = this.contentSearchCache.get(key)
+      if (cached !== undefined) return cached
+      let found = false
+      try {
+        found = await this.sessionContentMatches(item, needle)
+      } catch {
+        found = false
+      }
+      this.contentSearchCache.set(key, found)
+      while (this.contentSearchCache.size > MAX_CONTENT_SEARCH_CACHE_ENTRIES) {
+        this.contentSearchCache.delete(this.contentSearchCache.keys().next().value as string)
+      }
+      return found
+    })
+    return new Set(recent.filter((_, index) => verdicts[index]).map((item) => item.id))
+  }
+
+  private async sessionContentMatches(item: ProviderSessionSummary, needle: string): Promise<boolean> {
+    if (item.provider === 'codex') {
+      return this.codexService.contentMatches?.(item.nativeId, needle, CONTENT_SEARCH_BYTE_LIMIT) ?? false
+    }
+    try {
+      await this.readExternalMessages(item, (message) => {
+        if (message.text.toLocaleLowerCase().includes(needle)) throw contentFound
+      }, 0, Math.min(this.maxTranscriptBytes, CONTENT_SEARCH_BYTE_LIMIT))
+    } catch (error) {
+      if (error === contentFound) return true
+      throw error
+    }
+    return false
+  }
+
+  /**
    * 这条记录当时在哪个文件夹里跑的。「打开文件夹」只需要这一行路径，所以刻意
    * 不走 detail()——那会把整份对话读出来。渲染层也刻意只传会话 id：路径由主进程
    * 从记录里取，界面就没有办法让资源管理器去打开任意目录。
@@ -1089,6 +1233,29 @@ export class ProviderSessionsService {
       return session.cwd
     }
     return (await this.resolveExternalSummary(provider, id)).cwd
+  }
+
+  /**
+   * 记录页上点哪条接哪条（0.2.25 S1）：交给命令行的是记录里读出来的编号，不是渲染层传来的
+   * 那个 id。三家都只认标准 UUID 格式的编号；Claude Code 的编号就是记录文件名（`--resume`
+   * 按它找文件，老版本续聊时另起的文件里开头几行还带着上一段的 sessionId，所以文件名优先），
+   * Grok CLI 是 summary.json 里的 info.id（没有就是会话文件夹名）。认不出就给 null，
+   * 启动那边退回按文件夹接最近一条，跟以前一样。
+   */
+  async resolveResumeTarget(id: string): Promise<ProviderSessionResumeTarget> {
+    const provider = providerFromId(id)
+    if (provider === 'codex') {
+      const session = (await this.listCodexSessions()).find((item) => item.id === id)
+      if (!session) throw new Error('未找到这条记录')
+      return { workspace: session.cwd, sessionId: resumableSessionId([session.nativeId]) }
+    }
+    const session = await this.resolveExternalSummary(provider, id)
+    if (provider === 'claude') {
+      const fileName = path.basename(session.sourcePath, path.extname(session.sourcePath))
+      return { workspace: session.cwd, sessionId: resumableSessionId([fileName, session.nativeId]) }
+    }
+    if (provider === 'grok') return { workspace: session.cwd, sessionId: resumableSessionId([session.nativeId]) }
+    return { workspace: session.cwd, sessionId: null }
   }
 
   async exportMarkdown(id: string, destinationPath: string): Promise<ProviderSessionExportResult> {
@@ -1121,6 +1288,15 @@ export class ProviderSessionsService {
    * 不在该工具记录目录之内、经过链接或是多链接文件，整条都不删。
    */
   async delete(id: string): Promise<ProviderSessionDeleteResult> {
+    try {
+      return await this.deleteRecord(id)
+    } finally {
+      // 删了一半出错也可能已经少了文件，扫过的那份一律作废。
+      this.invalidateListCache()
+    }
+  }
+
+  private async deleteRecord(id: string): Promise<ProviderSessionDeleteResult> {
     const provider = providerFromId(id)
     if (provider === 'codex') {
       const nativeId = id.slice('codex:'.length)
@@ -1133,7 +1309,7 @@ export class ProviderSessionsService {
     // single-link regular file reached without links from inside the root.
     const candidates = await this.sourceCandidates(provider)
     const candidate = candidates.find((entry) => stableSessionId(provider, this.roots[provider], entry.keyPath) === id)
-    if (!candidate) throw new Error('没找到这条记录，可能已经被删掉了')
+    if (!candidate) throw new Error('未找到该记录，可能已被删除')
     const targets = await deletionTargets(candidate, this.roots[provider], candidates)
     let deletedFiles = 0
     for (const target of targets) {
@@ -1149,7 +1325,7 @@ export class ProviderSessionsService {
         const code = (error as NodeJS.ErrnoException).code
         if (code === 'ENOENT') continue
         throw new Error(code === 'EBUSY' || code === 'EPERM' || code === 'EACCES'
-          ? `这条记录正被别的程序占用，请先关掉 ${providerLabel(provider)} 再删`
+          ? `该记录正被其他程序占用，请先关闭 ${providerLabel(provider)} 后再删除`
           : `删除记录失败：${error instanceof Error ? error.message : String(error)}`)
       }
     }
@@ -1180,6 +1356,65 @@ export class ProviderSessionsService {
         delete: available,
       },
     }
+  }
+
+  /**
+   * 忘掉扫过的会话列表：下一次列表不管带不带 reuseRecentScan 都现扫。本服务删记录之后自己会调；
+   * Codex 的归档、恢复走的是另一条通道，由那边的处理器调。还在扫的那一轮也一起丢开，免得删除之前
+   * 开始扫的结果被删除之后的请求接着用。
+   */
+  invalidateListCache(): void {
+    this.sweeps.clear()
+  }
+
+  /**
+   * One sweep per provider, in order. New sweeps still run one provider after
+   * another, as the list always did, so a full listing never walks several
+   * session folders at once.
+   */
+  private claimSweeps(providers: readonly ProviderSessionProvider[], reuseRecent: boolean): Promise<ProviderSweep>[] {
+    const claimed: Promise<ProviderSweep>[] = []
+    let previous: Promise<unknown> = Promise.resolve()
+    for (const provider of providers) {
+      const sweep = this.sweep(provider, reuseRecent, previous)
+      // Awaited in the list loop; this only keeps a later provider's failure
+      // from surfacing as an unhandled rejection while an earlier one runs.
+      sweep.catch(() => undefined)
+      claimed.push(sweep)
+      previous = sweep
+    }
+    return claimed
+  }
+
+  /**
+   * One provider's full listing, shared between overlapping requests. A
+   * request that only changes the search, provider filter or page may also
+   * take a sweep that finished within RECENT_SCAN_REUSE_MS; every other
+   * request starts a new one unless one is already running.
+   */
+  private sweep(provider: ProviderSessionProvider, reuseRecent: boolean, after: Promise<unknown>): Promise<ProviderSweep> {
+    const known = this.sweeps.get(provider)
+    if (known && (known.settledAt === null
+      || (reuseRecent && this.now() - known.settledAt < RECENT_SCAN_REUSE_MS))) {
+      return known.promise
+    }
+    const started = after.then(() => undefined, () => undefined).then(() => this.sweepProvider(provider))
+    const entry: ProviderSweepEntry = { promise: started, settledAt: null }
+    this.sweeps.set(provider, entry)
+    entry.promise.then(
+      () => { entry.settledAt = this.now() },
+      () => {
+        // A failed sweep is never reused: the next request tries again.
+        if (this.sweeps.get(provider) === entry) this.sweeps.delete(provider)
+      },
+    )
+    return entry.promise
+  }
+
+  private async sweepProvider(provider: ProviderSessionProvider): Promise<ProviderSweep> {
+    if (provider === 'codex') return { items: await this.listCodexSessions(), available: true }
+    const items = await this.listExternalSessions(provider)
+    return { items, available: await existingDirectory(this.roots[provider]) }
   }
 
   private async listCodexSessions(): Promise<ProviderSessionSummary[]> {
@@ -1373,10 +1608,13 @@ export class ProviderSessionsService {
     session: ProviderSessionSummary,
     consumer?: MessageConsumer,
     retainLimit = DETAIL_MESSAGE_LIMIT,
+    byteLimit = this.maxTranscriptBytes,
   ): Promise<MessageReadResult> {
     const messages: ProviderSessionMessage[] = []
     const stats = emptyMessageStats()
     let retainedTextTruncated = false
+    // 每一轮做了什么只给详情看；导出（retainLimit 为 0）不读。
+    const activity = retainLimit > 0 ? createSessionActivityTracker() : null
     const accept = async (message: ProviderSessionMessage | null): Promise<void> => {
       if (!message) return
       recordMessage(stats, message)
@@ -1384,14 +1622,17 @@ export class ProviderSessionsService {
       if (retainLimit > 0) {
         const retainedText = truncateMessageText(message.text)
         if (retainedText !== message.text) retainedTextTruncated = true
-        messages.push({ ...message, text: retainedText })
+        const retained = { ...message, text: retainedText }
+        messages.push(retained)
+        activity?.message(message.role, retained)
         if (messages.length > retainLimit) messages.shift()
       }
     }
     let sourceTruncated = false
     if (session.provider === 'claude') {
-      const scan = await scanJsonLines(session.sourcePath, this.maxTranscriptBytes, this.maxJsonLineBytes, async (value) => {
+      const scan = await scanJsonLines(session.sourcePath, byteLimit, this.maxJsonLineBytes, async (value) => {
         const entry = asRecord(value)
+        if (entry && activity) observeClaudeActivity(activity, entry)
         await accept(entry ? parseClaudeMessage(entry) : null)
       })
       stats.invalidLines += scan.invalidLines
@@ -1400,13 +1641,13 @@ export class ProviderSessionsService {
       if (session.sourcePath.toLowerCase().endsWith('.jsonl')) {
         const state = newProbeState(await safeRegularFileStat(session.sourcePath))
         const seenMessageIds = new Set<string>()
-        const scan = await scanJsonLines(session.sourcePath, this.maxTranscriptBytes, this.maxJsonLineBytes, async (value) => {
+        const scan = await scanJsonLines(session.sourcePath, byteLimit, this.maxJsonLineBytes, async (value) => {
           for (const message of applyGeminiDocument(state, value, seenMessageIds)) await accept(message)
         })
         stats.invalidLines += scan.invalidLines
         sourceTruncated = scan.sourceTruncated
       } else {
-        const document = await readJsonBounded(session.sourcePath, this.maxTranscriptBytes)
+        const document = await readJsonBounded(session.sourcePath, byteLimit)
         stats.invalidLines += document.invalidLines
         sourceTruncated = document.sourceTruncated
         if (document.value) {
@@ -1415,12 +1656,13 @@ export class ProviderSessionsService {
         }
       }
     } else if (path.basename(session.sourcePath).toLowerCase() === 'chat_history.jsonl') {
-      const scan = await scanJsonLines(session.sourcePath, this.maxTranscriptBytes, this.maxJsonLineBytes, async (value) => {
+      const scan = await scanJsonLines(session.sourcePath, byteLimit, this.maxJsonLineBytes, async (value) => {
         await accept(parseGrokMessage(value))
       })
       stats.invalidLines += scan.invalidLines
       sourceTruncated = scan.sourceTruncated
     }
+    activity?.finish()
     return { messages, stats, sourceTruncated, retainedTextTruncated }
   }
 }

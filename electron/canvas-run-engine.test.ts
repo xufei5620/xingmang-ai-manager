@@ -635,7 +635,7 @@ function originResolver(records: readonly CanvasRunRecord[]) {
   }
 }
 
-const unprovenImageMessage = '找不到你选中的这张图当初的生成记录，没法确认它跟现在的设置对得上，所以这个节点先停下了，没有扣费。想接着用，请换选这个节点最新生成的那张；想要新图，在这个节点上点「运行到此」重新生成（会扣费）。'
+const unprovenImageMessage = '未找到所选图片的生成记录，无法确认其与当前设置一致，该节点已暂停，未产生扣费。如需继续使用，请改选该节点最新生成的图片；如需生成新图片，请在该节点上点击「运行到此」重新生成（将产生扣费）。'
 
 function cachedEntry(fingerprint: string, nodeKind: CanvasRunGraphNode['kind'], cachedAsset: CanvasRunAsset): CanvasRunCacheEntry {
   return {
@@ -799,7 +799,7 @@ describe('executeCanvasRun adopted results', () => {
     expect(video).not.toHaveBeenCalled()
     expect(record.nodes[0].state).toBe('failed')
     expect(record.nodes[0].errorMessage).toBe(
-      '找不到你选中的这段视频当初的生成记录，没法确认它跟现在的设置对得上，所以这个节点先停下了，没有扣费。想接着用，请换选这个节点最新生成的那段；想要新视频，在这个节点上点「运行到此」重新生成（会扣费）。',
+      '未找到所选视频的生成记录，无法确认其与当前设置一致，该节点已暂停，未产生扣费。如需继续使用，请改选该节点最新生成的视频；如需生成新视频，请在该节点上点击「运行到此」重新生成（将产生扣费）。',
     )
   })
 
@@ -1009,7 +1009,7 @@ describe('executeCanvasRun multi-image nodes', () => {
     expect(harness.image).toHaveBeenCalledTimes(3)
     const entry = imageNode(failed)
     expect(entry.state).toBe('failed')
-    expect(entry.errorMessage).toBe('这次要出 3 张，出来 2 张，1 张没出来：上游超时')
+    expect(entry.errorMessage).toBe('本次需生成 3 张，已生成 2 张，1 张未生成：上游超时')
     expect(entry.attempts.map((attempt) => attempt.imageBatch?.index)).toEqual([1, 2, 3])
     const failedAttempt = entry.attempts.find((attempt) => attempt.state === 'failed')!
     expect(entry.attempts.filter((attempt) => attempt.state === 'succeeded')).toHaveLength(2)
@@ -1031,7 +1031,7 @@ describe('executeCanvasRun multi-image nodes', () => {
   })
 
   it('says plainly when none of the images came out', () => {
-    expect(canvasImageBatchFailureMessage(4, 0, '余额不足')).toBe('这次要出 4 张，一张都没出来：余额不足')
+    expect(canvasImageBatchFailureMessage(4, 0, '余额不足')).toBe('本次需生成 4 张，均未生成：余额不足')
     expect(canvasImageBatchFailureMessage(2, 1, 'x'.repeat(400)).length).toBe(300)
   })
 
@@ -1295,7 +1295,7 @@ describe('canvasRunDescendants', () => {
     // this second line is what keeps a direct engine call from spending money.
     const image = vi.fn(async () => ({ assets: [asset()] }))
     const video = vi.fn(async () => ({ assets: [] }))
-    const reason = '「参考图角色」桌面版暂不支持，本次没有提交任何付费请求'
+    const reason = '「参考图角色」桌面版暂不支持，本次未提交任何付费请求'
     const workflow = graph(
       [
         node('prompt', 'text'),
@@ -1315,9 +1315,9 @@ describe('canvasRunDescendants', () => {
     expect(states).toEqual({ prompt: 'succeeded', split: 'failed', compare: 'failed', many: 'failed', after: 'skipped' })
     expect(record.nodes.find((entry) => entry.nodeId === 'many')?.errorMessage).toBe(reason)
     expect(record.nodes.find((entry) => entry.nodeId === 'split')?.errorMessage)
-      .toBe('「宫格裁剪」节点桌面版暂不支持，本次没有提交任何付费请求')
+      .toBe('「宫格裁剪」节点桌面版暂不支持，本次未提交任何付费请求')
     expect(record.nodes.find((entry) => entry.nodeId === 'compare')?.errorMessage)
-      .toBe('「图片对比」节点桌面版暂不支持，本次没有提交任何付费请求')
+      .toBe('「图片对比」节点桌面版暂不支持，本次未提交任何付费请求')
   })
 
   it('returns descendants in topological order without including the roots', () => {
@@ -1521,12 +1521,12 @@ describe('executeCanvasRun frame preparations', () => {
           wrongNode = await reportFramePreparation!({ ...framePreparation('other'), operationId: attemptId, attemptId }, true).catch((error: Error) => error.message)
           // Left waiting on purpose: the run's end still clears it.
           await reportFramePreparation!({ ...framePreparation(), operationId: attemptId, attemptId }, true)
-          throw new Error('视频帧没有交回来（画布关了或处理超时），请重新运行这个节点')
+          throw new Error('未收到视频帧（画布已关闭或处理超时），请重新运行该节点')
         },
       }),
     }))
-    expect(wrongNode).toBe('视频帧不属于这个节点')
-    expect(record.nodes[0]).toMatchObject({ state: 'failed', errorMessage: '视频帧没有交回来（画布关了或处理超时），请重新运行这个节点' })
+    expect(wrongNode).toBe('该视频帧不属于此节点')
+    expect(record.nodes[0]).toMatchObject({ state: 'failed', errorMessage: '未收到视频帧（画布已关闭或处理超时），请重新运行该节点' })
     expect(record).not.toHaveProperty('framePreparations')
   })
 
@@ -1536,7 +1536,7 @@ describe('executeCanvasRun frame preparations', () => {
       executors: executors({ video }),
     }))
     expect(video).not.toHaveBeenCalled()
-    expect(record.nodes[0]).toMatchObject({ state: 'failed', errorMessage: '「视频抽帧」节点桌面版暂不支持，本次没有提交任何付费请求' })
+    expect(record.nodes[0]).toMatchObject({ state: 'failed', errorMessage: '「视频抽帧」节点桌面版暂不支持，本次未提交任何付费请求' })
   })
 })
 
@@ -1590,13 +1590,13 @@ describe('executeCanvasRun image preparations', () => {
         'image-crop': async ({ attemptId, reportImagePreparation }) => {
           refusals.push(await reportImagePreparation!(imagePreparation(attemptId, 'other'), true).then(() => 'sent', (error: Error) => error.message))
           refusals.push(await reportImagePreparation!({ ...imagePreparation(attemptId), runId: 'run-2' }, true).then(() => 'sent', (error: Error) => error.message))
-          throw new Error('图片处理结果没有交回来（画布关了或处理超时），请重新运行这个节点')
+          throw new Error('未收到图片处理结果（画布已关闭或处理超时），请重新运行该节点')
         },
       }),
     }))
-    expect(refusals).toEqual(['图片处理不属于这个节点', '图片处理不属于这个节点'])
+    expect(refusals).toEqual(['该图片处理结果不属于此节点', '该图片处理结果不属于此节点'])
     expect(video).not.toHaveBeenCalled()
-    expect(record.nodes.find((entry) => entry.nodeId === 'tile')).toMatchObject({ state: 'failed', errorMessage: '「平铺图片」节点桌面版暂不支持，本次没有提交任何付费请求' })
+    expect(record.nodes.find((entry) => entry.nodeId === 'tile')).toMatchObject({ state: 'failed', errorMessage: '「平铺图片」节点桌面版暂不支持，本次未提交任何付费请求' })
   })
 
   it('keeps caching only the first picture of a node that is not a grid split', async () => {

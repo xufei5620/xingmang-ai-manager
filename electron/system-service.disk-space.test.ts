@@ -135,13 +135,13 @@ describe('refusing an npm install over a CLI installed another way', () => {
 
     const error = await service.installCli('claude', target).catch((reason: unknown) => reason)
 
-    expect(String(error)).toContain('不是通过本工具安装的，这里不会再另装一份')
+    expect(String(error)).toContain('并非通过本工具安装，此处不会重复安装')
     expect(target.send).not.toHaveBeenCalled()
     expect(readDiskSpace).not.toHaveBeenCalled()
   })
 })
 
-// Mac 验收 R1：首页对认不出来路的 Codex / Grok 给的是「用星芒装一份」，点下去不能再被「不会另装一份」拦回来。
+// Mac 验收 R1：首页对认不出来路的 Codex / Grok 给的是「使用星芒安装」，点下去不能再被「不会另装一份」拦回来。
 describe('installing over a Mac CLI that cannot be recognised', () => {
   function createDarwinFixture(provider: 'codex' | 'grok', resolveCliCommand: () => Promise<never>) {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-unrecognized-cli-')))
@@ -182,7 +182,7 @@ describe('installing over a Mac CLI that cannot be recognised', () => {
     const error = await fixture.service.installCli('codex', fixture.target).catch((reason: unknown) => reason)
 
     expect(String(error)).toContain('磁盘空间不足')
-    expect(String(error)).not.toContain('不会再另装一份')
+    expect(String(error)).not.toContain('不会重复安装')
     expect(fixture.readDiskSpace).toHaveBeenCalled()
   })
 
@@ -208,8 +208,8 @@ describe('installing over a Mac CLI that cannot be recognised', () => {
 
     const error = await fixture.service.installCli('grok', fixture.target).catch((reason: unknown) => reason)
 
-    expect(String(error)).toContain('这台电脑上已经有一份 Grok CLI，不是用星芒装的。为了不弄坏它，已停止安装。')
-    expect(String(error)).toContain('用星芒装一份')
+    expect(String(error)).toContain('本机已存在一份并非由星芒安装的 Grok CLI。为避免损坏该程序，已停止安装。')
+    expect(String(error)).toContain('使用星芒安装')
     expect(fixture.readDiskSpace).not.toHaveBeenCalled()
     expect(fixture.target.send).not.toHaveBeenCalled()
   })

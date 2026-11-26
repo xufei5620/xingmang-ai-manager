@@ -50,7 +50,7 @@ function initialView(tutorialTopics: readonly TutorialTopic[], topic?: { id: str
   } catch { return fallback }
 }
 
-/** 外壳在自己的内容区里滚，不是整个窗口在滚；吸顶条和「读到第几步」都按这一层算。 */
+/** 外壳在自己的内容区里滚，不是整个窗口在滚；吸顶条和「阅读进度」都按这一层算。 */
 function scrollParent(element: HTMLElement | null) {
   for (let node = element?.parentElement ?? null; node; node = node.parentElement)
     if (/auto|scroll|overlay/.test(getComputedStyle(node).overflowY)) return node
@@ -90,10 +90,10 @@ function TutorialExample({ text, firstMessage, words, testId }: { text: string; 
     } finally { pending.current = false }
   }
   return <div className="v2-tutorial-example">
-    <div className="v2-tutorial-example-head"><span>{firstMessage ? '先试着发这句话' : '可以照着用的示例'}</span><Button size="sm" icon={Copy} loading={status === 'copying'} onClick={() => void copy()} testId={testId}>{firstMessage ? '复制这句话' : '复制示例'}</Button></div>
+    <div className="v2-tutorial-example-head"><span>{firstMessage ? '建议先发送此消息' : '参考示例'}</span><Button size="sm" icon={Copy} loading={status === 'copying'} onClick={() => void copy()} testId={testId}>{firstMessage ? '复制这句话' : '复制示例'}</Button></div>
     <pre><Hits text={text} words={words} /></pre>
-    {status === 'success' && <p role="status">{firstMessage ? '已复制，粘贴到 Codex 的输入框里即可。' : '已复制，可以粘贴使用了。'}</p>}
-    {status === 'error' && <p role="status">没能自动复制，请选中上面的文字，右键复制。</p>}
+    {status === 'success' && <p role="status">{firstMessage ? '已复制，粘贴到 Codex 的输入框里即可。' : '已复制，可直接粘贴使用。'}</p>}
+    {status === 'error' && <p role="status">自动复制失败，请选中上方文字后右键复制。</p>}
   </div>
 }
 
@@ -297,7 +297,7 @@ export function TutorialPage({ navigate, openGuide, openHelp, topic, os }: Tutor
             {current.steps.map((step, index) => <a key={step.title} href={`#tutorial-${current.id}-step-${index}`} onClick={() => jumpToStep(index)}><span>{index + 1}</span>{step.title}</a>)}
           </div>
         </header>
-        {step && <nav className="v2-tutorial-progress" aria-label="读到第几步" hidden={!headHidden} data-testid="tutorial-progress">
+        {step && <nav className="v2-tutorial-progress" aria-label="阅读进度" hidden={!headHidden} data-testid="tutorial-progress">
           <span>第 {readingStep + 1} 步，共 {current.steps.length} 步 · {step.title}</span>
           <span className="v2-tutorial-progress-dots">{current.steps.map((entry, index) => <button type="button" key={entry.title} aria-label={`第 ${index + 1} 步：${entry.title}`} aria-current={index === readingStep ? 'step' : undefined} onClick={() => jumpToStep(index)}>{index + 1}</button>)}</span>
         </nav>}
@@ -310,7 +310,7 @@ export function TutorialPage({ navigate, openGuide, openHelp, topic, os }: Tutor
               {step.bullets && <ol className="v2-tutorial-instructions">{step.bullets.map(bullet => <li key={bullet}><Hits text={bullet} words={words} /></li>)}</ol>}
               {step.illustration && <TutorialIllustration kind={step.illustration} />}
               {step.example && <TutorialExample text={step.example} firstMessage={current.id === 'start'} words={words} testId={`tutorial-${current.id}-copy-${index}`} />}
-              {step.expected && <div className="v2-tutorial-expected"><CheckCircle2 size={17} aria-hidden="true" /><p><strong>看到这样，就做好了</strong><Hits text={step.expected} words={words} /></p></div>}
+              {step.expected && <div className="v2-tutorial-expected"><CheckCircle2 size={17} aria-hidden="true" /><p><strong>完成效果</strong><Hits text={step.expected} words={words} /></p></div>}
               {step.tip && <p className="v2-tutorial-tip"><strong>小提醒：</strong><Hits text={step.tip} words={words} /></p>}
               {navigate && <Button size="sm" iconRight={ArrowRight} onClick={() => navigate(step.page, step.section)} testId={`tutorial-${current.id}-action-${index}`}>{step.action}</Button>}
               {/* 搜索时只展开含这个词的补充说明；从别处指名某一条过来时只展开那一条。 */}
@@ -336,7 +336,7 @@ export function TutorialPage({ navigate, openGuide, openHelp, topic, os }: Tutor
       </div>
       {topics.length ? <div className="v2-tutorial-grid" data-testid="tutorial-cards">
         {topics.map((entry, index) => <TutorialCard key={entry.id} topic={entry} done={progress[entry.id] ?? 0} lead={lead && index === 0} words={words} onOpen={openTopic} />)}
-      </div> : <Card><Empty icon={Search} title="没有找到相关教程" description="换个说法试试，或者直接问客服。" action={<><Button onClick={() => search('')}>清除搜索</Button>{support}</>} testId="tutorial-empty" /></Card>}
+      </div> : <Card><Empty icon={Search} title="未找到相关教程" description="请尝试其他关键词，或直接咨询客服。" action={<><Button onClick={() => search('')}>清除搜索</Button>{support}</>} testId="tutorial-empty" /></Card>}
     </>}
   </section>
 }

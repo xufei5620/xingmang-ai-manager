@@ -4,6 +4,7 @@ import { Button, Logo, Notice, Pill, Progress, useToast } from '../../ui'
 import { ResultNotice, relativeTimeText, useOperation, useResource, userFacingErrorMessage } from '../../business-common'
 import {
   standardAccountUpdateNotice,
+  updateCardTitle,
   updateDiskShortfallText,
   updateDownloadDetail,
   updateFailureLabel,
@@ -86,7 +87,9 @@ export function VersionCard({ api, navigate, autoUpdate }: {
   // 「刚刚检查过」「今天 14:20 检查过」：钟点和后面的字隔一个空格。
   const checkedAt = update?.checkedAt ? relativeTimeText(update.checkedAt, Date.now()) : ''
   const checkedText = checkedAt ? `${checkedAt}${/\d$/.test(checkedAt) ? ' ' : ''}检查过` : ''
-  const statusTone = update?.phase === 'available' || update?.phase === 'downloading' ? 'accent' : update?.phase === 'downloaded' || update?.phase === 'not-available' ? (update.currentVersionWithdrawn ? 'warn' : 'ok') : update?.error ? 'warn' : 'neutral'
+  // 只能去下载页手动装的那两种（Mac 验签不过、Windows 上 PowerShell 不让安装脚本运行）重启也装不上：
+  // 右上角不说「重启后生效」，退回按阶段的那句，用提醒色。
+  const statusTone = manualReinstall ? 'warn' : update?.phase === 'available' || update?.phase === 'downloading' ? 'accent' : update?.phase === 'downloaded' || update?.phase === 'not-available' ? (update.currentVersionWithdrawn ? 'warn' : 'ok') : update?.error ? 'warn' : 'neutral'
   const newVersion = updateNewVersion(update)
   const action =
     update?.phase === 'available' || update?.phase === 'cancelled' ? (
@@ -119,11 +122,11 @@ export function VersionCard({ api, navigate, autoUpdate }: {
         <span className="v2-version-card-logo" aria-hidden="true"><Logo kind="micro" height={40} /></span>
         <div>
           <h2 id="v2-version-card-title">星芒AI管理工具</h2>
-          <p data-testid="updates-current-version">{update?.currentVersion ? `当前版本 v${update.currentVersion}` : resource.error ? '版本暂未读到' : '正在读取更新状态…'}</p>
+          <p data-testid="updates-current-version">{update?.currentVersion ? `当前版本 v${update.currentVersion}` : resource.error ? '版本暂未获取' : '正在读取更新状态…'}</p>
         </div>
         {update && (
           <span data-testid={newVersion && update.phase === 'available' ? 'updates-new-version' : undefined}>
-            <Pill tone={statusTone}>{updateStatusLabel(update)}</Pill>
+            <Pill tone={statusTone}>{manualReinstall ? updateCardTitle(update) : updateStatusLabel(update)}</Pill>
           </span>
         )}
       </div>
@@ -152,24 +155,24 @@ export function VersionCard({ api, navigate, autoUpdate }: {
         </div>
       )}
       {update?.currentVersionWithdrawn && (
-        <Notice tone="warn" title="这个版本有已知问题" body={withdrawnVersionAdvice(update)} testId="updates-current-withdrawn" />
+        <Notice tone="warn" title="该版本存在已知问题" body={withdrawnVersionAdvice(update)} testId="updates-current-withdrawn" />
       )}
       {/* 账号不是管理员的 Windows 电脑：下好的新版本不自动装，就在「重启并安装」旁边说清要谁来点。 */}
       {update?.phase === 'downloaded' && update.installNeedsAdminPassword && (
         <Notice tone="warn" title={standardAccountUpdateNotice.title} body={standardAccountUpdateNotice.body} testId="updates-admin-password" />
       )}
       {update?.unsignedChannel && !update.autoUpdateSupported && (
-        <p className="v2-version-card-line" data-testid="updates-channel-unsigned"><span>更新方式</span>每次下载和安装新版本前都会先问你</p>
+        <p className="v2-version-card-line" data-testid="updates-channel-unsigned"><span>更新方式</span>每次下载和安装新版本前将先征求您的确认</p>
       )}
       {diskShortfallText && (
         <Notice
           tone="warn"
-          title="磁盘空间不够，新版本先不下载"
+          title="磁盘空间不足，新版本暂不下载"
           body={<><p>{diskShortfallText}</p>{diskCleanupOpen && <p data-testid="updates-disk-cleanup">{updateDiskCleanupDetail}</p>}</>}
           testId="updates-disk-shortfall"
           actions={
             <>
-              <Button size="sm" icon={BookOpen} onClick={() => setDiskCleanupOpen((open) => !open)}>{diskCleanupOpen ? '收起' : '怎么清理'}</Button>
+              <Button size="sm" icon={BookOpen} onClick={() => setDiskCleanupOpen((open) => !open)}>{diskCleanupOpen ? '收起' : '查看清理方法'}</Button>
               <Button size="sm" icon={Download} loading={operation.busy === 'download'} onClick={downloadAnyway}>仍要下载</Button>
             </>
           }
@@ -197,8 +200,8 @@ export function VersionCard({ api, navigate, autoUpdate }: {
       {update?.installMethod === 'manual' && (
         <Notice
           tone="warn"
-          title="这台电脑上没法自动更新"
-          body="星芒在这台电脑上不是用安装包装的，没法自己更新。到下载页下载新版本的安装包，装好后打开就行。"
+          title="本机无法自动更新"
+          body="本机的星芒并非通过安装包安装，无法自动更新。请前往下载页下载新版本安装包，安装后打开即可。"
           testId="updates-manual-install"
           actions={<Button size="sm" icon={ExternalLink} onClick={openDownloadPage}>打开下载页</Button>}
         />

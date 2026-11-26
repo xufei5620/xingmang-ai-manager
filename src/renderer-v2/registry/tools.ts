@@ -1,5 +1,6 @@
 import { cliCatalog, providerConfigDirectoryNames, type ActiveProviderId } from '../../../electron/catalog';
 import type { ExternalToolId } from '../../../electron/ipc-contract';
+import type { AntigravityToolId } from './clients';
 
 export type ToolFirstRun = { command: string; prompt: string; freshFolderPrompt: string };
 export type ToolDef = { id: ActiveProviderId | 'codexDesktop'; name: string; vendor: string; brandIcon: string; kind: 'cli' | 'desktop'; install: { type: 'npm'; pkg: string } | { type: 'installer'; win?: 'managed' | 'store'; mac?: 'managed' | 'external'; linux?: 'unavailable' }; requires: Array<'node' | 'python'>; configPath: Record<'win' | 'mac' | 'linux', string>; sources: Array<'account' | 'official' | 'manual'>; models?: string[] | { endpoint: string }; shortcutIndex: number; firstRun?: ToolFirstRun; hidden?: (os: 'win' | 'mac' | 'linux') => boolean };
@@ -82,20 +83,26 @@ export const toolKindLabels: Record<ToolDef['kind'], string> = { cli: '命令行
 
 // v4 首页的工具卡片按厂商排，命令行工具和外接的桌面客户端排在一张网格里（方案批 04）。
 // 次序只在这里定义，页面不写字面量（T2）；registry/tools.test.ts 钉住它不漏不重。
-export type HomeToolId = ToolDef['id'] | ExternalToolId;
-export const homeToolOrder: ReadonlyArray<HomeToolId> = ['claude', 'claudeDesktop', 'codex', 'codexDesktop', 'grok', 'opencode', 'workbuddy'];
+export type HomeToolId = ToolDef['id'] | ExternalToolId | AntigravityToolId;
+export const homeToolOrder: ReadonlyArray<HomeToolId> = ['claude', 'claudeDesktop', 'codex', 'codexDesktop', 'antigravityCli', 'antigravity', 'grok', 'opencode', 'workbuddy'];
 
 // 没装时卡片中间那一句介绍。写成 Record：加一个工具时漏掉它是编译错，不是卡片上空一行。
 export const homeToolBlurbs: Record<HomeToolId, string> = {
   claude: '命令行编程助手',
-  claudeDesktop: '可以接当前账号使用',
+  claudeDesktop: '可使用当前账号',
   codex: '命令行编程助手',
-  codexDesktop: '和 Codex CLI 共用配置',
-  grok: '在终端里读项目、改代码',
+  codexDesktop: '与 Codex CLI 共用配置',
+  antigravityCli: '命令行编程助手',
+  antigravity: '可使用当前账号',
+  grok: '在终端中读取项目、修改代码',
   opencode: '开源，命令行版和桌面版共用配置',
   // WorkBuddy 星芒不装、不给下载，客户自己装好以后自动连上（yoyo 2026-11-18「改」）：没装时只说这一句。
-  workbuddy: '装好 WorkBuddy 后，星芒会自动连上当前账号',
+  workbuddy: '安装 WorkBuddy 后，星芒将自动关联当前账号',
 };
+
+// Antigravity 两张卡装好以后中间那行：别的工具这里写「型号 · 版本」，Antigravity 星芒读不到这两样；打开时主进程现签密钥、
+// 现写设置，连没连好点「打开」都用当前账号，所以两种情况都是这一句（yoyo 2026-11-26「谷歌卡介绍改」）。没装时照旧用上面的介绍。
+export const antigravityInstalledMeta = '打开时自动使用当前账号';
 
 // 欢迎页星轨上的几颗，按这个次序每隔 90° 一个（yoyo 2026-10-16：照 0.2.18 摆四颗）。
 // Gemini CLI 已下线、星芒不再装它（2026-10-14），但当前账号照样能用 Gemini 模型，所以星轨上留着它：

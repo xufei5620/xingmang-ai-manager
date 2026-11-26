@@ -30,6 +30,13 @@ describe('guide launch target', () => {
     expect(guideLaunchTarget(recent([]), 'codex', starter)).toEqual({ workspace: starter, startsFresh: false })
   })
 
+  // 0.2.25 总单 Q1：设置页刚换过项目文件夹，引导最后一步跟首页一样先进换的那个。
+  it('opens the folder just chosen on the settings page, like the home card', () => {
+    const used = recent([{ cwd: 'C:\\work\\alpha', updatedAt: 2000 }], { claude: 1 })
+    expect(guideLaunchTarget(used, 'claude', 'D:\\chosen', 3000)).toEqual({ workspace: 'D:\\chosen', startsFresh: false })
+    expect(guideLaunchTarget(used, 'claude', 'D:\\chosen', 1000)).toEqual({ workspace: 'C:\\work\\alpha', startsFresh: false })
+  })
+
   it('asks for a folder while the sessions have not been read', () => {
     expect(guideLaunchTarget(null, 'claude', undefined)).toEqual({ startsFresh: false })
     expect(guideLaunchTarget(null, 'claude', starter)).toEqual({ workspace: starter, startsFresh: false })

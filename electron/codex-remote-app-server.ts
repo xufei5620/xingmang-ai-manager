@@ -53,6 +53,14 @@ export class AppServerRequestError extends Error {
   }
 }
 
+/** 到点没等到回执（M02）：Codex 可能根本没收到，也可能已经照做、只是回执还在路上，跟它明着拒绝不是一回事。 */
+export class AppServerTimeoutError extends AppServerRequestError {
+  constructor(message: string) {
+    super(message, null)
+    this.name = 'AppServerTimeoutError'
+  }
+}
+
 export interface AppServerClientOptions {
   spawn(): Promise<AppServerProcess>
   clientVersion: string
@@ -125,7 +133,7 @@ export class CodexAppServerClient {
   }
 
   async start(handlers: AppServerHandlers): Promise<unknown> {
-    if (this.child) throw new Error('Codex 已经在运行')
+    if (this.child) throw new Error('Codex 已在运行')
     this.handlers = handlers
     this.exited = false
     this.stopping = false
@@ -139,7 +147,10 @@ export class CodexAppServerClient {
     const result = await this.request('initialize', {
       clientInfo: { name: 'xingmang_remote', title: '星芒手机遥控', version: this.options.clientVersion },
       capabilities: {
-        experimentalApi: false,
+        // 接着电脑上已有的对话时，遥控的规矩只能靠试验方法 thread/settings/update 的 collaborationMode 写进去（Codex 0.169
+        // 实测，resume 带 developerInstructions 不生效）。开了只是让 Codex 认试验字段、多发几样字段，遥控只在接已有对话时
+        // 用那一个，用完再接一次核过 Codex 真套上了（codex-remote-service 的 applyRemoteRules），别的照旧。
+        experimentalApi: true,
         requestAttestation: false,
         optOutNotificationMethods: [...appServerOptOutNotifications],
       },
@@ -149,13 +160,13 @@ export class CodexAppServerClient {
   }
 
   request(method: string, params: unknown, timeoutMs = this.options.requestTimeoutMs ?? defaultRequestTimeoutMs): Promise<unknown> {
-    if (!this.child || this.exited) return Promise.reject(new AppServerRequestError('Codex 没有在运行', null))
+    if (!this.child || this.exited) return Promise.reject(new AppServerRequestError('Codex 未运行', null))
     const id = `xm-${this.nextId}`
     this.nextId += 1
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id)
-        reject(new AppServerRequestError(`Codex 没有回应（${method}）`, null))
+        reject(new AppServerTimeoutError(`Codex 未响应（${method}）`))
       }, timeoutMs)
       timer.unref?.()
       this.pending.set(id, { resolve, reject, timer, method })
@@ -197,7 +208,7 @@ export class CodexAppServerClient {
   }
 
   private write(message: Record<string, unknown>): void {
-    if (!this.child || this.exited) throw new AppServerRequestError('Codex 没有在运行', null)
+    if (!this.child || this.exited) throw new AppServerRequestError('Codex 未运行', null)
     this.child.stdin.write(`${JSON.stringify(message)}\n`)
   }
 

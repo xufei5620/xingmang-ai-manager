@@ -17,7 +17,7 @@
  * transfer gets its whole window to recover after wake. This is the rule the update
  * download watchdog in updater.ts already follows.
  *
- * 装工具时合盖几分钟，以前一醒就报「下载太久没有完成，超时中止」、换源从头下；现在醒来先接着等，
+ * 装工具时合盖几分钟，以前一醒就报「下载长时间未完成，已超时中止」、换源从头下；现在醒来先接着等，
  * 醒着的时间照旧有上限。
  */
 

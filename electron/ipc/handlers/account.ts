@@ -46,7 +46,7 @@ export function registerAccountHandlers(ctx: IpcHandlerContext): void {
   // 公告里官网自己的图（决定单 D89 a）：页面的安全设置不放网上图片，由这里下好换成 data: 地址交回去。
   // 认哪个站的官网只由主进程按当前登录定，页面只给图片地址（announcement-image.ts 再校验一遍）。
   registerTrustedHandler('account:get-notice-image', async (_event, url: unknown) => {
-    if (!options.announcementImages) throw new Error('公告图片暂时显示不了，请更新或重启软件')
+    if (!options.announcementImages) throw new Error('公告图片暂时无法显示，请更新或重启软件')
     const siteId = accountService.getActiveSiteId?.() ?? options.realmAccounts?.getSiteId() ?? 'solov'
     return options.announcementImages.read(siteId, url)
   })

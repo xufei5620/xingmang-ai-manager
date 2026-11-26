@@ -21,7 +21,7 @@ import {
 } from './canvas-request-parser'
 import { canvasRunImageToolNodeLabels, canvasRunKernelOnlyNodeLabels } from './canvas-run-contract'
 
-const kernelRefusal = '桌面版暂不支持，本次没有提交任何付费请求'
+const kernelRefusal = '桌面版暂不支持，本次未提交任何付费请求'
 // What the desktop parsed before picture roles and video reference orders ran (画布完善第 8 条).
 const referenceOrderOff = { frameExtract: true, imageTools: true, referenceOrder: false }
 

@@ -8,17 +8,25 @@ const test = require('node:test')
 const {
   appendToUnreleasedSection,
   assertAllCollected,
+  assertNoDirectUiSpecChangelogEdit,
   assertNoDirectUnreleasedEdit,
   assertUserItemsFit,
   assertUserNotesNotFinalized,
   changedFileStatuses,
   collectChanges,
+  collectUiSpecChanges,
   countUserItems,
   finalUserNotesFragment,
+  insertUiSpecEntries,
+  orderUiSpecEntries,
   parseFragment,
+  parseUiSpecFragment,
   readFragments,
+  readUiSpecFragments,
   readUnreleasedSection,
   sections,
+  uiSpecChangelogFile,
+  uiSpecFragmentDirectory,
 } = require('./changelog-collect.cjs')
 const { MAX_ITEMS } = require('./bundle-release-notes.cjs')
 
@@ -440,5 +448,272 @@ test('both unreleased sections are still where the collector expects them', () =
       [...readUnreleasedSection(source, section), '- 探针条目。'],
       `${section.file} 的未发布段必须原样保留并追加`,
     )
+  }
+})
+
+// ui-spec/CHANGELOG.md：界面改动记录，一个 PR 一个分片，发版时按日期汇总到最上面。
+const uiSpecLog = [
+  '# CHANGELOG',
+  '',
+  '> 新的记录写在 ui-spec/changes/。',
+  '',
+  '格式：日期 · 版本 · 层级 · 改了什么 · 为什么 · 影响的页面',
+  '',
+  '- 2026-11-20 · v4.0 · 受控 · 已经在 main 上的较新一条 · 原因 · 首页',
+  '- 2026-11-01 · v4.0 · 自由 · 已经在 main 上的较早一条 · 原因 · 设置',
+  '',
+].join('\n')
+
+function uiSpecFixture(uiFragments = {}, fragments = {}) {
+  const directory = fixture(fragments)
+  fs.mkdirSync(path.join(directory, uiSpecFragmentDirectory), { recursive: true })
+  fs.writeFileSync(path.join(directory, uiSpecChangelogFile), uiSpecLog, 'utf8')
+  fs.writeFileSync(path.join(directory, uiSpecFragmentDirectory, 'README.md'), '# 说明\n\n- 这不是一条记录。\n', 'utf8')
+  for (const [name, source] of Object.entries(uiFragments)) {
+    fs.writeFileSync(path.join(directory, uiSpecFragmentDirectory, name), source, 'utf8')
+  }
+  return directory
+}
+
+function uiSpecLogEntries(directory) {
+  return fs.readFileSync(path.join(directory, uiSpecChangelogFile), 'utf8').split('\n').filter((line) => line.startsWith('- ') || line.startsWith('  '))
+}
+
+test('an interface fragment holds log lines in the log format, wrapped lines included', () => {
+  const entries = parseUiSpecFragment('wording-batch-14.md', [
+    '',
+    '- 2026-11-22 · v4.0 · 受控 · 第十四批改字 · 口吻定 · 配置',
+    '  续行也属于同一条。',
+    '- 2026-11-21 · v4.0 · 自由 · 另一块 · — · 设置',
+    '',
+  ].join('\n'))
+
+  assert.deepEqual(entries, [
+    { date: '2026-11-22', lines: ['- 2026-11-22 · v4.0 · 受控 · 第十四批改字 · 口吻定 · 配置', '  续行也属于同一条。'] },
+    { date: '2026-11-21', lines: ['- 2026-11-21 · v4.0 · 自由 · 另一块 · — · 设置'] },
+  ])
+})
+
+test('a malformed interface fragment is rejected with the file and line that caused it', () => {
+  const rejected = [
+    ['## 界面\n\n- 2026-11-22 · v4.0 · 受控 · 改了什么\n', /不写小节标题/],
+    ['- 改了什么，忘了写日期\n', /每条要以「- 日期 · 」开头/],
+    ['- 2026/11/22 · v4.0 · 受控 · 日期写法不对\n', /每条要以「- 日期 · 」开头/],
+    ['- 2026-11-22 v4.0 少了分隔符\n', /每条要以「- 日期 · 」开头/],
+    ['- 2026-02-30 · v4.0 · 受控 · 没有这一天\n', /日期「2026-02-30」不存在/],
+    ['随手写的一句话。\n', /每个非空行都要以「- 日期 · 」开头/],
+    ['  续行前面没有条目。\n', /每个非空行都要以「- 日期 · 」开头/],
+    ['\n\n', /是空的/],
+  ]
+  for (const [source, expected] of rejected) {
+    assert.throws(() => parseUiSpecFragment('bad.md', source), expected, source)
+  }
+  assert.throws(
+    () => parseUiSpecFragment('bad.md', '- 2026-11-22 · v4.0 · 受控 · 好的一条\n\n- 坏的一条\n'),
+    /ui-spec\/changes\/bad\.md:3/,
+  )
+})
+
+test('the interface fragment README is not a fragment, and a tree without the directory has none', () => {
+  const directory = uiSpecFixture({ 'a.md': '- 2026-11-22 · v4.0 · 自由 · 一条 · — · 首页\n' })
+  const bare = fixture()
+  try {
+    assert.deepEqual(readUiSpecFragments(directory).map((fragment) => fragment.name), ['a.md'])
+    assert.deepEqual(readUiSpecFragments(bare), [])
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+    fs.rmSync(bare, { recursive: true, force: true })
+  }
+})
+
+test('collected interface lines go above the log, newest date first, ties in file then written order', () => {
+  const directory = uiSpecFixture({
+    'b-same-day.md': '- 2026-11-22 · v4.0 · 自由 · b 文件那天的一条 · — · 设置\n',
+    'a-two.md': [
+      '- 2026-11-21 · v4.0 · 受控 · a 文件较早的一条 · 原因 · 首页',
+      '  续行。',
+      '- 2026-11-22 · v4.0 · 受控 · a 文件同一天的一条 · 原因 · 首页',
+    ].join('\n'),
+    'c-oldest.md': '- 2026-11-20 · v4.0 · 自由 · c 文件的一条 · — · 创作\n',
+  })
+  try {
+    const result = collectUiSpecChanges(directory)
+
+    assert.deepEqual(result, { fragments: ['a-two.md', 'b-same-day.md', 'c-oldest.md'], count: 4 })
+    assert.deepEqual(uiSpecLogEntries(directory), [
+      '- 2026-11-22 · v4.0 · 受控 · a 文件同一天的一条 · 原因 · 首页',
+      '- 2026-11-22 · v4.0 · 自由 · b 文件那天的一条 · — · 设置',
+      '- 2026-11-21 · v4.0 · 受控 · a 文件较早的一条 · 原因 · 首页',
+      '  续行。',
+      '- 2026-11-20 · v4.0 · 自由 · c 文件的一条 · — · 创作',
+      '- 2026-11-20 · v4.0 · 受控 · 已经在 main 上的较新一条 · 原因 · 首页',
+      '- 2026-11-01 · v4.0 · 自由 · 已经在 main 上的较早一条 · 原因 · 设置',
+    ])
+    // The title, the note and the format line stay where they were.
+    assert.ok(fs.readFileSync(path.join(directory, uiSpecChangelogFile), 'utf8').startsWith(uiSpecLog.split('- 2026-11-20')[0]))
+    assert.deepEqual(fs.readdirSync(path.join(directory, uiSpecFragmentDirectory)), ['README.md'])
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('collecting into a log with no entries yet starts the list below its header', () => {
+  const entries = orderUiSpecEntries([{ name: 'a.md', entries: parseUiSpecFragment('a.md', '- 2026-11-22 · v4.0 · 自由 · 第一条 · — · 首页\n') }])
+
+  assert.equal(insertUiSpecEntries('# CHANGELOG\n\n格式：说明\n\n', entries), '# CHANGELOG\n\n格式：说明\n\n- 2026-11-22 · v4.0 · 自由 · 第一条 · — · 首页\n')
+})
+
+test('collecting without interface fragments leaves the log byte-identical', () => {
+  const directory = uiSpecFixture()
+  try {
+    assert.deepEqual(collectUiSpecChanges(directory), { fragments: [], count: 0 })
+    assert.equal(fs.readFileSync(path.join(directory, uiSpecChangelogFile), 'utf8'), uiSpecLog)
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('the collect command gathers interface fragments together with the release fragments', () => {
+  const directory = uiSpecFixture(
+    { 'create-library.md': '- 2026-11-22 · v4.0 · 受控 · 作品库 · 原因 · 创作\n' },
+    { 'create-library.md': '## 开发\n\n- 作品库。\n' },
+  )
+  try {
+    const result = run(directory)
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /已删除 1 个分片：create-library\.md/)
+    assert.match(result.stdout, /已汇入 ui-spec\/CHANGELOG\.md：1 条/)
+    assert.match(result.stdout, /已删除 1 个界面改动分片：create-library\.md/)
+    assert.equal(uiSpecLogEntries(directory)[0], '- 2026-11-22 · v4.0 · 受控 · 作品库 · 原因 · 创作')
+    assert.deepEqual(fs.readdirSync(path.join(directory, 'changes', 'unreleased')).sort(), ['README.md', 'TEMPLATE.md.example'])
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('a malformed interface fragment stops the collect before any file is written', () => {
+  const directory = uiSpecFixture({ 'bad.md': '- 没有日期\n' }, { 'n4.md': '## 用户\n\n- 条目。\n' })
+  try {
+    const result = run(directory)
+
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /ui-spec\/changes\/bad\.md:1/)
+    assert.equal(fs.readFileSync(path.join(directory, 'release-notes.md'), 'utf8'), releaseNotes)
+    assert.equal(fs.readFileSync(path.join(directory, uiSpecChangelogFile), 'utf8'), uiSpecLog)
+    assert.ok(fs.existsSync(path.join(directory, 'changes', 'unreleased', 'n4.md')))
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('the check parses every interface fragment and reports how many are pending', () => {
+  const good = uiSpecFixture({ 'a.md': '- 2026-11-22 · v4.0 · 自由 · 一条 · — · 首页\n', 'b.md': '- 2026-11-22 · v4.0 · 自由 · 另一条 · — · 设置\n' })
+  const bad = uiSpecFixture({ 'bad.md': '## 标题\n' })
+  try {
+    const passed = run(good, ['--check'])
+    assert.equal(passed.status, 0, passed.stderr)
+    assert.match(passed.stdout, /界面改动分片校验通过：ui-spec\/changes 下 2 个/)
+
+    const refused = run(bad, ['--check'])
+    assert.notEqual(refused.status, 0)
+    assert.match(refused.stderr, /ui-spec\/changes\/bad\.md:1/)
+  } finally {
+    fs.rmSync(good, { recursive: true, force: true })
+    fs.rmSync(bad, { recursive: true, force: true })
+  }
+})
+
+// A fake git over named revisions: each holds the log's text and the fragment
+// names under ui-spec/changes/ at that commit.
+function fakeUiSpecGit(revisions, forkPoint) {
+  return (_command, argv) => {
+    if (argv[0] === 'merge-base') {
+      if (forkPoint === null) throw new Error('fatal: no merge base')
+      return `${forkPoint}\n`
+    }
+    if (argv[0] === 'ls-tree') {
+      const revision = revisions[argv[3]]
+      assert.equal(argv[4], `${uiSpecFragmentDirectory}/`)
+      return revision.fragments.map((name) => `${uiSpecFragmentDirectory}/${name}`).join('\0')
+    }
+    if (argv[0] === 'show') {
+      const [revision, file] = argv[1].split(':')
+      assert.equal(file, uiSpecChangelogFile)
+      return revisions[revision].log
+    }
+    throw new Error(`unexpected git ${argv.join(' ')}`)
+  }
+}
+
+const mainNow = 'a'.repeat(40)
+const prHead = 'b'.repeat(40)
+const forkedFrom = 'c'.repeat(40)
+const newerLog = uiSpecLog.replace('- 2026-11-20', '- 2026-11-22 · v4.0 · 受控 · 直接加在最上面的一行 · 原因 · 首页\n- 2026-11-20')
+
+test('a pull request that adds a line to the interface log directly is refused with the fragment recipe', () => {
+  const git = fakeUiSpecGit({
+    [forkedFrom]: { log: uiSpecLog, fragments: ['README.md'] },
+    [prHead]: { log: newerLog, fragments: ['README.md'] },
+    [mainNow]: { log: uiSpecLog, fragments: ['README.md'] },
+  }, forkedFrom)
+
+  assert.throws(
+    () => assertNoDirectUiSpecChangelogEdit('.', pullRequestEvent(mainNow, prHead), 'pull_request', git),
+    /ui-spec\/CHANGELOG\.md 里直接加了 1 条记录[\s\S]*挪到 ui-spec\/changes\/ 下一个新文件里[\s\S]*npm run changelog:collect/,
+  )
+})
+
+test('lines main gained after the fork are not counted against the pull request', () => {
+  // main 在这个 PR 拉分支之后汇总过一次：拿 main 现在的样子比，就会误算成这个 PR 加的。
+  const git = fakeUiSpecGit({
+    [forkedFrom]: { log: uiSpecLog, fragments: ['README.md', 'early.md'] },
+    [prHead]: { log: uiSpecLog, fragments: ['README.md', 'early.md', 'mine.md'] },
+    [mainNow]: { log: newerLog, fragments: ['README.md'] },
+  }, forkedFrom)
+
+  assert.doesNotThrow(() => assertNoDirectUiSpecChangelogEdit('.', pullRequestEvent(mainNow, prHead), 'pull_request', git))
+})
+
+test('the release commit that collects interface fragments may grow the log', () => {
+  const git = fakeUiSpecGit({
+    [forkedFrom]: { log: uiSpecLog, fragments: ['README.md', 'wording-batch-14.md'] },
+    [prHead]: { log: newerLog, fragments: ['README.md'] },
+  }, forkedFrom)
+
+  assert.doesNotThrow(() => assertNoDirectUiSpecChangelogEdit('.', pullRequestEvent(mainNow, prHead), 'pull_request', git))
+})
+
+test('correcting an old line in the interface log is allowed', () => {
+  const git = fakeUiSpecGit({
+    [forkedFrom]: { log: uiSpecLog, fragments: ['README.md'] },
+    [prHead]: { log: uiSpecLog.replace('较早一条', '较早一条（订正错字）'), fragments: ['README.md'] },
+  }, forkedFrom)
+
+  assert.doesNotThrow(() => assertNoDirectUiSpecChangelogEdit('.', pullRequestEvent(mainNow, prHead), 'pull_request', git))
+})
+
+test('the interface log check only stops pull requests and skips what it cannot reach', () => {
+  const unexpected = () => { throw new Error('git should not run') }
+  assert.doesNotThrow(() => assertNoDirectUiSpecChangelogEdit('.', { before: mainNow, after: prHead }, 'push', unexpected))
+  assert.doesNotThrow(() => assertNoDirectUiSpecChangelogEdit('.', { pull_request: { base: { sha: 'nope' }, head: { sha: prHead } } }, 'pull_request', unexpected))
+  assert.doesNotThrow(() => assertNoDirectUiSpecChangelogEdit('.', pullRequestEvent(mainNow, prHead), 'pull_request', fakeUiSpecGit({}, null)))
+})
+
+test('every interface fragment committed to this repository parses', () => {
+  assert.doesNotThrow(() => readUiSpecFragments(repositoryRoot))
+})
+
+test('the interface log is still where the collector expects it, entries below its header', () => {
+  const source = fs.readFileSync(path.join(repositoryRoot, uiSpecChangelogFile), 'utf8')
+  const probe = orderUiSpecEntries([{ name: 'probe.md', entries: parseUiSpecFragment('probe.md', '- 2099-01-01 · v4.0 · 自由 · 探针条目 · — · —\n') }])
+  const inserted = insertUiSpecEntries(source, probe).split('\n')
+  const firstEntry = inserted.findIndex((line) => line.startsWith('- '))
+
+  assert.equal(inserted[firstEntry], '- 2099-01-01 · v4.0 · 自由 · 探针条目 · — · —')
+  assert.ok(inserted.slice(0, firstEntry).some((line) => line.startsWith('格式：')), 'the format line stays above every entry')
+  // Every line already in the log keeps the date-first shape the collector orders by.
+  for (const line of source.split('\n').filter((entry) => entry.startsWith('- '))) {
+    assert.match(line, /^- \d{4}-\d{2}-\d{2} · /)
   }
 })

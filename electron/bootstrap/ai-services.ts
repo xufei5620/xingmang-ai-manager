@@ -16,8 +16,10 @@ import { createChatAttachmentService, type ChatImageCodec } from '../ai-chat-att
 import { AI_CHAT_STREAM_LIMITS, createAiChatService } from '../ai-chat-service'
 import { createAiImageService } from '../ai-image-service'
 import { createAiMediaAssetService, type AiMediaAssetService } from '../ai-media-asset-service'
+import { createAccountWorksTransfer } from '../data-transfer-works'
+import { createCanvasProjectsMigration } from '../data-transfer-canvas'
 import { chooseAiOutputRoot, migrateLegacyAiOutput, resolveLegacyAiOutputRoot } from '../ai-output-location'
-import { AiUnsavedImageStash, unsavedImageLogEntry } from '../ai-unsaved-image-stash'
+import { AiUnsavedImageStash, unsavedImageLogEntry, type AiUnsavedImagePlace } from '../ai-unsaved-image-stash'
 import { AiVideoAssetStore } from '../ai-video-asset-store'
 import { createAiVideoService, type AiVideoAssetWriter } from '../ai-video-service'
 import { AiVideoTaskStore } from '../ai-video-task-store'
@@ -89,11 +91,11 @@ export function createGlobalVideoAssetWriter(options: {
 
 function createNativeThumbnailRenderer(): AssetThumbnailRenderer {
   return {
-    async fromImageBytes(bytes, mimeType) {
+    async fromImageBytes(bytes, mimeType, maxEdge) {
       const image = nativeImage.createFromBuffer(bytes)
       if (image.isEmpty()) return null
       const { width, height } = image.getSize()
-      const contained = assetThumbnailSize(width, height)
+      const contained = assetThumbnailSize(width, height, maxEdge)
       const resized = image.resize({ ...contained, quality: 'better' })
       if (resized.isEmpty()) return null
       return mimeType === 'image/jpeg' ? resized.toJPEG(82) : resized.toPNG()
@@ -152,6 +154,8 @@ export interface RealmBusinessesOptions {
   systemService: Pick<SystemService, 'fetchAvailableModels'>
   readAccountGroupHints: () => Promise<AccountGroupHints | null>
   readDocumentsDirectory: () => string | null
+  /** 新建画布项目默认放的「文档 › 星芒画布」；「迁移到新电脑」导入的画布项目也放这里。 */
+  canvasProjectsDirectory: () => string
   runtimeLog: RuntimeLogStore
   sessionFetch: typeof fetch
   routedRelayFetch: typeof fetch
@@ -162,7 +166,7 @@ export interface RealmBusinessesOptions {
 export function createRealmBusinesses(options: RealmBusinessesOptions) {
   const {
     managerDataDirectory, projectRoot, accounts, mainWindow, credentialPersistence, systemService,
-    readAccountGroupHints, readDocumentsDirectory, runtimeLog, sessionFetch, routedRelayFetch,
+    readAccountGroupHints, readDocumentsDirectory, canvasProjectsDirectory, runtimeLog, sessionFetch, routedRelayFetch,
   } = options
   // Each realm moves its own subtree once per launch; a second realm object for
   // the same subtree must not start a second walk over files already moving.
@@ -191,7 +195,7 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
     const definition = requireSiteRuntimeDefinition(siteId)
     const roots = resolveRealmDataRoots(managerDataDirectory, definition.realmId)
     const accountService = createRealmServiceDispatch(() => {
-      if (accounts.getSiteId() !== siteId) throw new Error('账号刚切换过，请再试一次')
+      if (accounts.getSiteId() !== siteId) throw new Error('账号刚刚切换，请重试')
       return accounts.client
     })
     const onAiRequestStarted = createAccountUsageTracker({
@@ -241,7 +245,8 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
     }
     // 付过钱的图存不进去时先暂存、腾出空间后补存进作品库（深查 S-1）。对话、画布项目两边的图都补存进
     // 这个账号的作品库：画布项目文件夹写不进多半是文件夹本身出了状况（被移走、U 盘拔了），补回原处还是失败。
-    const keepUnsavedImage = async (userId: number, bytes: Buffer): Promise<boolean> => (await unsavedImages.keep(userId, bytes)) !== null
+    // 收在哪要原样交回去：只留在内存里的，生图那边得提醒先别退出（总单 #61）。
+    const keepUnsavedImage = (userId: number, bytes: Buffer): Promise<AiUnsavedImagePlace | null> => unsavedImages.keep(userId, bytes)
     const assetStore = new AiAssetStore({
       outputRoot: aiOutputRoot,
       keepUnsaved: keepUnsavedImage,
@@ -351,7 +356,7 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
       const images = new AiAssetStore({
         outputRoot,
         keepUnsaved: keepUnsavedImage,
-        unwritableGuidance: '这个项目的文件夹可能被移走了，或者放不进新文件。请新建一个项目、换个文件夹再试。',
+        unwritableGuidance: '该项目的文件夹可能已被移动，或无法写入新文件。请新建项目或更换文件夹后重试。',
         trustedProxyFetchImpl: sessionFetch,
         nativeOperations: {
           copyImage: copyImageToClipboard,
@@ -412,6 +417,19 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
         { ...context, reason: error instanceof Error ? error.message : String(error) },
       ),
     })
+    // 「迁移到新电脑」带上这个账号作品库里的作品（「搬作品改」），连同作品库页列出的画布项目里生成的那些（「画布也搬」），
+    // 和画布项目本身（节点、连线和项目文件夹里的素材，第三轮复查第 6 条）。
+    // 元数据跟作品库共用这一个 store，导入时补记录和收藏、改名排在同一个队里。
+    const worksTransfer = createAccountWorksTransfer({
+      outputRoot: aiOutputRoot,
+      metadata: assetMetadata,
+      canvasFolders: (userId) => canvasProjectAssets.listLibraryFolders(userId),
+      canvasProjects: createCanvasProjectsMigration({
+        projects: canvasProjects,
+        assets: canvasProjectAssets,
+        projectsDirectory: canvasProjectsDirectory,
+      }),
+    })
     const assetThumbnails = createAssetThumbnailService({
       store: new AssetThumbnailStore({ cacheRoot: roots.assetThumbnailsDirectory }),
       renderer: createNativeThumbnailRenderer(),
@@ -434,8 +452,18 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
         { assetId, reason },
       ),
     })
+    // 融合第 5 步: the library now lists what canvas projects made, and those files stay in the project's
+    // folder. Reading one back (to send it to a vision model, or to edit it) looks there too; what the
+    // chat itself stores still goes to the account library.
+    const readHeldImage = async (userId: number, assetId: string) => (
+      await canvasProjectAssets.holderOf(userId, 'image', assetId)
+    ).images.readOwned(userId, assetId)
     const chatAttachments = createChatAttachmentService({
-      store: assetStore,
+      store: {
+        readLocalFile: (filePath, maximumBytes) => assetStore.readLocalFile(filePath, maximumBytes),
+        storeLocalBytes: (userId, bytes) => assetStore.storeLocalBytes(userId, bytes),
+        readOwned: readHeldImage,
+      },
       codec: nativeChatImageCodec,
       pickFiles: async () => {
         const result = await dialog.showOpenDialog({
@@ -490,6 +518,11 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
           code: event.code,
           message: event.message,
         })
+        else if (event.type === 'complete') sender.send(ipcEventChannels.onAiChatStream, {
+          requestId: event.requestId,
+          type: 'complete',
+          ...(event.cutOff ? { cutOff: event.cutOff } : {}),
+        })
         else sender.send(ipcEventChannels.onAiChatStream, {
           requestId: event.requestId,
           type: event.type,
@@ -513,7 +546,12 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
       baseUrl: definition.aiBaseUrl,
       backend: definition.backend,
       credentials: chatCredentials,
-      assets: assetStore,
+      assets: {
+        assertWritable: (userId) => assetStore.assertWritable(userId),
+        storeBase64: (userId, value, metadata) => assetStore.storeBase64(userId, value, metadata),
+        storeRemoteUrl: (userId, url, metadata) => assetStore.storeRemoteUrl(userId, url, metadata),
+        readOwned: readHeldImage,
+      },
     })
     const canvasImageService = createAiImageService({
       onRequestStarted: onAiRequestStarted,
@@ -659,7 +697,7 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
       }),
     })
     return { accountCredentialStore, managedCliKeyStore, chatKeyStore, chatCredentials, assetStore, videoAssets,
-      audioAssets, mediaAssets, canvasPromptPresets, canvasProjects, canvasProjectAssets,
+      audioAssets, mediaAssets, worksTransfer, canvasPromptPresets, canvasProjects, canvasProjectAssets,
       chatService, imageService, canvasImageService, videoService, chatVideoService, canvasRuns, assetProtocol, chatAttachments, aiOutputPlacement,
       // 两个站点共用的那一层作品文件夹（设置页量占用用，A08）：用到时才算，算不出来只让那一行没算出来，不拖垮整个账号的服务。
       aiOutputSharedRoot: () => roots.sharedAssetOutputDirectory(aiOutputRoot),

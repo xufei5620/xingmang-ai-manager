@@ -22,7 +22,7 @@ const cdpStartupScreenAttempts = 90
 const cdpPortOwnershipRevalidateMs = 5_000
 const cdpPortOwnerLookupFailureLimit = 3
 // 进了用户看到的「未确认中文界面生效」提示，不带命令原文，也不说技术词。
-const cdpPortOwnerUnconfirmedMessage = '这次没能确认 Codex 已经准备好'
+const cdpPortOwnerUnconfirmedMessage = '本次未能确认 Codex 已就绪'
 
 /**
  * This is deliberately a small, mechanism-level patch. It does not replace
@@ -550,6 +550,74 @@ public static class XingMangCodexAppActivation {
 }
 '@
 [XingMangCodexAppActivation]::Activate($env:XINGMANG_CODEX_APP_ID, $env:XINGMANG_CODEX_ARGS)`
+
+/**
+ * 0x80270254 (E_APPLICATION_NOT_REGISTERED, "This app does not support the
+ * contract specified or is not installed") from ActivateApplication. .NET
+ * appends the code to the COMException text in every UI language
+ * ("(Exception from HRESULT: 0x80270254)" / "(异常来自 HRESULT:0x80270254)"),
+ * so the hex form is what survives localisation.
+ */
+const codexDesktopActivationNotRegisteredPattern = /0x80270254(?![0-9a-f])/i
+
+/**
+ * WinINet timeout, name resolution, connection and connection-reset failures
+ * (0x80072EE2 / EE7 / EFD / EFE / EFF) from ActivateApplication. A Store-signed
+ * package has its licence checked online before Windows creates the process;
+ * when that check cannot reach Microsoft, AppModel-Runtime logs event 203
+ * ("[LaunchProcess]") and the Start menu fails the same way. 2026-11-23, a
+ * Win11 Home 26H2 26300.10075 machine: activation returned 0x80072EE2 while the
+ * network was down and the same package opened once it came back. Only EE2 has
+ * been seen on a real machine; the other four mirror the list the Store
+ * install path already treats as "cannot reach Microsoft".
+ */
+const codexDesktopActivationNetworkPattern = /0x80072E(?:E2|E7|FD|FE|FF)(?![0-9a-f])/i
+
+/**
+ * 0x800705B4 (ERROR_TIMEOUT) from ActivateApplication: Windows gave up waiting
+ * before it created the process. AppModel-Runtime logs event 203 with the same
+ * code and "[LaunchProcess]". 2026-11-23, a Win11 Home 21H2 22000.2245 machine
+ * whose Windows Update service had been blocked on purpose (a deny-Everyone ACE
+ * on SoftwareDistribution\Download, so wuauserv quit with access denied every
+ * two minutes): activation returned this code and the package's own service sat
+ * in START_PENDING with no process. Within five seconds of lifting the block
+ * both came up; after the block went back and Windows restarted, Codex still
+ * opened. The code alone does not say why, so the launch path only uses it as
+ * the cue to look at the Windows Update service (windows-update-service-state.ts).
+ */
+const codexDesktopActivationTimeoutPattern = /0x800705B4(?![0-9a-f])/i
+
+/**
+ * Did any layer of this activation failure carry the code? The wrappers above
+ * cut their own message to 500 characters, and PowerShell may put a CLIXML
+ * preamble in front of the error, so the code can sit only on the execFile
+ * error's stderr further down the cause chain.
+ */
+function activationFailureCarries(error: unknown, pattern: RegExp): boolean {
+  let current: unknown = error
+  for (let depth = 0; depth < 6 && current && typeof current === 'object'; depth += 1) {
+    const record = current as { message?: unknown; stderr?: unknown; cause?: unknown }
+    for (const text of [record.message, record.stderr]) {
+      if (typeof text === 'string' && pattern.test(text)) return true
+    }
+    current = record.cause
+  }
+  return false
+}
+
+export function isCodexDesktopActivationNotRegistered(error: unknown): boolean {
+  return activationFailureCarries(error, codexDesktopActivationNotRegisteredPattern)
+}
+
+/** Windows refused to start the package because its online licence check timed out or could not connect. */
+export function isCodexDesktopActivationNetworkFailure(error: unknown): boolean {
+  return activationFailureCarries(error, codexDesktopActivationNetworkPattern)
+}
+
+/** Windows timed out before it created the package's process (see codexDesktopActivationTimeoutPattern). */
+export function isCodexDesktopActivationTimeout(error: unknown): boolean {
+  return activationFailureCarries(error, codexDesktopActivationTimeoutPattern)
+}
 
 export function parseCodexDesktopActivationProcessId(output: string): number | null {
   const normalized = output.trim()

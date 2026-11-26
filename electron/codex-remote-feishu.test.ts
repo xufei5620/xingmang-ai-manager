@@ -223,7 +223,7 @@ describe('codex-remote-feishu credentials', () => {
     const page = deps(() => new Response('<html>401 Unauthorized</html>', { status: 401, headers: { 'Content-Type': 'text/html' } }))
     const failure = await verifyFeishuCredential(page, { appId, appSecret }).then(() => null, (error: unknown) => error)
     expect(failure).toBeInstanceOf(Error)
-    expect((failure as Error).message).toBe('飞书凭据没保存上。请核对 App ID 和 App Secret 有没有填错，再点一次「保存」；还不行请找客服。')
+    expect((failure as Error).message).toBe('飞书凭据保存失败。请核对 App ID 和 App Secret 是否填写正确，再次点击「保存」；如仍失败，请联系客服。')
     expect((failure as Error).message).not.toMatch(/HTTP|401/)
     expect(logged).toEqual([{ event: 'feishu.save-token-unexpected', detail: { status: 401, code: null } }])
 
@@ -275,7 +275,7 @@ describe('codex-remote-feishu credentials', () => {
       log: (_level: string, event: string, detail?: Record<string, string | number | boolean | null>) => { logged.push({ event, detail }) },
     }
     await expect(verifyFeishuCredential(deps, { appId, appSecret }))
-      .rejects.toThrow('飞书凭据没保存上。请核对 App ID 和 App Secret 有没有填错，再点一次「保存」；还不行请找客服。')
+      .rejects.toThrow('飞书凭据保存失败。请核对 App ID 和 App Secret 是否填写正确，再次点击「保存」；如仍失败，请联系客服。')
     expect(logged).toEqual([{ event: 'feishu.save-token-unexpected', detail: { status: 400, code: 99991400 } }])
   })
 })
@@ -398,7 +398,7 @@ describe('codex-remote-feishu outbound', () => {
     const message = {
       kind: 'approval' as const,
       request: { approvalId: '3', nonce: 'nonce-of-three', kind: 'command' as const, summary: 'npm test' },
-      text: 'Codex 想运行命令（第 3 条）：\nnpm test',
+      text: 'Codex 请求运行命令（第 3 条）：\nnpm test',
     }
     expect((buildFeishuApprovalCard(message).config as Record<string, unknown>).update_multi).toBe(true)
     const body = { tag: 'div', text: { tag: 'plain_text', content: message.text } }
@@ -408,7 +408,7 @@ describe('codex-remote-feishu outbound', () => {
       elements: [body],
     })
     expect(buildFeishuApprovalCard(message, 'declined')).toMatchObject({ header: { template: 'grey', title: { content: '已拒绝（第 3 条）' } }, elements: [body] })
-    expect(buildFeishuApprovalCard(message, 'expired')).toMatchObject({ header: { template: 'grey', title: { content: '没回，已自动拒绝（第 3 条）' } }, elements: [body] })
+    expect(buildFeishuApprovalCard(message, 'expired')).toMatchObject({ header: { template: 'grey', title: { content: '未回复，已自动拒绝（第 3 条）' } }, elements: [body] })
   })
 
   it('sends text as a text message and approvals as a card with two buttons', () => {
@@ -421,7 +421,7 @@ describe('codex-remote-feishu outbound', () => {
     const body = buildFeishuMessageBody(peer, {
       kind: 'approval',
       request: { approvalId: '3', nonce: 'nonce-of-three', kind: 'command', summary: 'npm test' },
-      text: 'Codex 想运行命令（第 3 条）：\nnpm test',
+      text: 'Codex 请求运行命令（第 3 条）：\nnpm test',
     })
     expect(body.msg_type).toBe('interactive')
     const card = JSON.parse(String(body.content)) as { elements: Array<{ tag: string; actions?: Array<{ value: unknown }> }> }
@@ -449,7 +449,7 @@ describe('codex-remote-feishu outbound', () => {
   })
 
   it('treats only a lost or timed-out request as worth sending again', () => {
-    expect(transientFeishuRequestFailure(new RemoteHttpError('连不上飞书，请检查网络', 'network'))).toBe('network')
+    expect(transientFeishuRequestFailure(new RemoteHttpError('无法连接飞书，请检查网络', 'network'))).toBe('network')
     expect(transientFeishuRequestFailure(new RemoteHttpError('飞书请求超时', 'timeout'))).toBe('timeout')
     expect(transientFeishuRequestFailure(new RemoteHttpError('飞书请求被重定向，已拒绝', 'redirected'))).toBeNull()
     expect(transientFeishuRequestFailure(new RemoteHttpError('飞书请求地址不在允许范围内，已拒绝', 'blocked-url'))).toBeNull()
@@ -574,7 +574,7 @@ describe('codex-remote-feishu channel', () => {
     const channel = createFeishuRemoteChannel(h.deps, { createSocket: (url) => new FakeSocket(url) })
     await channel.start({ onInbound: () => undefined, onStatus: (status) => h.statuses.push(status) })
     await vi.waitFor(() => expect(h.statuses.at(-1)?.state).toBe('needs-login'))
-    expect(h.statuses.at(-1)).toEqual({ state: 'needs-login', message: '飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。', problem: 'credential' })
+    expect(h.statuses.at(-1)).toEqual({ state: 'needs-login', message: '飞书应用的 App ID 或 App Secret 不正确，请在飞书开放平台核对后重新填写。', problem: 'credential' })
   })
 
   // W-6：原来不认识的 code 和公司网关的 401 / 403 拦截页都当成 App ID 或 Secret 不对，遥控停掉、叫客户去改飞书应用。
@@ -602,7 +602,7 @@ describe('codex-remote-feishu channel', () => {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await vi.waitFor(() => expect(h.logs.filter((event) => event === 'feishu.endpoint-retry')).toHaveLength(attempt + 1))
       expect(h.sockets).toHaveLength(0)
-      expect(h.statuses.at(-1)).toEqual({ state: 'connecting', message: '连不上飞书，正在重试。' })
+      expect(h.statuses.at(-1)).toEqual({ state: 'connecting', message: '无法连接飞书，正在重试。' })
       await vi.advanceTimersByTimeAsync(2_000 * 2 ** attempt)
     }
     await vi.waitFor(() => expect(h.sockets).toHaveLength(1))
@@ -622,7 +622,7 @@ describe('codex-remote-feishu channel', () => {
     await channel.start({ onInbound: () => undefined, onStatus: (status) => h.statuses.push(status) })
     await vi.waitFor(() => expect(h.statuses.at(-1)?.state).toBe('error'))
     // YKS-12：长连接已经停了、不会自己再连，标出来，防睡那边才不把它当还在听。
-    expect(h.statuses.at(-1)).toEqual({ state: 'error', message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit', halted: true })
+    expect(h.statuses.at(-1)).toEqual({ state: 'error', message: '该飞书应用已在其他位置连接，请先断开其他连接后重试。', problem: 'connection-limit', halted: true })
     expect(h.logs).toContain('feishu.connection-limit')
   })
 
@@ -634,7 +634,7 @@ describe('codex-remote-feishu channel', () => {
     }
     const channel = createFeishuRemoteChannel(deps)
     await channel.start({ onInbound: () => undefined, onStatus: (status) => h.statuses.push(status) })
-    expect(h.statuses.at(-1)).toEqual({ state: 'error', message: '没连上，点「重新连接」再试；还不行点「找客服」。', problem: 'other', halted: true })
+    expect(h.statuses.at(-1)).toEqual({ state: 'error', message: '未能建立连接，请点击「重新连接」重试；如问题仍存在，请点击「联系客服」。', problem: 'other', halted: true })
     expect(h.logs).toContain('feishu.credential-read-failed')
     expect(h.fetch).not.toHaveBeenCalled()
   })
@@ -651,7 +651,7 @@ describe('codex-remote-feishu channel', () => {
     const channel = await startChannel(h)
     h.sockets[0].emit('open')
     h.sockets[0].emit('close')
-    expect(h.statuses.at(-1)).toEqual({ state: 'connecting', message: '连不上飞书，正在重试。' })
+    expect(h.statuses.at(-1)).toEqual({ state: 'connecting', message: '无法连接飞书，正在重试。' })
     await vi.advanceTimersByTimeAsync(2000)
     await vi.waitFor(() => expect(h.sockets).toHaveLength(2))
     h.sockets[1].emit('open')
@@ -739,13 +739,46 @@ describe('codex-remote-feishu send retries', () => {
     await channel.send(peer, {
       kind: 'approval',
       request: { approvalId: '3', nonce: 'nonce-of-three', kind: 'command', summary: 'npm test' },
-      text: 'Codex 想运行命令（第 3 条）：\nnpm test',
+      text: 'Codex 请求运行命令（第 3 条）：\nnpm test',
     })
     const bodies = sendBodies(h)
     expect(bodies).toHaveLength(3)
     expect(new Set(bodies.map((body) => body.uuid)).size).toBe(1)
     expect(bodies[2].msg_type).toBe('interactive')
     expect(waits).toEqual([1000, 4000])
+    await channel.stop()
+  })
+
+  // M14：电脑上关了遥控，正等着重发的那条不再发（手机上已经收到「已关闭」）；之后交给它的（道别那句）照常发。
+  it('drops a message that is waiting to be sent again once the remote is being closed, and still sends the next one', async () => {
+    let sends = 0
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.includes('/im/v1/messages')) {
+        sends += 1
+        if (sends === 1) throw new TypeError('fetch failed')
+      }
+      return defaultRespond(url)
+    })
+    let wake!: () => void
+    const sleeping = new Promise<void>((resolve) => { wake = resolve })
+    let asleep!: () => void
+    const sleepStarted = new Promise<void>((resolve) => { asleep = resolve })
+    const channel = await startChannel(h, {
+      sleep: async () => {
+        asleep()
+        await sleeping
+      },
+    })
+    const pending = channel.send(peer, { kind: 'text', text: '做完了' })
+    await sleepStarted
+    channel.cancelPendingSends?.()
+    await channel.send(peer, { kind: 'text', text: '遥控已在电脑上关闭。' })
+    wake()
+    await expect(pending).rejects.toThrow('飞书遥控已关闭')
+    const bodies = sendBodies(h)
+    expect(bodies).toHaveLength(2)
+    expect(bodies[1]).toMatchObject({ receive_id: 'ou_alice', content: '{"text":"遥控已在电脑上关闭。"}' })
+    expect(h.logs).toContain('feishu.send-cancelled')
     await channel.stop()
   })
 
@@ -756,7 +789,7 @@ describe('codex-remote-feishu send retries', () => {
     })
     const waits: number[] = []
     const channel = await startChannel(h, { sleep: async (milliseconds) => { waits.push(milliseconds) } })
-    await expect(channel.send(peer, { kind: 'text', text: '做完了' })).rejects.toThrow('连不上飞书，请检查网络')
+    await expect(channel.send(peer, { kind: 'text', text: '做完了' })).rejects.toThrow('无法连接飞书，请检查网络')
     expect(sendBodies(h)).toHaveLength(3)
     expect(waits).toEqual([1000, 4000])
     expect(h.logs).toContain('feishu.send-failed')
@@ -770,7 +803,7 @@ describe('codex-remote-feishu send retries', () => {
     })
     const waits: number[] = []
     const channel = await startChannel(h, { sleep: async (milliseconds) => { waits.push(milliseconds) } })
-    await expect(channel.send(peer, { kind: 'text', text: '做完了' })).rejects.toThrow('飞书没有发出这条消息（错误码 230053）')
+    await expect(channel.send(peer, { kind: 'text', text: '做完了' })).rejects.toThrow('飞书未能发送该消息（错误码 230053）')
     expect(sendBodies(h)).toHaveLength(1)
     expect(waits).toEqual([])
     await channel.stop()
@@ -905,7 +938,7 @@ describe('codex-remote-feishu progress card', () => {
       { text: '改测试', status: 'inProgress' as const },
       { text: '跑一遍', status: 'pending' as const },
     ],
-    elapsed: '已经 3 分钟',
+    elapsed: '已用时 3 分钟',
     stopNonce: 'stop-nonce-0001',
   }
 
@@ -916,7 +949,7 @@ describe('codex-remote-feishu progress card', () => {
       header: { template: 'blue', title: { tag: 'plain_text', content: 'Codex 正在处理' } },
       elements: [
         { tag: 'div', text: { tag: 'plain_text', content: '✓ 读代码\n▶ 改测试\n○ 跑一遍' } },
-        { tag: 'div', text: { tag: 'plain_text', content: '已经 3 分钟' } },
+        { tag: 'div', text: { tag: 'plain_text', content: '已用时 3 分钟' } },
         {
           tag: 'action',
           actions: [{ tag: 'button', text: { tag: 'plain_text', content: '停止' }, type: 'danger', value: { stop: 'stop-nonce-0001' } }],
@@ -927,14 +960,14 @@ describe('codex-remote-feishu progress card', () => {
 
   it('keeps only the title and steps once the turn has ended, and never leaves the card empty', () => {
     const done = buildFeishuProgressCard({ state: 'done', steps: running.steps.map((step) => ({ ...step, status: 'completed' as const })) })
-    expect(done.header).toEqual({ template: 'green', title: { tag: 'plain_text', content: '做完了' } })
+    expect(done.header).toEqual({ template: 'green', title: { tag: 'plain_text', content: '已完成' } })
     expect(JSON.stringify(done)).not.toContain('stop')
     expect((done.config as Record<string, unknown>).update_multi).toBe(true)
     expect(buildFeishuProgressCard({ state: 'stopped', steps: [] })).toMatchObject({
       header: { template: 'grey', title: { content: '已停止' } },
       elements: [{ tag: 'hr' }],
     })
-    expect(buildFeishuProgressCard({ state: 'failed', steps: [] }).header).toEqual({ template: 'red', title: { tag: 'plain_text', content: '没做完' } })
+    expect(buildFeishuProgressCard({ state: 'failed', steps: [] }).header).toEqual({ template: 'red', title: { tag: 'plain_text', content: '未完成' } })
   })
 
   it('turns a stop click into a stop request, and hands over an unusable nonce as null', () => {
@@ -974,7 +1007,7 @@ describe('codex-remote-feishu progress card', () => {
         return defaultRespond(url)
       })
       const channel = await startChannel(h)
-      await expect(channel.sendProgress?.(peer, running)).rejects.toThrow('飞书没有给出这张卡片的编号')
+      await expect(channel.sendProgress?.(peer, running)).rejects.toThrow('飞书未返回该卡片的编号')
       await channel.stop()
     }
   })
@@ -1009,17 +1042,17 @@ describe('codex-remote-feishu progress card', () => {
     const message = {
       kind: 'approval' as const,
       request: { approvalId: '3', nonce: 'nonce-of-three', kind: 'command' as const, summary: 'npm test' },
-      text: 'Codex 想运行命令（第 3 条）：\nnpm test\n回「同意 3」或「拒绝 3」。',
+      text: 'Codex 请求运行命令（第 3 条）：\nnpm test\n请回复「同意 3」或「拒绝 3」。',
     }
     await expect(channel.sendApproval?.(peer, message)).resolves.toBe('om_approval_9')
     const sent = h.fetch.mock.calls.find(([url, init]) => String(url).includes('/im/v1/messages') && init?.method !== 'PATCH')
     expect(JSON.parse(String(JSON.parse(String(sent?.[1]?.body)).content))).toEqual(buildFeishuApprovalCard(message))
-    const decided = { ...message, text: 'Codex 想运行命令（第 3 条）：\nnpm test' }
+    const decided = { ...message, text: 'Codex 请求运行命令（第 3 条）：\nnpm test' }
     await channel.updateApproval?.('om_approval_9', decided, 'accepted')
     const patch = h.fetch.mock.calls.find(([, init]) => init?.method === 'PATCH')
     expect(String(patch?.[0])).toBe('https://open.feishu.cn/open-apis/im/v1/messages/om_approval_9')
     expect(JSON.parse(String(patch?.[1]?.body))).toEqual({ content: JSON.stringify(buildFeishuApprovalCard(decided, 'accepted')) })
-    await expect(channel.updateApproval?.('om_../x', decided, 'declined')).rejects.toThrow('飞书卡片编号不对')
+    await expect(channel.updateApproval?.('om_../x', decided, 'declined')).rejects.toThrow('飞书卡片编号无效')
     await channel.stop()
   })
 
@@ -1028,7 +1061,7 @@ describe('codex-remote-feishu progress card', () => {
     const channel = await startChannel(h)
     const before = h.fetch.mock.calls.length
     for (const handle of ['../chats', 'om_a/b', 'om_', '']) {
-      await expect(channel.updateProgress?.(handle, running)).rejects.toThrow('飞书卡片编号不对')
+      await expect(channel.updateProgress?.(handle, running)).rejects.toThrow('飞书卡片编号无效')
     }
     expect(h.fetch.mock.calls.length).toBe(before)
     await channel.stop()

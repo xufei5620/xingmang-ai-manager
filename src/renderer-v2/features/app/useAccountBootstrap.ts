@@ -5,7 +5,7 @@ import { useLatestRequest, type LatestRequest } from '../../latest-request'
 import { errorMessage } from '../../business-common'
 import { accountScope, type AccountSiteId } from '../../account-context'
 import type { AuthMode } from '../auth'
-import { KeyRewriteSkippedError, bootstrapAccountTools, describeAccountBootstrapFailure, describeAccountBootstrapResult, sessionChangeKeepsBootstrap, skippedNamedProviders, subscriptionSwitchResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from '../tools/account-bootstrap'
+import { KeyRewriteSkippedError, bootstrapAccountTools, describeAccountBootstrapFailure, describeAccountBootstrapResult, sessionChangeKeepsBootstrap, settleBootstrapToolFailure, skippedNamedProviders, subscriptionSwitchResult, type AccountBootstrapLogLine, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from '../tools/account-bootstrap'
 import { idleOnlineResync, noteBootstrapOutcome, planOnlineResync } from '../tools/online-resync'
 import { markDiagnosticsStale } from './environment-status'
 import { toolTemplateFilledNotice, type StartupNotice } from './startup-notice'
@@ -132,16 +132,16 @@ export function useAccountBootstrap(options: AccountBootstrapOptions) {
         await toolbox.refreshConfig().catch(() => undefined)
         // 开机那一轮替客户修好了 Codex 认不出的老配置：没人点过按钮，轻轻说一句改了什么、
         // 原样在哪找回。点名重写的那一档由调用方自己报结果，这里不重复。
-        if (mode !== 'rewrite' && result.repairedShadowed?.length) toast.show('已修好 Codex 的配置文件，坏掉的那份已备份', 'ok')
+        if (mode !== 'rewrite' && result.repairedShadowed?.length) toast.show('已修复 Codex 配置文件，损坏的文件已备份', 'ok')
       } catch (cause) {
-        outcome.error = errorMessage(cause, '账号密钥没有配好')
+        outcome.error = errorMessage(cause, '账号密钥配置失败')
         logAccountBootstrap(describeAccountBootstrapFailure(mode, outcome.error))
         if (!mounted.current || !thisRound()) return
         setWorkspaceEntered(true)
         setAccountBootstrap((current) => ({
-          ...(current ?? { phase: 'verifying', label: '密钥没有配好', percent: 100, scope: bootstrapScope }),
+          ...(current ?? { phase: 'verifying', label: '密钥配置失败', percent: 100, scope: bootstrapScope }),
           scope: bootstrapScope,
-          error: errorMessage(cause, '账号密钥没有配好'),
+          error: errorMessage(cause, '账号密钥配置失败'),
         }))
       }
     })()
@@ -249,7 +249,18 @@ export function useAccountBootstrap(options: AccountBootstrapOptions) {
   const suppressRestore = useCallback((restoredScope: string) => {
     suppressedRestores.current.add(restoredScope)
   }, [])
-  return { accountBootstrap, accountBootstrapRef, runAccountBootstrap, rewriteAccountKeys, applySubscriptionToTools, followSessionChange, abandonAccountBootstrap, suppressRestore }
+  /**
+   * 客户自己把这个工具连好了：上一轮替它写密钥没写成的那一条从首页横幅、引导里收起（settleBootstrapToolFailure）。
+   * 还在跑、没有结论的那一轮不动。
+   */
+  const settleToolKeyFailure = useCallback((provider: ProviderId) => {
+    setAccountBootstrap((current) => {
+      if (!current?.result) return current
+      const result = settleBootstrapToolFailure(current.result, provider)
+      return result === current.result ? current : { ...current, result }
+    })
+  }, [])
+  return { accountBootstrap, accountBootstrapRef, runAccountBootstrap, rewriteAccountKeys, applySubscriptionToTools, followSessionChange, abandonAccountBootstrap, suppressRestore, settleToolKeyFailure }
 }
 
 export type AccountBootstrap = ReturnType<typeof useAccountBootstrap>

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import type { AccountSubscriptionSelf } from '../../../../electron/ipc-contract'
+import type { AccountSubscriptionPlan, AccountSubscriptionSelf } from '../../../../electron/ipc-contract'
 import {
   balancePurchaseLine,
   billingPreferenceNote,
+  followPurchasePlan,
   invoicePortalOpenedText,
   invoicePortalOpenFailed,
   isSubscriptionTradeNo,
@@ -17,6 +18,8 @@ import {
   planSubscription,
   planTermText,
   planUsageText,
+  purchaseMethodFor,
+  purchasePlanNotice,
   rechargeRunwayText,
   redeemSuccessText,
   subscriptionResetSuffix,
@@ -44,6 +47,31 @@ function subscription(overrides: Partial<Subscription> = {}): Subscription {
 }
 
 const duration = { durationUnit: 'day' as const, durationValue: 30, customSeconds: 0 }
+
+function plan(overrides: Partial<AccountSubscriptionPlan> = {}): AccountSubscriptionPlan {
+  return {
+    id: 7,
+    title: '月卡',
+    subtitle: '',
+    priceAmount: 29,
+    currency: 'CNY',
+    durationUnit: 'month',
+    durationValue: 1,
+    customSeconds: 0,
+    allowBalancePay: true,
+    allowWalletOverflow: false,
+    maxPurchasePerUser: 0,
+    totalAmount: 1000,
+    upgradeGroup: '',
+    downgradeGroup: '',
+    quotaResetPeriod: 'never',
+    quotaResetCustomSeconds: 0,
+    stripePriceId: null,
+    creemProductId: null,
+    waffoPancakeProductId: null,
+    ...overrides,
+  }
+}
 
 describe('recharge', () => {
   it('credits a multiplier tier by its rate and treats other tiers as the credited amount', () => {
@@ -159,18 +187,72 @@ describe('recharge', () => {
   })
 
   it('explains each billing order in one sentence', () => {
-    expect(billingPreferenceNote('subscription_first')).toBe('订阅额度用完后自动改扣余额，不会中断。')
-    expect(billingPreferenceNote('wallet_first')).toBe('余额用完后再扣订阅额度。')
-    expect(billingPreferenceNote('subscription_only')).toBe('订阅额度用完后就停下，要再买订阅或换一种扣费顺序。')
-    expect(billingPreferenceNote('wallet_only')).toBe('订阅额度留着不用，所有用量都从余额里扣。')
+    expect(billingPreferenceNote('subscription_first')).toBe('订阅额度用尽后自动改扣余额，使用不中断。')
+    expect(billingPreferenceNote('wallet_first')).toBe('余额用尽后扣除订阅额度。')
+    expect(billingPreferenceNote('subscription_only')).toBe('订阅额度用尽后停止使用，需续购订阅或更改扣费顺序。')
+    expect(billingPreferenceNote('wallet_only')).toBe('不使用订阅额度，全部用量从余额扣除。')
   })
 
   it('compares the balance with a dollar price only and says what is left or missing', () => {
-    expect(balancePurchaseLine(12, { priceAmount: 10, currency: 'USD' })).toEqual({ text: '余额 $12.00，扣完剩 $2.00', short: false })
-    expect(balancePurchaseLine(8.5, { priceAmount: 10, currency: 'USD' })).toEqual({ text: '余额 $8.50，还差 $1.50', short: true })
-    expect(balancePurchaseLine(10, { priceAmount: 10, currency: 'USD' })).toEqual({ text: '余额 $10.00，扣完剩 $0.00', short: false })
+    expect(balancePurchaseLine(12, { priceAmount: 10, currency: 'USD' })).toEqual({ text: '余额 $12.00，扣除后剩余 $2.00', short: false })
+    expect(balancePurchaseLine(8.5, { priceAmount: 10, currency: 'USD' })).toEqual({ text: '余额 $8.50，尚差 $1.50', short: true })
+    expect(balancePurchaseLine(10, { priceAmount: 10, currency: 'USD' })).toEqual({ text: '余额 $10.00，扣除后剩余 $0.00', short: false })
     expect(balancePurchaseLine(100, { priceAmount: 68, currency: 'CNY' })).toEqual({ text: null, short: false })
     expect(balancePurchaseLine(null, { priceAmount: 10, currency: 'USD' })).toEqual({ text: null, short: false })
+  })
+
+  it('follows the plan in an open purchase dialog to what the server lists now', () => {
+    const seen = plan()
+    const same = plan({ subtitle: '换了副标题', stripePriceId: 'price_1' })
+    // 对得上就换成后台现在那份（支付渠道这类跟着新的走），不报变化。
+    expect(followPurchasePlan(seen, [plan({ id: 8 }), same])).toEqual({ change: 'none', plan: same })
+    expect(followPurchasePlan(seen, [plan({ id: 8 })])).toEqual({ change: 'gone', plan: null })
+    expect(followPurchasePlan(seen, [])).toEqual({ change: 'gone', plan: null })
+    expect(followPurchasePlan(seen, [plan({ priceAmount: 39 })]).change).toBe('price')
+    expect(followPurchasePlan(seen, [plan({ currency: 'USD' })]).change).toBe('price')
+    // 币种大小写、空着按美元，跟 planPriceText 同一个读法，不算变了价。
+    expect(followPurchasePlan(plan({ currency: '' }), [plan({ currency: 'usd' })]).change).toBe('none')
+    expect(followPurchasePlan(seen, [plan({ durationValue: 3 })]).change).toBe('terms')
+    expect(followPurchasePlan(seen, [plan({ durationUnit: 'custom', customSeconds: 30 * 86_400 })]).change).toBe('terms')
+    expect(followPurchasePlan(seen, [plan({ totalAmount: 500 })]).change).toBe('terms')
+    expect(followPurchasePlan(seen, [plan({ totalAmount: null })]).change).toBe('terms')
+    expect(followPurchasePlan(seen, [plan({ quotaResetPeriod: 'daily' })]).change).toBe('terms')
+    // 价格和内容一起变了，按变了价说：价是客户最先要知道的。
+    expect(followPurchasePlan(seen, [plan({ priceAmount: 39, durationValue: 3 })]).change).toBe('price')
+    // 按月算的套餐，后台那个用不上的自定义秒数动了，客户看到的时长没变。
+    expect(followPurchasePlan(seen, [plan({ customSeconds: 60 })]).change).toBe('none')
+  })
+
+  it('tells the customer what changed about the plan before they pay again', () => {
+    expect(purchasePlanNotice('none', plan(), plan())).toBeNull()
+    expect(purchasePlanNotice('price', plan(), plan({ priceAmount: 39 }))).toEqual({
+      title: '价格已更新',
+      body: '价格由 ¥29 调整为 ¥39，请确认后重新支付。',
+    })
+    expect(purchasePlanNotice('price', { priceAmount: 5, currency: 'USD' }, { priceAmount: 9.9, currency: 'USD' })?.body)
+      .toBe('价格由 $5 调整为 $9.90，请确认后重新支付。')
+    expect(purchasePlanNotice('terms', plan(), plan())).toEqual({
+      title: '套餐内容已更新',
+      body: '套餐的时长或额度已调整，价格不变，请确认后重新支付。',
+    })
+    expect(purchasePlanNotice('gone', plan(), null)).toEqual({ title: '该套餐已下架', body: '请关闭此窗口，选择其他套餐。' })
+  })
+
+  it('keeps the chosen way to pay while it still works and otherwise picks like a fresh dialog', () => {
+    const channels = [{ type: 'alipay' }, { type: 'stripe' }]
+    // 刚打开：余额够就用余额，不够换第一个在线渠道；没有在线渠道还是摆余额（点了说余额不够）。
+    expect(purchaseMethodFor({ allowBalancePay: true }, channels, false)).toBe('balance')
+    expect(purchaseMethodFor({ allowBalancePay: true }, channels, true)).toBe('alipay')
+    expect(purchaseMethodFor({ allowBalancePay: true }, [], true)).toBe('balance')
+    expect(purchaseMethodFor({ allowBalancePay: false }, channels, false)).toBe('alipay')
+    expect(purchaseMethodFor({ allowBalancePay: false }, [], false)).toBe('')
+    // 框开着时套餐换了：选好的还能用就不动。
+    expect(purchaseMethodFor({ allowBalancePay: true }, channels, false, 'stripe')).toBe('stripe')
+    expect(purchaseMethodFor({ allowBalancePay: true }, channels, false, 'balance')).toBe('balance')
+    // 涨价以后余额不够了、或者不让用余额了、或者那个渠道这个套餐用不了了：重新挑。
+    expect(purchaseMethodFor({ allowBalancePay: true }, channels, true, 'balance')).toBe('alipay')
+    expect(purchaseMethodFor({ allowBalancePay: false }, channels, false, 'balance')).toBe('alipay')
+    expect(purchaseMethodFor({ allowBalancePay: true }, [{ type: 'alipay' }], false, 'stripe')).toBe('balance')
   })
 
   it('reports a redeemed balance code with the amount that arrived', () => {
@@ -186,17 +268,17 @@ describe('recharge', () => {
     expect(orderPaidText({ money: 0, paymentProvider: 'epay', paymentMethod: 'alipay' })).toBeNull()
     expect(orderTitle({ amount: 10, tradeNo: 'USR7NOabc123' }, false)).toBe('充值 $10')
     expect(orderTitle({ amount: 70, tradeNo: 'sub2_trade-31' }, true)).toBe('充值 ¥70')
-    expect(orderTail({ status: 'pending', tradeNo: 'A' }, 'A')).toBe('，支付窗口开着')
-    expect(orderTail({ status: 'pending', tradeNo: 'A' }, 'B')).toBe('，没付的话放着就行，不会扣钱')
-    expect(orderTail({ status: 'failed', tradeNo: 'A' }, null)).toBe('，支付没有完成，没有扣款')
-    expect(orderTail({ status: 'expired', tradeNo: 'A' }, null)).toBe('，没有付成功，不会扣钱')
+    expect(orderTail({ status: 'pending', tradeNo: 'A' }, 'A')).toBe('，支付窗口已打开')
+    expect(orderTail({ status: 'pending', tradeNo: 'A' }, 'B')).toBe('，未付款不会产生扣费')
+    expect(orderTail({ status: 'failed', tradeNo: 'A' }, null)).toBe('，支付未完成，未扣款')
+    expect(orderTail({ status: 'expired', tradeNo: 'A' }, null)).toBe('，支付失败，未扣款')
     expect(orderTail({ status: 'success', tradeNo: 'A' }, null)).toBe('')
   })
 
   it('reuses the overview runway wording without repeating the row label', () => {
-    expect(rechargeRunwayText(400)).toBe('够用一年以上')
-    expect(rechargeRunwayText(0)).toBe('不到 1 天就会用完')
-    expect(rechargeRunwayText(12)).toBe('约还能用 12 天')
+    expect(rechargeRunwayText(400)).toBe('可用一年以上')
+    expect(rechargeRunwayText(0)).toBe('预计不足 1 天')
+    expect(rechargeRunwayText(12)).toBe('预计可用 12 天')
   })
 
   // new-api writes a paid subscription into the top-up table with amount 0
@@ -214,27 +296,27 @@ describe('recharge', () => {
 
   it('does not ask the customer to recheck the number of a subscription that has not been paid yet', () => {
     expect(ordersSearchEmpty(' SUBUSR7NOabc1231760000000 ', false)).toEqual({
-      title: '这笔订阅还没开通',
-      description: '订阅订单付款成功后才会出现在这里。没付的话放着就行，不会扣钱；手机上已经显示付款成功的话，稍后再查，超过 30 分钟还没开通请联系客服。',
+      title: '该订阅尚未开通',
+      description: '订阅订单付款成功后显示在此处，未付款不会产生扣费。如已显示付款成功，请稍后查询；超过 30 分钟仍未开通，请联系客服。',
     })
-    expect(ordersSearchEmpty('USR7NOabc', false)).toEqual({ title: '没有找到这个订单', description: '核对一下订单号，或者清空搜索看全部订单。' })
-    expect(ordersSearchEmpty('SUBUSR7NOabc', true).title).toBe('没有找到这个订单')
+    expect(ordersSearchEmpty('USR7NOabc', false)).toEqual({ title: '未找到该订单', description: '请核对订单号，或清空搜索查看全部订单。' })
+    expect(ordersSearchEmpty('SUBUSR7NOabc', true).title).toBe('未找到该订单')
   })
 
   it('says a closed subscription window opens the plan rather than topping up the balance', () => {
-    expect(paymentTerminalPresentation('closed', true, 'subscription').body).toBe('如果已经付过款，不用做什么：星芒还在确认，付款成功后订阅会自动开通。还没付的话，这笔订单放着就行，不会扣钱。')
-    expect(paymentTerminalPresentation('closed', false, 'subscription').body).toBe('关闭支付窗口不会取消订单。付过款的话，付款成功后订阅会自动开通，也可以点「查看我的订单」核对。')
-    expect(paymentTerminalPresentation('closed', true).body).toBe('如果已经付过款，不用做什么：星芒还在确认到账，到了会自动更新余额。还没付的话，这笔订单放着就行，不会扣钱。')
-    expect(paymentTerminalPresentation('unconfirmed', false, 'subscription').title).toBe('还没查到这笔订单到账')
+    expect(paymentTerminalPresentation('closed', true, 'subscription').body).toBe('如已付款，无需其他操作，确认后订阅将自动开通。未付款的订单不会产生扣费。')
+    expect(paymentTerminalPresentation('closed', false, 'subscription').body).toBe('关闭支付窗口不会取消订单。如已付款，订阅将在确认后自动开通，也可点击「查看我的订单」核对。')
+    expect(paymentTerminalPresentation('closed', true).body).toBe('如已付款，无需其他操作，到账后余额将自动更新。未付款的订单不会产生扣费。')
+    expect(paymentTerminalPresentation('unconfirmed', false, 'subscription').title).toBe('暂未确认到账')
   })
 
   it('tells each account which name to log in to the invoice portal with', () => {
-    expect(invoicePortalOpenedText(false)).toBe('开票中心已在新窗口打开；要登录的话，用这个账号的用户名和密码。')
-    expect(invoicePortalOpenedText(true)).toBe('开票中心已在新窗口打开；要登录的话，用这个账号的邮箱和密码。')
+    expect(invoicePortalOpenedText(false)).toBe('开票中心已在新窗口打开。如需登录，请使用当前账号的用户名和密码。')
+    expect(invoicePortalOpenedText(true)).toBe('开票中心已在新窗口打开。如需登录，请使用当前账号的邮箱和密码。')
   })
 
   it('shows the invoice portal failure as approved instead of a catalogued rewrite', () => {
-    expect(invoicePortalOpenFailed).toBe('没能打开开票中心，请稍后再试；还不行请找客服。')
+    expect(invoicePortalOpenFailed).toBe('开票中心打开失败，请稍后重试；如仍无法打开，请联系客服。')
     // The page-top notice swaps a message the catalogue recognises for its
     // own title; this one must reach the customer word for word.
     expect(presentOperationFailure({ message: invoicePortalOpenFailed })).toBeNull()

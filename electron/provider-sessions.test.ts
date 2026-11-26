@@ -3,6 +3,7 @@ import { promises as fsPromises } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import fc from 'fast-check'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CodexSessionsService } from './codex-sessions'
 import type {
@@ -331,6 +332,71 @@ describe('ProviderSessionsService.resolveWorkspace', () => {
   })
 })
 
+// 0.2.25 S1：记录页上点哪条接哪条，交给命令行的编号从记录本身读出来。
+describe('ProviderSessionsService.resolveResumeTarget', () => {
+  const claudeUuid = '6b1f3c2a-0d4e-4f5a-9b8c-7d6e5f4a3b2c'
+  const olderClaudeUuid = '11111111-2222-4333-8444-555555555555'
+  const grokUuid = '0199a3c2-7b1e-7d40-9f5a-2c3d4e5f6a7b'
+  const codexUuid = '019a0000-0000-7000-8000-000000000001'
+
+  function seedResumable(data: Fixture): void {
+    // Claude Code 按文件名找对话；老版本续聊另起的文件里，开头几行还是上一段的 sessionId。
+    writeJsonLines(path.join(data.claude, 'project-a', `${claudeUuid}.jsonl`), [
+      { type: 'user', sessionId: olderClaudeUuid, cwd: 'C:/claude', message: { role: 'user', content: '接着上次' } },
+      { type: 'user', sessionId: claudeUuid, cwd: 'C:/claude', message: { role: 'user', content: '再问一句' } },
+    ])
+    writeJsonLines(path.join(data.claude, 'project-b', 'not-a-uuid.jsonl'), [
+      { type: 'user', sessionId: claudeUuid.replace('6b1f', '7c2e'), cwd: 'C:/claude-b', message: { role: 'user', content: '文件名认不出' } },
+    ])
+    writeJsonLines(path.join(data.claude, 'project-c', 'neither.jsonl'), [
+      { type: 'user', sessionId: '--dangerously-skip-permissions', cwd: 'C:/claude-c', message: { role: 'user', content: '都认不出' } },
+    ])
+    const grokDirectory = path.join(data.grok, 'encoded-cwd', grokUuid)
+    fs.mkdirSync(grokDirectory, { recursive: true })
+    fs.writeFileSync(path.join(grokDirectory, 'summary.json'), JSON.stringify({ info: { id: grokUuid, cwd: 'C:/grok' } }), 'utf8')
+    const strangeGrok = path.join(data.grok, 'encoded-cwd', 'strange')
+    fs.mkdirSync(strangeGrok, { recursive: true })
+    fs.writeFileSync(path.join(strangeGrok, 'summary.json'), JSON.stringify({ info: { id: 'my title --yolo', cwd: 'C:/grok-b' } }), 'utf8')
+  }
+
+  async function idsByFolder(sessions: ProviderSessionsService): Promise<Record<string, string>> {
+    const page = await sessions.list({ pageSize: 100 })
+    return Object.fromEntries(page.items.map((item) => [item.cwd, item.id]))
+  }
+
+  it('gives the folder and the id each tool resumes by, taking the Claude Code file name first', async () => {
+    const data = fixture()
+    seedResumable(data)
+    const sessions = service(data, codexReader([{ ...codexSummary(codexUuid), cwd: 'C:/codex' }]))
+    const ids = await idsByFolder(sessions)
+
+    await expect(sessions.resolveResumeTarget(ids['C:/claude']!)).resolves.toEqual({ workspace: 'C:/claude', sessionId: claudeUuid })
+    await expect(sessions.resolveResumeTarget(ids['C:/claude-b']!)).resolves.toEqual({ workspace: 'C:/claude-b', sessionId: claudeUuid.replace('6b1f', '7c2e') })
+    await expect(sessions.resolveResumeTarget(ids['C:/grok']!)).resolves.toEqual({ workspace: 'C:/grok', sessionId: grokUuid })
+    await expect(sessions.resolveResumeTarget(ids['C:/codex']!)).resolves.toEqual({ workspace: 'C:/codex', sessionId: codexUuid })
+  })
+
+  it('gives no id when the record holds nothing shaped like one, so the launch falls back to the latest in the folder', async () => {
+    const data = fixture()
+    seedResumable(data)
+    const sessions = service(data)
+    const ids = await idsByFolder(sessions)
+
+    await expect(sessions.resolveResumeTarget(ids['C:/claude-c']!)).resolves.toEqual({ workspace: 'C:/claude-c', sessionId: null })
+    await expect(sessions.resolveResumeTarget(ids['C:/grok-b']!)).resolves.toEqual({ workspace: 'C:/grok-b', sessionId: null })
+  })
+
+  it('refuses an id that belongs to no record', async () => {
+    const data = fixture()
+    seedResumable(data)
+    const sessions = service(data, codexReader([codexSummary(codexUuid)]))
+
+    await expect(sessions.resolveResumeTarget(`codex:${grokUuid}`)).rejects.toThrow('未找到这条记录')
+    await expect(sessions.resolveResumeTarget(`claude:${'0'.repeat(64)}`)).rejects.toThrow('未找到 claude 会话')
+    await expect(sessions.resolveResumeTarget(`grok:${'0'.repeat(64)}`)).rejects.toThrow('未找到 grok 会话')
+  })
+})
+
 describe('ProviderSessionsService', () => {
   it('passes the Codex export incompleteness through the unified result, defaulting to complete (#491)', async () => {
     const data = fixture()
@@ -533,6 +599,102 @@ describe('ProviderSessionsService', () => {
     expect(detail.messages.map((message) => message.text)).toContain('第一条会话')
   })
 
+  it('hangs what a Claude Code turn ran and changed on its last AI reply, with names only', async () => {
+    const data = fixture()
+    writeJsonLines(path.join(data.claude, 'project-a', 'tools.jsonl'), [
+      { type: 'user', sessionId: 'tools', message: { role: 'user', content: '帮我修一下测试' } },
+      { type: 'assistant', sessionId: 'tools', message: { role: 'assistant', content: [{ type: 'text', text: '我先跑一下测试' }] } },
+      { type: 'assistant', sessionId: 'tools', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'cd /home/someone/app && npm test -- --token=abc' } }] } },
+      { type: 'user', sessionId: 'tools', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', is_error: true, content: 'FAIL' }] } },
+      { type: 'assistant', sessionId: 'tools', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't2', name: 'Edit', input: { file_path: '/home/someone/app/src/sum.ts', old_string: 'a', new_string: 'b' } }] } },
+      { type: 'user', sessionId: 'tools', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', is_error: false, content: 'ok' }] } },
+      { type: 'assistant', sessionId: 'tools', message: { role: 'assistant', content: [{ type: 'text', text: '改好了' }] } },
+      { type: 'user', sessionId: 'tools', message: { role: 'user', content: '谢谢' } },
+    ])
+    const sessions = service(data, codexReader([]))
+    const page = await sessions.list({ provider: 'claude' })
+    const detail = await sessions.detail(page.items[0].id)
+
+    expect(detail.messages.map((message) => message.text)).toEqual(['帮我修一下测试', '我先跑一下测试', '改好了', '谢谢'])
+    expect(detail.messages.map((message) => message.activity)).toEqual([
+      undefined,
+      undefined,
+      { commands: 1, commandNames: ['npm'], fileCount: 1, files: ['sum.ts'], failedSteps: 1 },
+      undefined,
+    ])
+    expect(JSON.stringify(detail)).not.toContain('--token=abc')
+    expect(JSON.stringify(detail.messages)).not.toContain('/home/someone')
+
+    const outputPath = path.join(data.root, 'exports', 'tools.md')
+    await sessions.exportMarkdown(page.items[0].id, outputPath)
+    expect(fs.readFileSync(outputPath, 'utf8')).not.toContain('sum.ts')
+  })
+
+  it('finds a session by something said in it only when content search is on', async () => {
+    const data = fixture()
+    writeJsonLines(path.join(data.claude, 'project-a', 'said.jsonl'), [
+      { type: 'user', sessionId: 'said', timestamp: '2026-07-24T01:00:00.000Z', message: { role: 'user', content: '帮我整理一下报表' } },
+      { type: 'assistant', sessionId: 'said', timestamp: '2026-07-24T01:00:01.000Z', message: { role: 'assistant', content: [{ type: 'text', text: '报表里有三张 Invoice 没开' }] } },
+      { type: 'custom-title', sessionId: 'said', customTitle: '整理报表' },
+    ])
+    seedCodexSession(data.codexHome, 'codex-said', 'Codex 会话')
+    fs.appendFileSync(path.join(data.codexHome, 'sessions', 'codex-said.jsonl'), `${JSON.stringify({
+      timestamp: '2026-07-24T00:00:01.000Z',
+      type: 'response_item',
+      payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '已经开好 invoice 了' }] },
+    })}\n`, 'utf8')
+    const sessions = service(data, new CodexSessionsService({
+      codexHome: data.codexHome,
+      managerDataDirectory: path.join(data.root, 'manager-data'),
+    }))
+
+    expect((await sessions.list({ search: 'invoice' })).total).toBe(0)
+    const page = await sessions.list({ search: 'INVOICE', searchContent: true })
+    expect(page.items.map((item) => item.provider).sort()).toEqual(['claude', 'codex'])
+    expect(page.items.find((item) => item.provider === 'codex')?.id).toBe('codex:codex-said')
+    expect(page.stats.byProvider).toMatchObject({ codex: 1, claude: 1 })
+    // 标题本来就对得上的照旧列出来，不用等翻内容。
+    expect((await sessions.list({ search: '整理报表', searchContent: true })).total).toBe(1)
+    expect((await sessions.list({ search: '从没说过的话', searchContent: true })).total).toBe(0)
+  })
+
+  it('only reads the most recent hundred sessions when searching what was said', async () => {
+    const data = fixture()
+    for (let index = 0; index < 101; index += 1) {
+      const minute = String(index).padStart(3, '0')
+      const filePath = path.join(data.claude, 'project-a', `s-${minute}.jsonl`)
+      writeJsonLines(filePath, [
+        {
+          type: 'user',
+          sessionId: `s-${minute}`,
+          timestamp: new Date(Date.UTC(2026, 6, 24, 0, index)).toISOString(),
+          message: { role: 'user', content: `第 ${index} 段` },
+        },
+        {
+          type: 'assistant',
+          sessionId: `s-${minute}`,
+          timestamp: new Date(Date.UTC(2026, 6, 24, 0, index, 1)).toISOString(),
+          message: { role: 'assistant', content: [{ type: 'text', text: index === 0 ? '最早那段提过暗号' : index === 100 ? '最近那段提过口令' : '好的' }] },
+        },
+      ])
+      // 「最近」按文件修改时间和最后一条消息的时间里晚的那个算。Windows 上一口气写出的文件修改时间常常
+      // 一样，谁落在最近 100 条之外就看列目录的次序（CI 上红过：最早那条也被翻到了）。这里把修改时间
+      // 钉成这一段最后一条消息的时间，先后只由用例自己定。
+      const lastMessageAt = new Date(Date.UTC(2026, 6, 24, 0, index, 1))
+      fs.utimesSync(filePath, lastMessageAt, lastMessageAt)
+    }
+    const sessions = service(data, codexReader([]))
+    expect((await sessions.list({ provider: 'claude', search: '暗号', searchContent: true })).total).toBe(0)
+    expect((await sessions.list({ provider: 'claude', search: '口令', searchContent: true })).total).toBe(1)
+  })
+
+  it('leaves Codex out of content search when its reader cannot search content', async () => {
+    const data = fixture()
+    const codex = codexReader([codexSummary('codex-native')])
+    const sessions = service(data, codex)
+    await expect(sessions.list({ search: '正文里的话', searchContent: true })).resolves.toMatchObject({ total: 0 })
+  })
+
   it('streams all messages to Markdown while detail retains a bounded tail', async () => {
     const data = fixture()
     const entries = Array.from({ length: 300 }, (_, index) => ({
@@ -631,7 +793,7 @@ describe('ProviderSessionsService', () => {
       '',
       '- Provider：`claude`',
       '- 会话 ID：`abcdef12-3456`',
-      '- 工作目录：`C:/my \\`project\\``',
+      '- 项目文件夹：`C:/my \\`project\\``',
       '- 模型：`claude-\\`sonnet\\``',
       '',
       '---',
@@ -884,7 +1046,7 @@ describe('ProviderSessionsService', () => {
     expect(byNativeId.get('gone')).toBe(false)
 
     // 目录随时会被删掉或恢复，所以这个判断不进探测缓存：缓存住就会一直显示
-    // 上一次的状态，用户删了文件夹还看见一颗亮着的「接着聊」。
+    // 上一次的状态，用户删了文件夹还看见一颗亮着的「继续对话」。
     await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('还在'), probeCacheWrite)
     expect(fs.readFileSync(cacheFile, 'utf8')).not.toContain('cwdExists')
 
@@ -898,6 +1060,163 @@ describe('ProviderSessionsService', () => {
     const page = await service(data, codexReader([codexSummary()], false)).list({ provider: 'codex' })
     expect(page.items[0].readonly).toBe(true)
     expect(page.capabilities.codex.operations).toMatchObject({ archive: false, restore: false })
+  })
+})
+
+describe('ProviderSessionsService.list recent-scan reuse (R-3)', () => {
+  // One Codex sweep of up to 100 threads reads page 1 and then the total once more.
+  const codexListCallsPerSweep = 2
+
+  function clockedService(data: Fixture, codex: CodexSessionReader) {
+    let now = 1_000_000
+    const sessions = service(data, codex, { now: () => now })
+    return { sessions, advance: (ms: number) => { now += ms } }
+  }
+
+  function writeClaudeSession(data: Fixture, name: string, title: string): void {
+    writeJsonLines(path.join(data.claude, 'project-r3', `${name}.jsonl`), [
+      { type: 'custom-title', sessionId: name, customTitle: title },
+      { type: 'user', sessionId: name, cwd: 'C:/claude', message: { role: 'user', content: title } },
+    ])
+  }
+
+  it('shares one sweep between requests that overlap', async () => {
+    const data = fixture()
+    const codex = codexReader([codexSummary('codex-a'), { ...codexSummary('codex-b'), title: '登录页' }])
+    // Hold the sweep open so the second request really arrives while it runs.
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const listPage = codex.list
+    codex.list = vi.fn(async (query) => {
+      await gate
+      return listPage(query)
+    })
+    const sessions = service(data, codex)
+
+    const pending = Promise.all([
+      sessions.list({ provider: 'codex', search: '登录', page: 1, pageSize: 20 }),
+      sessions.list({ provider: 'codex', page: 1, pageSize: 100 }),
+    ])
+    await vi.waitFor(() => expect(codex.list).toHaveBeenCalledTimes(1))
+    release()
+    const [filtered, latest] = await pending
+
+    expect(codex.list).toHaveBeenCalledTimes(codexListCallsPerSweep)
+    expect(filtered.items.map((item) => item.nativeId)).toEqual(['codex-b'])
+    expect(latest.total).toBe(2)
+  })
+
+  it('filters and pages a recent sweep again instead of rescanning when asked to reuse it', async () => {
+    const data = fixture()
+    const codex = codexReader([codexSummary('codex-a'), { ...codexSummary('codex-b'), title: '登录页' }])
+    const { sessions, advance } = clockedService(data, codex)
+
+    await sessions.list({ provider: 'codex' })
+    advance(9_000)
+    const searched = await sessions.list({ provider: 'codex', search: '登录', reuseRecentScan: true })
+    const paged = await sessions.list({ provider: 'codex', page: 2, pageSize: 1, reuseRecentScan: true })
+
+    expect(codex.list).toHaveBeenCalledTimes(codexListCallsPerSweep)
+    expect(searched.items.map((item) => item.nativeId)).toEqual(['codex-b'])
+    expect(paged).toMatchObject({ page: 2, pages: 2, total: 2 })
+  })
+
+  it('rescans once the reuse window has passed', async () => {
+    const data = fixture()
+    const codex = codexReader()
+    const { sessions, advance } = clockedService(data, codex)
+
+    await sessions.list({ provider: 'codex' })
+    advance(10_000)
+    await sessions.list({ provider: 'codex', search: 'x', reuseRecentScan: true })
+
+    expect(codex.list).toHaveBeenCalledTimes(codexListCallsPerSweep * 2)
+  })
+
+  it('always rescans a request that does not ask to reuse, so a reload sees new sessions', async () => {
+    const data = fixture()
+    writeClaudeSession(data, 'old', '旧对话')
+    const { sessions } = clockedService(data, codexReader([]))
+
+    expect((await sessions.list({ provider: 'claude' })).total).toBe(1)
+    writeClaudeSession(data, 'new', '刚开的对话')
+
+    // Only a search or page change within the window may miss it ...
+    expect((await sessions.list({ provider: 'claude', reuseRecentScan: true })).total).toBe(1)
+    // ... a plain request (entering the page, reloading) rescans as before.
+    const reloaded = await sessions.list({ provider: 'claude' })
+    expect(reloaded.items.map((item) => item.title).sort()).toEqual(['刚开的对话', '旧对话'])
+  })
+
+  it('reuses each tool on its own when the tool filter changes', async () => {
+    const data = fixture()
+    writeClaudeSession(data, 'one', 'Claude 对话')
+    const codex = codexReader()
+    const { sessions } = clockedService(data, codex)
+
+    await sessions.list({ provider: 'all' })
+    const realpath = vi.spyOn(fsPromises, 'realpath')
+    try {
+      const claude = await sessions.list({ provider: 'claude', reuseRecentScan: true })
+      const codexOnly = await sessions.list({ provider: 'codex', reuseRecentScan: true })
+      expect(claude.items.map((item) => item.title)).toEqual(['Claude 对话'])
+      expect(codexOnly.total).toBe(1)
+      expect(realpath).not.toHaveBeenCalled()
+    } finally {
+      realpath.mockRestore()
+    }
+    expect(codex.list).toHaveBeenCalledTimes(codexListCallsPerSweep)
+  })
+
+  it('rescans after a record is deleted, even for a request that asks to reuse', async () => {
+    const data = fixture()
+    writeClaudeSession(data, 'keep', '留着的')
+    writeClaudeSession(data, 'drop', '要删的')
+    const { sessions } = clockedService(data, codexReader([]))
+    const before = await sessions.list({ provider: 'claude' })
+    const target = before.items.find((item) => item.title === '要删的')
+    expect(target).toBeDefined()
+
+    await sessions.delete(target?.id ?? '')
+
+    const after = await sessions.list({ provider: 'claude', search: '的', reuseRecentScan: true })
+    expect(after.items.map((item) => item.title)).toEqual(['留着的'])
+  })
+
+  it('does not hand a sweep that started before an invalidation to a later request', async () => {
+    const data = fixture()
+    let release: () => void = () => undefined
+    const codex = codexReader([codexSummary('before')])
+    const firstPage = codex.list
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    codex.list = vi.fn(async (query) => {
+      await gate
+      return firstPage(query)
+    })
+    const sessions = service(data, codex)
+
+    const stale = sessions.list({ provider: 'codex' })
+    sessions.invalidateListCache()
+    const fresh = sessions.list({ provider: 'codex', reuseRecentScan: true })
+    release()
+    await Promise.all([stale, fresh])
+
+    // Two sweeps, not one shared: the second request did not join the first.
+    expect(codex.list).toHaveBeenCalledTimes(codexListCallsPerSweep * 2)
+  })
+
+  it('does not keep a failed sweep for the next request', async () => {
+    const data = fixture()
+    const codex = codexReader()
+    vi.mocked(codex.list).mockRejectedValueOnce(new Error('数据库正忙'))
+    const { sessions } = clockedService(data, codex)
+
+    const failed = await sessions.list({ provider: 'codex' })
+    expect(failed.capabilities.codex.readable).toBe(false)
+    const retried = await sessions.list({ provider: 'codex', reuseRecentScan: true })
+
+    expect(retried.capabilities.codex.readable).toBe(true)
+    expect(retried.total).toBe(1)
   })
 })
 
@@ -980,7 +1299,7 @@ describe('ProviderSessionsService.delete', () => {
     const data = fixture()
     seedExternalSessions(data)
     const sessions = service(data)
-    await expect(sessions.delete('claude:../../etc/passwd')).rejects.toThrow('没找到这条记录')
+    await expect(sessions.delete('claude:../../etc/passwd')).rejects.toThrow('未找到该记录')
     await expect(sessions.delete('unknown:abc')).rejects.toThrow()
     await expect(sessions.delete('codex:../../x')).rejects.toThrow('会话 ID 格式错误')
     expect((await sessions.list({ pageSize: 100 })).stats.byProvider).toMatchObject({ claude: 1, grok: 1 })
@@ -1086,5 +1405,63 @@ describe('codexSessionTitle', () => {
 
   it('falls back to the session id when the title is blank', () => {
     expect(codexSessionTitle(' \n ', 'id-1')).toBe('id-1')
+  })
+
+  it('shows only the request the user typed when the desktop app prefixed the files they attached', () => {
+    const prompt = [
+      '# Files mentioned by the user:',
+      '',
+      '## 截图.png: C:\\Users\\a\\Desktop\\截图.png',
+      '',
+      '## My request for Codex:',
+      '帮我看看这个报错',
+      '',
+    ].join('\n')
+    expect(codexSessionTitle(prompt, 'id-1')).toBe('帮我看看这个报错')
+  })
+
+  it('shows only the request after the IDE context and after a title already folded onto one line', () => {
+    const ide = '# Context from my IDE setup:\n\n## Active file: src/lib.rs\n\n## My request for Codex:\n解释一下\n这段代码'
+    expect(codexSessionTitle(ide, 'id-1')).toBe('解释一下 这段代码')
+    const folded = '# Files mentioned by the user: ## a.png: /Users/a/a.png ## My request for Codex: 改一下配色'
+    expect(codexSessionTitle(folded, 'id-1')).toBe('改一下配色')
+  })
+
+  it('cuts at the first delimiter like Codex does, so a request quoting it stays whole', () => {
+    const prompt = '# Files mentioned by the user:\n\n## a.md: /tmp/a.md\n\n## My request for Codex:\n删掉 ## My request for Codex: 这一行'
+    expect(codexSessionTitle(prompt, 'id-1')).toBe('删掉 ## My request for Codex: 这一行')
+  })
+
+  it('names the attached files when the user sent them without typing anything', () => {
+    const onlyFiles = [
+      '# Files mentioned by the user:',
+      '',
+      '## 截图.png: C:\\Users\\a\\Desktop\\截图.png',
+      '',
+      '## Pasted text.txt: /Users/a/Library/Pasted text.txt',
+      '',
+    ].join('\n')
+    expect(codexSessionTitle(onlyFiles, 'id-1')).toBe('截图.png、Pasted text.txt')
+    expect(codexSessionTitle(`${onlyFiles}\n## My request for Codex:\n  \n`, 'id-1')).toBe('截图.png、Pasted text.txt')
+  })
+
+  it('keeps the old folded title when the prefix carries nothing it can use', () => {
+    expect(codexSessionTitle('# Files mentioned by the user:\n', 'id-1')).toBe('# Files mentioned by the user:')
+    expect(codexSessionTitle('# Context from my IDE setup:\n## My request for Codex:\n', 'id-1'))
+      .toBe('# Context from my IDE setup: ## My request for Codex:')
+  })
+
+  it('leaves every other title exactly as before with random inputs', () => {
+    function previousTitle(title: string, sessionId: string): string {
+      const cleaned = title.replace(/\s+/g, ' ').trim()
+      return (cleaned.length > 160 ? `${cleaned.slice(0, 160)}…` : cleaned) || sessionId
+    }
+    const ordinary = fc.string({ unit: 'grapheme', maxLength: 300 }).filter((title) =>
+      !title.includes('## My request for Codex:')
+      && !title.trimStart().startsWith('# Files mentioned by the user:')
+      && !/^\s*Automation:/.test(title))
+    fc.assert(fc.property(ordinary, (title) => {
+      expect(codexSessionTitle(title, 'id-1')).toBe(previousTitle(title, 'id-1'))
+    }))
   })
 })

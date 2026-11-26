@@ -92,10 +92,10 @@ describe('Codex Desktop install failure wording', () => {
   })
 
   it('only promises the old version still works when Windows did not touch it', () => {
-    expect(buildCodexDesktopInstallFailureMessage('damaged', { storeTried: false, updating: true })).toContain('原来那一版照常能用')
+    expect(buildCodexDesktopInstallFailureMessage('damaged', { storeTried: false, updating: true })).toContain('原版本仍可正常使用')
     expect(buildCodexDesktopInstallFailureMessage('damaged', { storeTried: false, updating: false })).not.toContain('原来那一版')
     expect(buildCodexDesktopInstallFailureMessage('blocked', { storeTried: false, updating: true })).not.toContain('原来那一版')
-    expect(buildCodexDesktopInstallFailureMessage('blocked', { storeTried: false, updating: false })).toContain('装到一半')
+    expect(buildCodexDesktopInstallFailureMessage('blocked', { storeTried: false, updating: false })).toContain('未安装完成的程序')
     expect(buildCodexDesktopInstallFailureMessage('firewallOff', { storeTried: true, updating: true })).not.toContain('原来那一版')
   })
 
@@ -103,16 +103,16 @@ describe('Codex Desktop install failure wording', () => {
     // 2026-11-06 那一次：桶过期跳过、商店没新版、官网的包下好核过，交给 Windows 时卡在登记防火墙规则。
     const raw = new Error(firewallOffRaw)
     const failure = toCodexDesktopInstallFailure(raw, {
-      storeFailure: '商店里暂时还没有更新的版本', storeExitCode: '0x8a15002b', updating: true, officialPackage: true,
+      storeFailure: '商店暂无更新的版本', storeExitCode: '0x8a15002b', updating: true, officialPackage: true,
       bucketFailure: '存储桶清单超过 24 小时没和官方核对过（上次是 2026-11-04T14:30:12.285Z），桶里的可能不是最新版',
     })
-    expect(failure.message).toBe(`Codex 桌面端没装上：${codexDesktopInstallFailureReasons.firewallOff}`)
+    expect(failure.message).toBe(`Codex 桌面端未能安装：${codexDesktopInstallFailureReasons.firewallOff}`)
     expect(isCodexDesktopFirewallOffInstallFailure(failure.message)).toBe(true)
-    expect(failure.message).not.toMatch(/微软商店这次没装上|微软商店里还没有新版|官网|不让装（/)
+    expect(failure.message).not.toMatch(/微软商店安装失败|微软商店暂无新版本|官网|Windows 拒绝了本次安装/)
     expect(failure).toMatchObject({ reason: 'firewallOff', storeExitCode: '0x8a15002b' })
     // 日志里那句原话照旧带着三路各自的经过。
     expect((failure as CodexDesktopInstallFailure).detail).toBe(
-      `存储桶这一路没走通（存储桶清单超过 24 小时没和官方核对过（上次是 2026-11-04T14:30:12.285Z），桶里的可能不是最新版），微软商店这次没装上（商店里暂时还没有更新的版本），OpenAI 官网的离线安装包也没装上：${firewallOffRaw}`,
+      `存储桶这一路没走通（存储桶清单超过 24 小时没和官方核对过（上次是 2026-11-04T14:30:12.285Z），桶里的可能不是最新版），微软商店这次没装上（商店暂无更新的版本），OpenAI 官网的离线安装包也没装上：${firewallOffRaw}`,
     )
     // 这台电脑没有商店、或者是首次安装，说法也一样。
     for (const context of [{ storeTried: false, storeUnavailable: true, updating: false }, { storeTried: false, updating: false, officialTried: true }]) {
@@ -125,26 +125,26 @@ describe('Codex Desktop install failure wording', () => {
   it('says the store has nothing newer yet rather than that it failed', () => {
     const raw = new Error(samples.unreachable[0])
     const failure = toCodexDesktopInstallFailure(raw, {
-      storeFailure: '商店里暂时还没有更新的版本', storeExitCode: '0x8a15002b', updating: true,
+      storeFailure: '商店暂无更新的版本', storeExitCode: '0x8a15002b', updating: true,
     })
-    expect(failure.message).toBe('Codex 桌面端没装上：微软商店里还没有新版，国内下载线路这会儿连不上。原来那一版照常能用。')
+    expect(failure.message).toBe('Codex 桌面端未能安装：微软商店暂无新版本，国内下载线路暂时无法连接。原版本仍可正常使用。')
     // 商店真出了错（别的退出码、超时）照旧说没装上。
     for (const storeExitCode of ['0x8a150049', null]) {
-      expect(toCodexDesktopInstallFailure(raw, { storeFailure: '商店那边没说原因', storeExitCode, updating: true }).message)
-        .toBe('Codex 桌面端没装上：微软商店这次没装上，国内下载线路这会儿连不上。原来那一版照常能用。')
+      expect(toCodexDesktopInstallFailure(raw, { storeFailure: '商店未说明原因', storeExitCode, updating: true }).message)
+        .toBe('Codex 桌面端未能安装：微软商店安装失败，国内下载线路暂时无法连接。原版本仍可正常使用。')
     }
   })
 
   it('keeps the raw failure, the store exit code and the cause for the runtime log', () => {
     const raw = new Error(samples.damaged[0])
-    const failure = toCodexDesktopInstallFailure(raw, { storeFailure: '商店那边没说原因', storeExitCode: '0x8a150049', updating: false })
+    const failure = toCodexDesktopInstallFailure(raw, { storeFailure: '商店未说明原因', storeExitCode: '0x8a150049', updating: false })
     expect(failure).toBeInstanceOf(CodexDesktopInstallFailure)
-    expect(failure.message).toBe('Codex 桌面端没装上：微软商店这次没装上，下载下来的安装包不完整或被改过，已经删掉了。')
+    expect(failure.message).toBe('Codex 桌面端未能安装：微软商店安装失败，下载的安装包不完整或已被篡改，已删除。')
     expect(failure.cause).toBe(raw)
     // ipc.ts 记失败时 runtime-log 的 sanitizeValue 只会带上 Error 的「自有、可枚举」字段。
     expect(Object.keys(failure)).toEqual(expect.arrayContaining(['detail', 'reason', 'storeExitCode']))
     const logged = failure as CodexDesktopInstallFailure
-    expect(logged.detail).toBe(`微软商店这次没装上（商店那边没说原因），国内镜像也没装上：${samples.damaged[0]}`)
+    expect(logged.detail).toBe(`微软商店这次没装上（商店未说明原因），国内镜像也没装上：${samples.damaged[0]}`)
     expect(logged.storeExitCode).toBe('0x8a150049')
   })
 
@@ -167,7 +167,7 @@ describe('Codex Desktop install failure wording', () => {
   })
 
   it('passes the package check sentence for another Windows account through without a cause', () => {
-    const sentence = '读不到这台电脑上 Codex 桌面端的安装信息，请换成当初装它的那个 Windows 账户登录，再打开星芒重试。'
+    const sentence = '无法读取本机 Codex 桌面端的安装信息，请使用安装它时所用的 Windows 账户登录，再重新打开星芒重试。'
     const error = codexDesktopPackageProbeError(sentence, {})
     expect(error.cause).toBeUndefined()
     expect(toCodexDesktopInstallFailure(error, { storeFailure: null, storeExitCode: null, updating: true })).toBe(error)
@@ -177,9 +177,9 @@ describe('Codex Desktop install failure wording', () => {
     const failure = toCodexDesktopInstallFailure(new Error(samples.unreachable[0]), {
       storeFailure: null, storeExitCode: null, updating: false, storeUnavailable: true,
     })
-    expect(failure.message).toBe('Codex 桌面端没装上：这台电脑没有微软商店，国内下载线路这会儿连不上。')
+    expect(failure.message).toBe('Codex 桌面端未能安装：本机没有微软商店，国内下载线路暂时无法连接。')
     expect(isCodexDesktopNoStoreInstallFailure(failure.message)).toBe(true)
-    expect((failure as CodexDesktopInstallFailure).detail).toBe(`这台电脑没有微软商店，国内镜像也没装上：${samples.unreachable[0]}`)
+    expect((failure as CodexDesktopInstallFailure).detail).toBe(`本机没有微软商店，国内镜像也没装上：${samples.unreachable[0]}`)
     const withStore = buildCodexDesktopInstallFailureMessage('unreachable', { storeTried: true, updating: false })
     expect(isCodexDesktopNoStoreInstallFailure(withStore)).toBe(false)
   })
@@ -187,61 +187,61 @@ describe('Codex Desktop install failure wording', () => {
   it('names the failed official package between the store and the reason', () => {
     const raw = new Error(samples.unreachable[0])
     const failure = toCodexDesktopInstallFailure(raw, {
-      storeFailure: '连不上微软商店', storeExitCode: null, updating: false, officialFailure: 'OpenAI 官网连接或下载超时',
+      storeFailure: '无法连接微软商店', storeExitCode: null, updating: false, officialFailure: 'OpenAI 官网连接或下载超时',
     })
-    expect(failure.message).toBe('Codex 桌面端没装上：微软商店这次没装上，OpenAI 官网的离线安装包也没下成，国内下载线路这会儿连不上。')
+    expect(failure.message).toBe('Codex 桌面端未能安装：微软商店安装失败，OpenAI 官网的离线安装包也未能下载，国内下载线路暂时无法连接。')
     expect((failure as CodexDesktopInstallFailure).detail).toBe(
-      `微软商店这次没装上（连不上微软商店），OpenAI 官网的离线安装包也没下成（OpenAI 官网连接或下载超时），国内镜像也没装上：${samples.unreachable[0]}`,
+      `微软商店这次没装上（无法连接微软商店），OpenAI 官网的离线安装包也未能下载（OpenAI 官网连接或下载超时），国内镜像也没装上：${samples.unreachable[0]}`,
     )
 
     const noStore = toCodexDesktopInstallFailure(raw, {
       storeFailure: null, storeExitCode: null, updating: true, storeUnavailable: true, officialFailure: 'OpenAI 官网返回 HTTP 403',
     })
-    expect(noStore.message).toBe('Codex 桌面端没装上：这台电脑没有微软商店，OpenAI 官网的离线安装包也没下成，国内下载线路这会儿连不上。原来那一版照常能用。')
+    expect(noStore.message).toBe('Codex 桌面端未能安装：本机没有微软商店，OpenAI 官网的离线安装包也未能下载，国内下载线路暂时无法连接。原版本仍可正常使用。')
     expect(isCodexDesktopNoStoreInstallFailure(noStore.message)).toBe(true)
   })
 
   it('blames Windows, not the download, when the official package downloaded but would not install', () => {
     const raw = new Error(samples.blocked[0])
     const failure = toCodexDesktopInstallFailure(raw, {
-      storeFailure: '商店那边没说原因', storeExitCode: '0x8a150049', updating: false, officialPackage: true,
+      storeFailure: '商店未说明原因', storeExitCode: '0x8a150049', updating: false, officialPackage: true,
     })
-    expect(failure.message).toBe(`Codex 桌面端没装上：微软商店这次没装上，${codexDesktopInstallFailureReasons.blocked}`)
+    expect(failure.message).toBe(`Codex 桌面端未能安装：微软商店安装失败，${codexDesktopInstallFailureReasons.blocked}`)
     expect((failure as CodexDesktopInstallFailure).detail)
-      .toBe(`微软商店这次没装上（商店那边没说原因），OpenAI 官网的离线安装包也没装上：${samples.blocked[0]}`)
+      .toBe(`微软商店这次没装上（商店未说明原因），OpenAI 官网的离线安装包也没装上：${samples.blocked[0]}`)
   })
 
   it('keeps a bucket route that did not work out of the customer sentence and puts it first in the log', () => {
     const raw = new Error(samples.unreachable[0])
     const failure = toCodexDesktopInstallFailure(raw, {
-      storeFailure: '连不上微软商店', storeExitCode: null, updating: false, bucketFailure: '存储桶清单返回 HTTP 404',
+      storeFailure: '无法连接微软商店', storeExitCode: null, updating: false, bucketFailure: '存储桶清单返回 HTTP 404',
     })
-    expect(failure.message).toBe('Codex 桌面端没装上：微软商店这次没装上，国内下载线路这会儿连不上。')
+    expect(failure.message).toBe('Codex 桌面端未能安装：微软商店安装失败，国内下载线路暂时无法连接。')
     expect(failure.message).not.toContain('存储桶')
     expect((failure as CodexDesktopInstallFailure).detail).toBe(
-      `存储桶这一路没走通（存储桶清单返回 HTTP 404），微软商店这次没装上（连不上微软商店），国内镜像也没装上：${samples.unreachable[0]}`,
+      `存储桶这一路没走通（存储桶清单返回 HTTP 404），微软商店这次没装上（无法连接微软商店），国内镜像也没装上：${samples.unreachable[0]}`,
     )
   })
 
   it('names the bucket package in the log when the build from an old index downloaded but would not install', () => {
     const raw = new Error(samples.blocked[0])
     const failure = toCodexDesktopInstallFailure(raw, {
-      storeFailure: '商店那边没说原因', storeExitCode: '0x8a150049', updating: false,
+      storeFailure: '商店未说明原因', storeExitCode: '0x8a150049', updating: false,
       officialFailure: 'OpenAI 官网连接或下载超时', bucketFailure: '存储桶清单超过 24 小时没和官方核对过', bucketStale: true, bucketPackage: true,
     })
     // The customer sentence is the one the mirror would have got; the route only shows in the log.
     expect(failure.message).toBe(toCodexDesktopInstallFailure(raw, {
-      storeFailure: '商店那边没说原因', storeExitCode: '0x8a150049', updating: false, officialFailure: 'OpenAI 官网连接或下载超时',
+      storeFailure: '商店未说明原因', storeExitCode: '0x8a150049', updating: false, officialFailure: 'OpenAI 官网连接或下载超时',
     }).message)
     expect(failure.message).not.toContain('存储桶')
     expect((failure as CodexDesktopInstallFailure).detail).toBe(
-      `存储桶这一路没走通（存储桶清单超过 24 小时没和官方核对过），微软商店这次没装上（商店那边没说原因），OpenAI 官网的离线安装包也没下成（OpenAI 官网连接或下载超时），存储桶里的离线安装包也没装上：${samples.blocked[0]}`,
+      `存储桶这一路没走通（存储桶清单超过 24 小时没和官方核对过），微软商店这次没装上（商店未说明原因），OpenAI 官网的离线安装包也未能下载（OpenAI 官网连接或下载超时），存储桶里的离线安装包也没装上：${samples.blocked[0]}`,
     )
   })
 
   it('tells a too-old Windows apart from a Windows that refused the install', () => {
     const message = buildCodexDesktopInstallFailureMessage('unsupported', { storeTried: true, updating: false })
-    expect(message).toBe('Codex 桌面端没装上：微软商店这次没装上，这台电脑的 Windows 版本太旧，装不了 Codex 桌面端。可以先用 Codex CLI，或者把 Windows 更新到最新。')
+    expect(message).toBe('Codex 桌面端未能安装：微软商店安装失败，本机的 Windows 版本过旧，无法安装 Codex 桌面端。可先使用 Codex CLI，或将 Windows 更新至最新版本。')
     expect(isCodexDesktopUnsupportedInstallFailure(message)).toBe(true)
     expect(isCodexDesktopUnsupportedInstallFailure(buildCodexDesktopInstallFailureMessage('blocked', { storeTried: true, updating: false }))).toBe(false)
     // 其它 0x80073Cxx 仍然是「Windows 拒绝了这次安装」。
@@ -253,7 +253,7 @@ describe('Codex Desktop install failure wording', () => {
       'Codex 桌面端安装失败：C 盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理 C 盘再试',
       'Codex 桌面端安装失败：磁盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理磁盘再试',
       '已取消管理员授权，Codex 桌面端安装未开始。重新点击安装即可再次授权。',
-      '读不到这台电脑上 Codex 桌面端的安装信息，请换成当初装它的那个 Windows 账户登录，再打开星芒重试。',
+      '无法读取本机 Codex 桌面端的安装信息，请使用安装它时所用的 Windows 账户登录，再重新打开星芒重试。',
       'Codex 桌面端正在安装或更新，请勿重复操作',
     ]) {
       const original = new Error(plain)

@@ -143,7 +143,7 @@ test('every alerted product names its own impact because the client downloads ea
   const alerted = fs.readdirSync(workflowDirectory).filter((name) => name.endsWith('.yml'))
     .map((name) => /SYNC_WORKFLOW_FILE: (\S+)/.exec(fs.readFileSync(path.join(workflowDirectory, name), 'utf8'))?.[1])
     .filter(Boolean)
-  assert.deepEqual([...alerted].sort(), ['sync-chatgpt-official-cos.yml', 'sync-claude-components-cos.yml', 'sync-claude-official-cos.yml', 'sync-codex-plugins-cos.yml', 'sync-grok-cos.yml', 'sync-opencode-cos.yml'])
+  assert.deepEqual([...alerted].sort(), ['sync-antigravity-cli-cos.yml', 'sync-antigravity-desktop-cos.yml', 'sync-chatgpt-official-cos.yml', 'sync-claude-components-cos.yml', 'sync-claude-official-cos.yml', 'sync-codex-plugins-cos.yml', 'sync-grok-cos.yml', 'sync-opencode-cos.yml'])
   for (const file of alerted) {
     const { impact } = readAlertEnvironment(env(failedNeeds, { SYNC_WORKFLOW_FILE: file }))
     assert.equal(typeof impact, 'string')
@@ -202,7 +202,9 @@ test('the environment must name a known sync workflow on github.com', () => {
   assert.equal(readAlertEnvironment(env(failedNeeds, { SYNC_WORKFLOW_FILE: 'sync-codex-plugins-cos.yml' })).product, 'Codex 插件目录')
   assert.equal(readAlertEnvironment(env(failedNeeds, { SYNC_WORKFLOW_FILE: 'sync-grok-cos.yml' })).product, 'Grok CLI（Windows）')
   assert.equal(readAlertEnvironment(env(failedNeeds, { SYNC_WORKFLOW_FILE: 'sync-opencode-cos.yml' })).product, 'OpenCode 桌面端（Mac）')
-  for (const file of ['sync-grok-cos.yml', 'sync-opencode-cos.yml']) assert.match(readAlertEnvironment(env(failedNeeds, { SYNC_WORKFLOW_FILE: file })).impact, /照旧去/)
+  assert.equal(readAlertEnvironment(env(failedNeeds, { SYNC_WORKFLOW_FILE: 'sync-antigravity-cli-cos.yml' })).product, 'Antigravity 命令行')
+  assert.equal(readAlertEnvironment(env(failedNeeds, { SYNC_WORKFLOW_FILE: 'sync-antigravity-desktop-cos.yml' })).product, 'Antigravity 桌面端')
+  for (const file of ['sync-grok-cos.yml', 'sync-opencode-cos.yml', 'sync-antigravity-cli-cos.yml', 'sync-antigravity-desktop-cos.yml']) assert.match(readAlertEnvironment(env(failedNeeds, { SYNC_WORKFLOW_FILE: file })).impact, /照旧去/)
   for (const overrides of [{ SYNC_WORKFLOW_FILE: 'quality.yml' }, { SYNC_WORKFLOW_FILE: undefined }, { GITHUB_API_URL: 'https://ghe.example.test/api/v3' },
     { GITHUB_SERVER_URL: 'https://ghe.example.test' }, { GITHUB_REPOSITORY: 'xufei5620/../x' }, { GITHUB_REPOSITORY_OWNER: 'someone-else' },
     { GITHUB_RUN_ID: '0' }, { GITHUB_RUN_ID: '1e3' }, { GITHUB_RUN_NUMBER: '' }]) {

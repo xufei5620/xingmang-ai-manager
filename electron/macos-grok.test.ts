@@ -7,7 +7,7 @@ import { releaseStagedDarwinCli } from './darwin-cli-staging'
 import { DarwinCliProvenanceError } from './macos-code-signing'
 import {
   assertDarwinGrokCanonicalLinkReplaceable,
-  captureDarwinGrokAgentLinkPresence,
+  captureDarwinGrokAgentLink,
   captureDarwinGrokCanonicalLink,
   ensureDarwinGrokAgentLink,
   inspectDarwinGrokVerifiedSelection,
@@ -543,6 +543,34 @@ describe.runIf(process.platform === 'darwin')('macOS Grok canonical selection', 
 
     expect(fs.readlinkSync(agentLink)).toBe(staleTarget)
   })
+
+  // 11-18 复核 D19：更新时 ensure 把 agent 挪到了新版，后面核对没过，grok 退回旧版，agent 也要跟着回去。
+  it('puts an agent link moved during a failed update verification back on its previous version', async () => {
+    const fixture = createFixture('0.2.100')
+    const previousTarget = path.join('..', 'downloads', path.basename(fixture.binary))
+    const agentLink = path.join(fixture.bin, 'agent')
+    fs.symlinkSync(previousTarget, agentLink)
+    const updatedBinary = path.join(fixture.downloads, 'grok-0.2.118-macos-aarch64')
+    const updatedTarget = path.join('..', 'downloads', path.basename(updatedBinary))
+
+    await expect(runDarwinGrokPostInstallTransaction({
+      homeDirectory: fixture.home,
+      lifecycle: async () => {
+        fs.writeFileSync(updatedBinary, 'updated binary', { mode: 0o700 })
+        fs.unlinkSync(fixture.canonicalLink)
+        fs.symlinkSync(updatedTarget, fixture.canonicalLink)
+      },
+      verify: async () => {
+        const canonical = resolveDarwinGrokCanonicalSelection(fixture.home)
+        await ensureDarwinGrokAgentLink(fixture.home, canonical)
+        expect(fs.readlinkSync(agentLink)).toBe(updatedTarget)
+        throw new Error('service inspection rejected canonical selection')
+      },
+    })).rejects.toThrow('service inspection')
+
+    expect(fs.readlinkSync(fixture.canonicalLink)).toBe(previousTarget)
+    expect(fs.readlinkSync(agentLink)).toBe(previousTarget)
+  })
 })
 
 // internal #16: real hardware testing found the npm lifecycle script this app
@@ -735,7 +763,7 @@ describe.runIf(process.platform === 'darwin')('assertDarwinGrokCanonicalLinkRepl
     setup(fixture)
 
     expect(() => assertDarwinGrokCanonicalLinkReplaceable(fixture.home)).toThrow(
-      '这台电脑上已经有一份 Grok CLI，不是用星芒装的。为了不弄坏它，已停止安装。请先用你原来装它的方式卸载，再回来点「用星芒装一份」。',
+      '本机已存在一份并非由星芒安装的 Grok CLI。为避免损坏该程序，已停止安装。请先按原安装方式将其卸载，再返回点击「使用星芒安装」。',
     )
   })
 })
@@ -754,18 +782,60 @@ describe.runIf(process.platform === 'darwin')('ensureDarwinGrokAgentLink', () =>
     expect(fs.realpathSync(agentLink)).toBe(canonical.executablePath)
   })
 
-  it('leaves a pre-existing agent link untouched even when it points elsewhere', async () => {
+  // 11-18 复核 D19：星芒更新或装回旧版时 npm 只改 grok，agent 以前一直指着第一次装的那一版。
+  it('moves an agent link left on an older official version onto the version grok now selects', async () => {
     const fixture = createFixture()
     const canonical = resolveDarwinGrokCanonicalSelection(fixture.home)
     const staleBinary = path.join(fixture.downloads, 'grok-0.2.100-macos-aarch64')
     fs.writeFileSync(staleBinary, 'stale agent binary', { mode: 0o700 })
-    const staleTarget = path.join('..', 'downloads', path.basename(staleBinary))
     const agentLink = path.join(fixture.bin, 'agent')
-    fs.symlinkSync(staleTarget, agentLink)
+    fs.symlinkSync(path.join('..', 'downloads', path.basename(staleBinary)), agentLink)
 
     await ensureDarwinGrokAgentLink(fixture.home, canonical)
 
-    expect(fs.readlinkSync(agentLink)).toBe(staleTarget)
+    expect(fs.lstatSync(agentLink).isSymbolicLink()).toBe(true)
+    expect(fs.readlinkSync(agentLink)).toBe(canonical.linkTarget)
+    expect(fs.realpathSync(agentLink)).toBe(canonical.executablePath)
+    expect(fs.readdirSync(fixture.bin).filter((name) => name.startsWith('.'))).toEqual([])
+  })
+
+  it('moves an agent link still on the unversioned install script file onto a versioned grok', async () => {
+    const fixture = createFixture()
+    const canonical = resolveDarwinGrokCanonicalSelection(fixture.home)
+    fs.writeFileSync(path.join(fixture.downloads, 'grok-macos-aarch64'), 'install script binary', { mode: 0o700 })
+    const agentLink = path.join(fixture.bin, 'agent')
+    fs.symlinkSync(path.join('..', 'downloads', 'grok-macos-aarch64'), agentLink)
+
+    await ensureDarwinGrokAgentLink(fixture.home, canonical)
+
+    expect(fs.readlinkSync(agentLink)).toBe(canonical.linkTarget)
+  })
+
+  it('leaves an agent link aimed outside the official layouts untouched', async () => {
+    const fixture = createFixture()
+    const canonical = resolveDarwinGrokCanonicalSelection(fixture.home)
+    const ownProgram = path.join(fixture.home, 'my-agent')
+    fs.writeFileSync(ownProgram, 'mine', { mode: 0o700 })
+    const agentLink = path.join(fixture.bin, 'agent')
+    fs.symlinkSync(ownProgram, agentLink)
+
+    await ensureDarwinGrokAgentLink(fixture.home, canonical)
+
+    expect(fs.readlinkSync(agentLink)).toBe(ownProgram)
+  })
+
+  it('does not rewrite an agent link that already matches grok', async () => {
+    const fixture = createFixture()
+    const canonical = resolveDarwinGrokCanonicalSelection(fixture.home)
+    const agentLink = path.join(fixture.bin, 'agent')
+    fs.symlinkSync(canonical.linkTarget, agentLink)
+    const before = fs.lstatSync(agentLink, { bigint: true }).ino
+    const rename = vi.spyOn(fs.promises, 'rename')
+
+    await ensureDarwinGrokAgentLink(fixture.home, canonical)
+
+    expect(rename).not.toHaveBeenCalled()
+    expect(fs.lstatSync(agentLink, { bigint: true }).ino).toBe(before)
   })
 
   it('leaves a non-symlink occupying the agent path untouched instead of overwriting it', async () => {
@@ -817,7 +887,7 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok agent link rollback',
   it('captures existed: false when nothing occupies the agent link path', () => {
     const fixture = createFixture()
 
-    expect(captureDarwinGrokAgentLinkPresence(fixture.home)).toEqual({
+    expect(captureDarwinGrokAgentLink(fixture.home)).toEqual({
       agentLinkPath: path.join(fixture.bin, 'agent'),
       existed: false,
     })
@@ -828,15 +898,55 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok agent link rollback',
     const agentLink = path.join(fixture.bin, 'agent')
     fs.symlinkSync(fixture.canonicalLink, agentLink)
 
-    expect(captureDarwinGrokAgentLinkPresence(fixture.home)).toEqual({
+    expect(captureDarwinGrokAgentLink(fixture.home)).toEqual({
       agentLinkPath: agentLink,
       existed: true,
+      linkTarget: fixture.canonicalLink,
     })
+  })
+
+  it('captures a null target when something other than a link occupies the agent path', () => {
+    const fixture = createFixture()
+    const agentLink = path.join(fixture.bin, 'agent')
+    fs.writeFileSync(agentLink, 'not a symlink')
+
+    expect(captureDarwinGrokAgentLink(fixture.home)).toEqual({
+      agentLinkPath: agentLink,
+      existed: true,
+      linkTarget: null,
+    })
+  })
+
+  it('points a moved agent link back at the target it had before the transaction', async () => {
+    const fixture = createFixture()
+    const agentLink = path.join(fixture.bin, 'agent')
+    const previousTarget = path.join('..', 'downloads', 'grok-0.2.100-macos-aarch64')
+    fs.symlinkSync(previousTarget, agentLink)
+    const snapshot = captureDarwinGrokAgentLink(fixture.home)
+    fs.unlinkSync(agentLink)
+    fs.symlinkSync(path.join('..', 'downloads', path.basename(fixture.binary)), agentLink)
+
+    await restoreDarwinGrokAgentLink(snapshot)
+    await restoreDarwinGrokAgentLink(snapshot)
+
+    expect(fs.readlinkSync(agentLink)).toBe(previousTarget)
+    expect(fs.readdirSync(fixture.bin).filter((name) => name.startsWith('.'))).toEqual([])
+  })
+
+  it('leaves a path that held a non-symlink before the transaction alone', async () => {
+    const fixture = createFixture()
+    const agentLink = path.join(fixture.bin, 'agent')
+    fs.writeFileSync(agentLink, 'not a symlink')
+    const snapshot = captureDarwinGrokAgentLink(fixture.home)
+
+    await restoreDarwinGrokAgentLink(snapshot)
+
+    expect(fs.readFileSync(agentLink, 'utf8')).toBe('not a symlink')
   })
 
   it('removes an agent link created after the snapshot recorded absence', async () => {
     const fixture = createFixture()
-    const snapshot = captureDarwinGrokAgentLinkPresence(fixture.home)
+    const snapshot = captureDarwinGrokAgentLink(fixture.home)
     const agentLink = path.join(fixture.bin, 'agent')
     fs.symlinkSync(fixture.canonicalLink, agentLink)
 
@@ -847,7 +957,7 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok agent link rollback',
 
   it('is a no-op when the snapshot recorded absence and nothing was ever created', async () => {
     const fixture = createFixture()
-    const snapshot = captureDarwinGrokAgentLinkPresence(fixture.home)
+    const snapshot = captureDarwinGrokAgentLink(fixture.home)
 
     await expect(restoreDarwinGrokAgentLink(snapshot)).resolves.toBeUndefined()
 
@@ -858,7 +968,7 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok agent link rollback',
     const fixture = createFixture()
     const agentLink = path.join(fixture.bin, 'agent')
     fs.symlinkSync(fixture.canonicalLink, agentLink)
-    const snapshot = captureDarwinGrokAgentLinkPresence(fixture.home)
+    const snapshot = captureDarwinGrokAgentLink(fixture.home)
 
     await restoreDarwinGrokAgentLink(snapshot)
 
@@ -867,7 +977,7 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok agent link rollback',
 
   it('leaves a non-symlink occupying the agent path untouched instead of removing it', async () => {
     const fixture = createFixture()
-    const snapshot = captureDarwinGrokAgentLinkPresence(fixture.home)
+    const snapshot = captureDarwinGrokAgentLink(fixture.home)
     const agentLink = path.join(fixture.bin, 'agent')
     fs.writeFileSync(agentLink, 'not a symlink')
 

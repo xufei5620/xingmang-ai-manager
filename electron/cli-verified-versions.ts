@@ -65,53 +65,53 @@ export interface CliVersionCompatibility {
 export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = {
   claude: {
     recommended: {
-      version: '2.1.326',
-      verifiedAt: '2026-11-17',
+      version: '2.1.330',
+      verifiedAt: '2026-11-23',
       verifiedSites: ['solov'],
-      note: '当前 npm latest(2.1.320 没发到 npm,2.1.324 发了但变更记录里没有这一版);2.1.321～2.1.326 没有一条写成网关回归,补了几处:不走流式的请求遇到被拒的 beta 头、图片或思考块时也能像流式一样恢复(2.1.323)、不认识的型号 id 上下文按 1M 算(2.1.323,中转上的型号都是认得的 claude-*)、很多第三方网关上每轮都报上下文过长而不压缩(2.1.325);2.1.326 让 /model 的 Default 一行写明套餐默认型号,我们写的 ANTHROPIC_DEFAULT_MODEL 与 modelPicker 照旧生效;删掉的 subagentStatusLine 我们不写;沙箱本地假接口(2.1.319 一起重跑当对照,逐项相同):-p hi 拿到回复、只带 Authorization,请求体字段与 beta 头一样,假接口对工具搜索回 400 时试三次后重发一次不带它的请求照常回复,haiku 别名仍发 claude-haiku-5-5,claude-fable-5-1 原样发出,/context 仍是 1M,主型号回 503 时换到备用型号;install.cjs 与 package.json 与 2.1.319 逐字相同;2026-11-17 cli-relay-probe 用 Claude 分组的巡检 Key 在 solov(xm.solov.cc)上真跑通过,solov-api 按 11-09 的决定不测',
-      userNote: '修好了对话变长以后每次提问都报内容太长、不会自动整理的问题,偶尔被拒的提问也能自己恢复',
+      note: '当前 npm latest;2.1.327～2.1.330 逐条读过,没有一条写成网关回归,补了几处:-p 在取型号设置卡住时 10 秒后照常发请求(2.1.327)、项目里设了 ANTHROPIC_BASE_URL 时 /model 列错型号(2.1.327)、第三方接口上 input schema 以 anyOf/oneOf/allOf 开头的 MCP 工具丢失或让请求失败(2.1.328)、CLAUDE_STREAM_IDLE_TIMEOUT_MS 在自定义地址上不生效(2.1.328);2.1.329 去掉了 max_tokens 超限时的自动重试,2.1.330 又恢复,目标版本不受影响;2.1.328 修好的那条 2.1.327 回归只在 Bedrock / Agent Platform / Foundry 上;沙箱本地假接口(2.1.326 一起重跑当对照,逐项相同):-p hi 拿到回复、只带 Authorization,请求体字段与 beta 头一样,假接口对工具搜索回 400 时试三次后重发一次不带它的请求照常回复,haiku 别名仍发 claude-haiku-5-5,claude-fable-5-1 原样发出,/context 仍是 1M,主型号回 503 时换到备用型号;install.cjs 与 2.1.326 逐字相同;2026-11-23 cli-relay-probe 用 Claude 分组的巡检 Key 在 solov(xm.solov.cc)上真跑通过,solov-api 按 11-09 的决定不测',
+      userNote: '已修复部分扩展工具无法使用或导致提问失败的问题，以及偶发的启动卡住问题',
     },
     blocked: [
       {
         introduced: '2.1.265',
         fixed: '2.1.268',
-        reason: '这个版本每次提问都会失败，换到推荐版本就好',
+        reason: '该版本每次提问均会失败，请更换为推荐版本',
       },
       {
         introduced: '2.1.275',
         fixed: '2.1.277',
-        reason: '这个版本每次提问都会失败，换到推荐版本就好',
+        reason: '该版本每次提问均会失败，请更换为推荐版本',
       },
       {
         introduced: '2.1.304',
         fixed: '2.1.305',
-        reason: '这个版本在一些情况下每次提问都会失败，换到推荐版本就好',
+        reason: '该版本在部分情况下每次提问均会失败，请更换为推荐版本',
       },
     ],
   },
   codex: {
     recommended: {
-      version: '0.169.0',
-      verifiedAt: '2026-11-17',
+      version: '0.171.0',
+      verifiedAt: '2026-11-23',
       verifiedSites: ['solov'],
-      note: '当前 npm latest,随包型号名单的 tag 换成 rust-v0.169.0(models.json 与 rust-v0.167.0、rust-v0.168.0 逐字相同,sha256 不变;openai_models.rs 只加了可选字段 web_search_provider 与 plugins);0.167.1、0.167.2 只改 Bedrock / Vertex 的增量工具声明,与我们无关;0.168.0、0.169.0 的 release note 与区间内提交没有一条改自定义 model_providers 的 base_url / wire_api / requires_openai_auth / auth.json 的读法:换过默认 provider 后打开或续上的对话仍用它自己存的 provider(#59503)、认证收成运行时一套(#59572 等)、终端里可以新建自定义 provider;daemon_auto_start 在 0.168.0 先被删(#58940)又恢复(#59447),写 false 照旧认;0.169.0 起 codex exec 在没信任的目录里不读项目配置和 MCP(#60041),本软件不跑 codex exec,探测脚本带 --skip-git-repo-check,沙箱里两版行为一样;沙箱(0.167.0 一起重跑当对照):debug models 列出全部 12 个型号,exec 与 --no-daemon exec 只发一次 POST /v1/responses、带 Authorization、请求字段一样,手机遥控用的 app-server 一轮对话走到 turn/completed;2026-11-17 cli-relay-probe 在 solov(xm.solov.cc)上用默认型号真跑通过,solov-api 按 11-09 的决定不测',
-      userNote: '修好了换过账号后再打开旧对话会用错账号的问题,其余是官方的小修小补',
+      note: '当前 npm latest,随包型号名单的 tag 换成 rust-v0.171.0(models.json 与 #1916 换上的 rust-v0.169.1、rust-v0.170.0 逐字相同,含 GPT-6.2 Sol / Astra,sha256 不变;openai_models.rs 只加了可选字段 multi_agent_tools_in_code_mode);0.169.1 是补丁(GPT-6.2 进名单、Bedrock 增量工具),0.170.0、0.171.0 的 release note 与区间内提交没有一条改自定义 model_providers 的 base_url / wire_api / requires_openai_auth / auth.json 的读法:超大的 WebSocket 请求直接退回 HTTP(#60840)、改权限时子对话不再丢沙箱限制、切换或恢复对话时草稿跟着原对话、换工作目录时权限配置保持;新加的 request_country(#61535)默认不带;终端默认开 TUI workspace;沙箱(0.169.0 一起重跑当对照):debug models 列出全部 14 个型号,gpt-6.2-sol 与 gpt-6.1-sol 的 exec、--no-daemon exec 只发一次 POST /v1/responses、带 Authorization、请求字段一样,手机遥控用的 app-server 一轮对话走到 turn/completed;2026-11-23 cli-relay-probe 在 solov(xm.solov.cc)上用默认型号真跑通过,solov-api 按 11-09 的决定不测',
+      userNote: '已修复切换对话时草稿丢失、更换工作文件夹后权限设置失效等问题',
     },
     blocked: [
       {
         introduced: '0.155.0',
         fixed: '0.155.1',
-        reason: '这个版本经常一提问就被拒绝，换到推荐版本就好',
+        reason: '该版本提问时经常被拒绝，请更换为推荐版本',
       },
     ],
   },
   grok: {
     recommended: {
-      version: '1.0.77',
-      verifiedAt: '2026-11-09',
+      version: '1.0.92',
+      verifiedAt: '2026-11-23',
       verifiedSites: [],
-      note: '当前 npm latest 与 xAI stable(X Corp. 签名,#1051 已认);没有可读的变更记录,本地假接口上重核出图地址、型号名单、标题型号与钩子四项配置仍然生效,装插件不带 --trust 仍拒装、带了一次装好,结果与 1.0.70 逐条相同',
-      userNote: '跟上官方最新的稳定版，画图、起标题照旧走当前账号',
+      note: '当前 npm latest 与 xAI stable;没有可读的变更记录,本地假接口上重核出图地址、型号名单、标题型号与钩子四项配置仍然生效,装插件不带 --trust 仍拒装、带了一次装好,结果与 1.0.77 逐条相同;Windows 包在沙箱里核不了(x.ai 被代理拦),星芒存储桶里没有这一版时照旧从 xAI 下载',
+      userNote: '已更新至官方最新稳定版，出图、生成标题仍使用当前账号',
     },
     blocked: [],
   },

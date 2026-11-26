@@ -89,7 +89,7 @@ export async function exportSessionMarkdown(request: SessionMarkdownExportReques
   try {
     await writeChunk(output, `# ${markdownHeadingText(request.title)}\n\n`)
     for (const [label, value] of request.identity) await writeChunk(output, `- ${label}：\`${value}\`\n`)
-    if (request.cwd) await writeChunk(output, `- 工作目录：\`${request.cwd.replaceAll('`', '\\`')}\`\n`)
+    if (request.cwd) await writeChunk(output, `- 项目文件夹：\`${request.cwd.replaceAll('`', '\\`')}\`\n`)
     if (request.model) await writeChunk(output, `- 模型：\`${request.model.replaceAll('`', '\\`')}\`\n`)
     await writeChunk(output, '\n---\n\n')
     const content = await request.writeMessages(async (message) => {

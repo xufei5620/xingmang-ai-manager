@@ -16,7 +16,7 @@ describe('SupportIdentity', () => {
     expect(buildSupportIdentityLine({ signedIn: true, account: { userId: 7, username: 'peaker' }, version: '0.2.14', os: 'linux', systemDetail }))
       .toBe('账号 peaker（ID 7） · 星芒AI管理工具 0.2.14 · Linux（Ubuntu 24.04.1 LTS · ARM 芯片）')
     expect(buildSupportBundle({ signedIn: false, account: null, version: '0.2.14', os: 'linux', systemDetail: linuxSystemDetail(undefined, 'x64') },
-      { at: new Date(2026, 9, 2, 9, 5), message: '安装没有完成' }).split('\n')[2]).toBe('版本 0.2.14 · Linux（64 位）')
+      { at: new Date(2026, 9, 2, 9, 5), message: '安装未完成' }).split('\n')[2]).toBe('版本 0.2.14 · Linux（64 位）')
     expect(buildSupportIdentityLine({ signedIn: false, account: null, version: '0.2.14', os: 'linux' })).toBe('未登录 · 星芒AI管理工具 0.2.14 · Linux')
     expect(linuxSystemDetail(undefined, undefined)).toBeUndefined()
   })
@@ -51,7 +51,7 @@ describe('SupportIdentity', () => {
 
   it('renders the line with a copy button', () => {
     const markup = renderToStaticMarkup(<SupportIdentity line="未登录 · 星芒AI管理工具 0.2.10 · Windows" onCopy={() => undefined} />)
-    expect(markup).toContain('找客服时把这行一起发过去：')
+    expect(markup).toContain('联系客服时请一并提供：')
     expect(markup).toContain('data-testid="support-identity-line"')
     expect(markup).toContain('未登录 · 星芒AI管理工具 0.2.10 · Windows')
     expect(markup).toContain('复制')
@@ -79,13 +79,13 @@ describe('SupportIdentity', () => {
     expect(text).toContain('未登录\n版本 未知 · macOS\n时间 2026-01-02 03:04')
     expect(text).toContain('结果：配置文件写入失败：磁盘只读')
     expect(text).not.toContain('原因：')
-    expect(buildSupportBundle({ signedIn: false, account: null, version: '1', os: 'win' }, { at, message: '操作没有完成', detail: 'spawn ENOSYS' }))
-      .toContain('原因：没认出是哪一类问题，原话在下面\n原话：spawn ENOSYS')
+    expect(buildSupportBundle({ signedIn: false, account: null, version: '1', os: 'win' }, { at, message: '操作未完成', detail: 'spawn ENOSYS' }))
+      .toContain('原因：未能识别问题类型，原始信息如下\n原话：spawn ENOSYS')
   })
 
   it('masks keys that slipped into the original', () => {
     const text = buildSupportBundle({ signedIn: false, account: null, version: '1', os: 'win' },
-      { at: new Date(), message: '操作没有完成', detail: 'failed api_key=abc123 Bearer sk-abcdefghijk' })
+      { at: new Date(), message: '操作未完成', detail: 'failed api_key=abc123 Bearer sk-abcdefghijk' })
     expect(text).not.toMatch(/abc123|sk-abcdefghijk/)
     expect(text).toContain('[REDACTED]')
   })
@@ -105,7 +105,7 @@ describe('SupportIdentity', () => {
       .toBe('最近一次出错：14:37 打开 Codex 桌面端：工具正在运行')
     expect(buildLastFailureLine({ at, action: '保存', message: '保存没有完成', detail: 'spawn ENOSYS' }, sameDay))
       .toBe('最近一次出错：14:37 保存：spawn ENOSYS')
-    expect(buildLastFailureLine({ at, message: '操作没有完成' }, sameDay)).toBe('最近一次出错：14:37 操作没有完成')
+    expect(buildLastFailureLine({ at, message: '操作未完成' }, sameDay)).toBe('最近一次出错：14:37 操作未完成')
     const markup = renderToStaticMarkup(<SupportIdentity line="未登录" lastFailure="最近一次出错：14:37 保存" onCopy={() => undefined} />)
     expect(markup).toContain('support-last-failure')
     expect(renderToStaticMarkup(<SupportIdentity line="未登录" onCopy={() => undefined} />)).not.toContain('support-last-failure')

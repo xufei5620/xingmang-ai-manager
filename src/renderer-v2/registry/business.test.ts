@@ -104,7 +104,7 @@ describe('renderer-v2 notification settings registry', () => {
   // v4 的次序和叫法（字表批08）：钱的事在前；只有余额和花费两项要说清楚什么时候提醒，而且按代码的判断写。
   it('lists the reminders in the v4 order, explaining only the two money thresholds', () => {
     expect(notificationOptions.map(option => option.label)).toEqual([
-      '余额不足', '花费突然变多', '终端里的 AI 做完或在等你', '终端里没回上', '安装和更新结果', '工具有新版本', '后台任务做完', '公告与优惠', '加速提醒',
+      '余额不足', '花费突然变多', '终端中的 AI 已完成或等待确认', '终端中的 AI 未能回复', '安装和更新结果', '工具有新版本', '后台任务已完成', '公告与优惠', '加速提醒',
     ]);
     expect(notificationOptions.filter(option => option.description).map(option => [option.value, option.description])).toEqual([
       ['balance', '余额低于 $5 时提醒'],
@@ -171,11 +171,11 @@ describe('renderer-v2 settings rows registry', () => {
       ['连接线路', ['relay-route-solov', 'relay-route-solov-api', 'tool-route-restart-hints']],
       ['下载与连接', ['mirror', 'proxy', 'network-check', 'certificate']],
     ]);
-    expect(shape('notifications').map(([label]) => label)).toEqual([null, '提醒哪些事']);
-    expect(shape('tools')).toEqual([[null, ['workspace', 'claude-write-boundary', 'claude-commit-attribution', 'latest-cli', 'install-location', 'terminal']], [null, ['codex-remote']]]);
+    expect(shape('notifications').map(([label]) => label)).toEqual([null, '提醒事项']);
+    expect(shape('tools')).toEqual([[null, ['workspace', 'claude-write-boundary', 'claude-commit-attribution', 'standing-instructions', 'latest-cli', 'install-location', 'terminal']]]);
     expect(shape('backup')).toEqual([
       [null, ['backups']],
-      ['搬到新电脑', ['transfer', 'transfer-import']],
+      ['迁移到新电脑', ['transfer', 'transfer-import']],
       [null, ['storage']],
     ]);
     expect(shape('about')).toEqual([
@@ -193,7 +193,7 @@ describe('renderer-v2 settings rows registry', () => {
   // Fable 第二轮 Q6：开关在「工具管理」里、紧跟工作文件夹；搜「Claude Code」或怕它改到外面的说法都找得到。
   it('lists the Claude Code write boundary switch under tools and finds it by the words a customer would use', () => {
     expect(settingsItems.find(item => item.id === 'claude-write-boundary')?.group).toBe('tools');
-    expect(settingsItemLabel('claude-write-boundary')).toBe('只让 Claude Code 改项目文件夹里的文件');
+    expect(settingsItemLabel('claude-write-boundary')).toBe('仅允许 Claude Code 修改项目文件夹内的文件');
     const ids = (query: string) => searchSettingsItems(query).map(item => item.id);
     expect(ids('claude code')).toContain('claude-write-boundary');
     expect(ids('乱改文件')).toEqual(['claude-write-boundary']);
@@ -218,7 +218,7 @@ describe('renderer-v2 settings rows registry', () => {
     expect(ids('立即备份')).toEqual(['backups']);
     expect(ids('当前版本')).toEqual(['version']);
     expect(ids('自动更新')).toEqual(['auto-update']);
-    expect(ids('搬到新电脑')).toEqual(['transfer', 'transfer-import']);
+    expect(ids('迁移到新电脑')).toEqual(['transfer', 'transfer-import']);
   });
 
   // 设置页左栏的「搜索设置」：行名、常用说法、组名、小标题都算，空格隔开的词都要对上。
@@ -270,9 +270,9 @@ describe('renderer-v2 settings rows registry', () => {
 
   // 原来更新页顶上那句页头说明拆掉了，意思挪到「自动下载更新」这一行（字表批09）。
   it('says when a downloaded update gets installed in the auto-update row', () => {
-    expect(autoUpdateSettingDescription(undefined)).toBe('下好后在你关掉星芒时装上');
-    expect(autoUpdateSettingDescription('system-installer')).toBe('下好后提醒你点安装');
-    expect(autoUpdateSettingDescription(undefined, true)).toBe('下好后要输入管理员密码才能装');
+    expect(autoUpdateSettingDescription(undefined)).toBe('下载完成后在关闭星芒时安装');
+    expect(autoUpdateSettingDescription('system-installer')).toBe('下载完成后提醒您安装');
+    expect(autoUpdateSettingDescription(undefined, true)).toBe('下载完成后需输入管理员密码安装');
   });
 });
 
@@ -312,18 +312,18 @@ describe('renderer-v2 withdrawn version and rollback wording', () => {
 
   it('does not call an older version new', () => {
     const rollback = { ...base, phase: 'available', availableVersion: '0.2.9', rollback: true, currentVersionWithdrawn: true } as const;
-    expect(updateCardTitle(rollback)).toBe('建议退回稳定版本');
-    expect(updateBubbleTitle(rollback)).toBe('建议退回 0.2.9');
-    expect(withdrawnVersionAdvice(rollback)).toContain('建议装回 0.2.9');
-    expect(updateBubbleTitle({ ...base, phase: 'available', availableVersion: '0.2.11' })).toBe('新版本 0.2.11 可以安装');
+    expect(updateCardTitle(rollback)).toBe('建议回退至稳定版本');
+    expect(updateBubbleTitle(rollback)).toBe('建议回退至 0.2.9');
+    expect(withdrawnVersionAdvice(rollback)).toContain('建议回退至 0.2.9');
+    expect(updateBubbleTitle({ ...base, phase: 'available', availableVersion: '0.2.11' })).toBe('新版本 0.2.11 可安装');
   });
 
   it('says the running version has a known problem when there is nothing to install yet', () => {
     const stranded = { ...base, phase: 'not-available', currentVersionWithdrawn: true } as const;
-    expect(updateCardTitle(stranded)).toBe('这个版本有已知问题');
-    expect(updateBubbleTitle(stranded)).toBe('这个版本有已知问题');
-    expect(withdrawnVersionAdvice(stranded)).toContain('修好的版本准备好后');
-    expect(withdrawnVersionAdvice({ ...stranded, phase: 'available', availableVersion: '0.2.11' })).toContain('修好的 0.2.11');
+    expect(updateCardTitle(stranded)).toBe('当前版本存在已知问题');
+    expect(updateBubbleTitle(stranded)).toBe('当前版本存在已知问题');
+    expect(withdrawnVersionAdvice(stranded)).toContain('修复版本就绪后');
+    expect(withdrawnVersionAdvice({ ...stranded, phase: 'available', availableVersion: '0.2.11' })).toContain('修复后的 0.2.11');
     expect(updateCardTitle({ ...base, phase: 'not-available' })).toBe('已是最新版本');
   });
 });
@@ -363,9 +363,9 @@ describe('renderer-v2 update bubble on the updates page', () => {
 
 describe('renderer-v2 auto-update bubble wording', () => {
   it('tells the user what happens next when auto-update is on', () => {
-    expect(autoUpdateBubbleBody('downloaded', true)).toBe('已经下好了，可以现在装，也可以关掉软件或下次打开时自动装上。');
+    expect(autoUpdateBubbleBody('downloaded', true)).toBe('已下载完成，可立即安装，也可在关闭软件或下次启动时自动安装。');
     // 能闲时装的 Mac 多说一句；没下好、关了自动更新的都不说。
-    expect(autoUpdateBubbleBody('downloaded', true, undefined, undefined, true)).toBe('已经下好了，可以现在装，也可以关掉软件或下次打开时自动装上。你不用电脑时星芒也会自己装好。');
+    expect(autoUpdateBubbleBody('downloaded', true, undefined, undefined, true)).toBe('已下载完成，可立即安装，也可在关闭软件或下次启动时自动安装。电脑空闲时星芒也会自动安装。');
     expect(autoUpdateBubbleBody('downloading', true, undefined, undefined, true)).not.toContain('自己装好');
     expect(autoUpdateBubbleBody('downloaded', false, undefined, undefined, true)).toBe('查看更新内容和安装状态。');
     expect(autoUpdateBubbleBody('downloading', true)).toContain('正在后台下载');
@@ -377,7 +377,7 @@ describe('renderer-v2 wording for a Windows account outside the administrators g
   it('uses the sentence yoyo approved, the same one the system notification uses', () => {
     // 2026-10-06 批的原话（句末补了句号）；主进程 desktop-notifications.ts 那一份也钉着同一句。
     // 批09 把按钮叫法统一成「重启并安装」，这句跟着换词。
-    expect(standardAccountUpdateText).toBe('这台电脑的账号不是管理员，装更新时要输入管理员密码。让有管理员账号的人点一次「重启并安装」，或者找客服。');
+    expect(standardAccountUpdateText).toBe('当前系统账号不是管理员，安装更新时需要输入管理员密码。请由管理员账号点击「重启并安装」，或联系客服。');
     expect(standardAccountUpdateNotice.body).toContain(`「${updateInstallActionLabel(undefined)}」`);
   });
 
@@ -389,11 +389,11 @@ describe('renderer-v2 wording for a Windows account outside the administrators g
 
   it('stops promising an automatic install before the update is downloaded', () => {
     // 他 2026-10-06 回「改」批的原话。
-    expect(autoUpdateBubbleBody('downloading', true, undefined, true)).toBe('正在后台下载；这台电脑装更新时要输入管理员密码，下好后不会自动装上。');
+    expect(autoUpdateBubbleBody('downloading', true, undefined, true)).toBe('正在后台下载；本机安装更新需要输入管理员密码，下载完成后不会自动安装。');
     expect(autoUpdateBubbleBody('available', true, undefined, true)).toBe(autoUpdateBubbleBody('downloading', true, undefined, true));
     expect(autoUpdateBubbleBody('downloading', false, undefined, true)).toBe('查看更新内容和安装状态。');
     for (const text of [autoUpdateBubbleBody('downloading', true, undefined, true), autoUpdateSettingDescription(undefined, true)]) {
-      expect(text).not.toMatch(/关掉软件或下次打开时自动装上|关掉星芒时装上|UAC|管理员权限/);
+      expect(text).not.toMatch(/关闭软件或下次启动时自动安装|关闭星芒时安装|UAC|管理员权限/);
     }
     // 管理员账号照旧。
     expect(autoUpdateBubbleBody('downloading', true, undefined, false)).toBe(autoUpdateBubbleBody('downloading', true));
@@ -417,8 +417,8 @@ describe('renderer-v2 version card wording', () => {
   });
 
   it('keeps the rollback and withdrawn titles instead of calling them a new version', () => {
-    expect(updateStatusLabel({ ...base, phase: 'available', availableVersion: '0.2.18', rollback: true, currentVersionWithdrawn: true })).toBe('建议退回稳定版本');
-    expect(updateStatusLabel({ ...base, currentVersionWithdrawn: true })).toBe('这个版本有已知问题');
+    expect(updateStatusLabel({ ...base, phase: 'available', availableVersion: '0.2.18', rollback: true, currentVersionWithdrawn: true })).toBe('建议回退至稳定版本');
+    expect(updateStatusLabel({ ...base, currentVersionWithdrawn: true })).toBe('当前版本存在已知问题');
   });
 
   it('explains what to do before installing without internal jargon', () => {
@@ -432,9 +432,9 @@ describe('renderer-v2 update disk shortfall wording', () => {
   const blocked = { phase: 'available', currentVersion: '0.2.10', availableVersion: '0.2.11', rollback: false, currentVersionWithdrawn: false, diskShortfall: { neededBytes: 600 * MB, freeBytes: 380 * MB } } as const;
 
   it('says how much is missing and whether it will download on its own', () => {
-    expect(updateBubbleTitle(blocked)).toBe('新版本先不下载');
-    expect(updateDiskShortfallText(blocked, true)).toBe('新版本先不下载：电脑磁盘只剩 380 MB，装更新大约要 600 MB，还要再清出 220 MB。清出来以后会自动下载，不用你再点。');
-    expect(updateDiskShortfallText(blocked, false)).toContain('现在下载多半会失败');
+    expect(updateBubbleTitle(blocked)).toBe('新版本暂不下载');
+    expect(updateDiskShortfallText(blocked, true)).toBe('新版本暂不下载：磁盘仅剩 380 MB，安装更新约需 600 MB，还需清理出 220 MB。空间充足后将自动下载，无需再次操作。');
+    expect(updateDiskShortfallText(blocked, false)).toContain('现在下载很可能失败');
   });
 
   it('stays silent when nothing is blocked or the phase moved on', () => {
@@ -448,7 +448,7 @@ describe('update download detail', () => {
   const mb = 1024 ** 2;
   it('shows how much is done, how fast, and how long is left', () => {
     expect(updateDownloadDetail({ percent: 34, bytesPerSecond: 1, transferred: 38 * mb, total: 112 * mb, averageBytesPerSecond: 1.8 * mb, secondsRemaining: 42 }))
-      .toBe('已下载 38 MB / 共 112 MB · 每秒 1.8 MB · 大约还要 50 秒');
+      .toBe('已下载 38 MB / 共 112 MB · 每秒 1.8 MB · 预计还需 50 秒');
   });
   it('only shows the amount while the speed is still unknown', () => {
     expect(updateDownloadDetail({ percent: 0, bytesPerSecond: 0, transferred: 0, total: 112 * mb, averageBytesPerSecond: null, secondsRemaining: null }))
@@ -465,27 +465,27 @@ describe('update download detail', () => {
     expect(updateDownloadDetail(null)).toBeNull();
   });
   it('rounds the remaining time coarsely so it does not tick every second', () => {
-    expect(formatDownloadRemaining(5)).toBe('马上就好');
-    expect(formatDownloadRemaining(11)).toBe('大约还要 20 秒');
-    expect(formatDownloadRemaining(59)).toBe('大约还要 50 秒');
-    expect(formatDownloadRemaining(61)).toBe('大约还要 2 分钟');
-    expect(formatDownloadRemaining(3600)).toBe('大约还要 1 小时');
-    expect(formatDownloadRemaining(4800)).toBe('大约还要 1 小时 20 分钟');
+    expect(formatDownloadRemaining(5)).toBe('即将完成');
+    expect(formatDownloadRemaining(11)).toBe('预计还需 20 秒');
+    expect(formatDownloadRemaining(59)).toBe('预计还需 50 秒');
+    expect(formatDownloadRemaining(61)).toBe('预计还需 2 分钟');
+    expect(formatDownloadRemaining(3600)).toBe('预计还需 1 小时');
+    expect(formatDownloadRemaining(4800)).toBe('预计还需 1 小时 20 分钟');
   });
 });
 
 describe('renderer-v2 wording when the system installer takes over (Linux)', () => {
   it('never promises that the update installs itself or that the app restarts', () => {
     const linux = 'system-installer' as const;
-    expect(autoUpdateBubbleBody('downloaded', true, linux)).toBe('已经下好了，到「设置 › 版本更新」点「安装新版本」就能装上。');
-    expect(autoUpdateBubbleBody('downloaded', false, linux)).toBe('已经下好了，到「设置 › 版本更新」点「安装新版本」就能装上。');
-    expect(autoUpdateBubbleBody('downloading', true, linux)).toBe('正在后台下载，下好后到「设置 › 版本更新」点「安装新版本」。');
+    expect(autoUpdateBubbleBody('downloaded', true, linux)).toBe('已下载完成，请前往「设置 › 版本更新」点击「安装新版本」。');
+    expect(autoUpdateBubbleBody('downloaded', false, linux)).toBe('已下载完成，请前往「设置 › 版本更新」点击「安装新版本」。');
+    expect(autoUpdateBubbleBody('downloading', true, linux)).toBe('正在后台下载，下载完成后请前往「设置 › 版本更新」点击「安装新版本」。');
     expect(autoUpdateSettingDescription(linux)).not.toContain('装上');
     expect(updateInstallActionLabel(linux)).toBe('安装新版本');
     expect(updateInstallActionLabel(undefined)).toBe('重启并安装');
     const rollback = { phase: 'available', currentVersion: '0.2.10', availableVersion: '0.2.9', rollback: true, currentVersionWithdrawn: true } as const;
-    expect(withdrawnVersionAdvice({ ...rollback, installMethod: linux })).toContain('再点「安装新版本」');
-    expect(withdrawnVersionAdvice(rollback)).toContain('再点「重启并安装」');
+    expect(withdrawnVersionAdvice({ ...rollback, installMethod: linux })).toContain('再点击「安装新版本」');
+    expect(withdrawnVersionAdvice(rollback)).toContain('再点击「重启并安装」');
   });
 });
 
@@ -500,9 +500,9 @@ describe('renderer-v2 sidebar update entry', () => {
   });
 
   it('asks to restart and install once the new version is downloaded, without promising a reopen on Linux', () => {
-    expect(updateSidebarEntry({ ...base, phase: 'downloaded' })).toEqual({ label: '重启并安装新版', title: '新版 v0.2.23 已经下好，点一下装上，装好自动打开', install: true });
-    expect(updateSidebarEntry({ ...base, phase: 'downloaded', installMethod: 'system-installer' })).toEqual({ label: '安装新版本', title: '新版 v0.2.23 已经下好，点一下装上', install: true });
-    expect(updateSidebarEntry({ ...base, phase: 'downloaded', availableVersion: null })?.title).toBe('新版已经下好，点一下装上，装好自动打开');
+    expect(updateSidebarEntry({ ...base, phase: 'downloaded' })).toEqual({ label: '重启并安装新版', title: '新版 v0.2.23 已下载，点击即可安装，安装完成后自动打开', install: true });
+    expect(updateSidebarEntry({ ...base, phase: 'downloaded', installMethod: 'system-installer' })).toEqual({ label: '安装新版本', title: '新版 v0.2.23 已下载，点击即可安装', install: true });
+    expect(updateSidebarEntry({ ...base, phase: 'downloaded', availableVersion: null })?.title).toBe('新版已下载，点击即可安装，安装完成后自动打开');
   });
 
   it('stays away when nothing is new, a step failed or the offer goes back to an older release', () => {

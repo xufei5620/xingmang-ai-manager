@@ -96,20 +96,20 @@ export function inspectMacosInstallLocation(
 }
 
 const moveButtonLabel = '移到「应用程序」并重新打开'
-const manualMoveInstruction = '请把「星芒AI管理工具」拖到「应用程序」文件夹后再打开。'
+const manualMoveInstruction = '请将「星芒AI管理工具」拖到「应用程序」文件夹后再打开。'
 
 export function buildMacosInstallLocationNotice(
   location: MacosInstallLocation,
 ): MacosInstallLocationNotice {
   const detail = location === 'mounted-volume'
-    ? '星芒还在磁盘映像里，没放进「应用程序」文件夹，在这里运行的话自动更新用不了。'
-    : '星芒还没放进「应用程序」文件夹，系统让它在一个只读的临时位置运行，自动更新用不了。'
+    ? '星芒仍在磁盘映像中，尚未放入「应用程序」文件夹，在此运行将无法使用自动更新。'
+    : '星芒尚未放入「应用程序」文件夹，系统将其置于只读的临时位置运行，无法使用自动更新。'
   return {
-    title: '请先把程序放进「应用程序」',
+    title: '请先将程序放入「应用程序」',
     message: location === 'mounted-volume'
-      ? '星芒AI管理工具正在从磁盘映像里运行'
-      : '星芒AI管理工具正在从系统的临时副本里运行',
-    detail: `${detail}\n\n点「${moveButtonLabel}」，星芒会自己搬过去并重新打开。`,
+      ? '星芒AI管理工具正在从磁盘映像中运行'
+      : '星芒AI管理工具正在从系统的临时副本中运行',
+    detail: `${detail}\n\n点击「${moveButtonLabel}」，星芒将自动移动并重新打开。`,
     buttons: [moveButtonLabel, '仍要继续', '退出'],
     choices: ['move', 'continue', 'quit'],
     defaultId: 0,
@@ -145,14 +145,14 @@ export function buildMacosMoveFailureNotice(
 ): MacosInstallLocationNotice {
   // Electron 的报错是英文诊断，只进日志；这里按能确定的情况给大白话原因。
   const reason = outcome.kind === 'cancelled'
-    ? '输入电脑密码的窗口被取消了'
+    ? '已取消输入电脑密码'
     : location === 'mounted-volume'
-      ? '「应用程序」文件夹写不进去，或者磁盘映像不允许复制'
-      : '「应用程序」文件夹写不进去，或者系统不允许从临时位置复制'
+      ? '「应用程序」文件夹无法写入，或磁盘映像不允许复制'
+      : '「应用程序」文件夹无法写入，或系统不允许从临时位置复制'
   return {
-    title: '没能自动移动',
-    message: `没能自动移动（${reason}）。`,
-    detail: `${manualMoveInstruction}\n\n仍要继续的话，自动更新用不了。`,
+    title: '自动移动失败',
+    message: `自动移动失败（${reason}）。`,
+    detail: `${manualMoveInstruction}\n\n如仍要继续，将无法使用自动更新。`,
     buttons: ['退出', '仍要继续'],
     choices: ['quit', 'continue'],
     defaultId: 0,

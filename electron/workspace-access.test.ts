@@ -2,9 +2,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { assertWorkspaceDirectory, macosWorkspaceAccessDeniedMessage } from './workspace-access'
+import { assertWorkspaceDirectory, existingWorkspaceDirectory, macosWorkspaceAccessDeniedMessage } from './workspace-access'
 
-const missingMessage = '工作目录不存在，请重新选择'
+const missingMessage = '项目文件夹不存在，请重新选择'
 const temporaryDirectories: string[] = []
 
 afterEach(() => {
@@ -72,9 +72,37 @@ describe('assertWorkspaceDirectory', () => {
   })
 
   it('does not send a Mac user back to the folder picker for a permission problem', () => {
-    // 界面认「工作目录不存在」就退回选择器（recent-workspaces.ts 的 isMissingWorkspace）：
+    // 界面认「工作目录不存在」「项目文件夹不存在」就退回选择器（recent-workspaces.ts 的 isMissingWorkspace）：
     // 授权的事换个文件夹解决不了，这句不能带上那几个字。
-    expect(macosWorkspaceAccessDeniedMessage).not.toContain('工作目录不存在')
-    expect(macosWorkspaceAccessDeniedMessage).toBe('Mac 没允许星芒打开这个文件夹。打开「系统设置 › 隐私与安全性 › 文件和文件夹」，把「星芒AI管理工具」和「终端」两项都打开，再点一次「打开」。')
+    expect(macosWorkspaceAccessDeniedMessage).not.toMatch(/工作目录不存在|项目文件夹不存在/)
+    expect(macosWorkspaceAccessDeniedMessage).toBe('Mac 未允许星芒访问该文件夹。请打开「系统设置 › 隐私与安全性 › 文件和文件夹」，开启「星芒AI管理工具」和「终端」两项，然后再次点击「打开」。')
+  })
+})
+
+describe('existingWorkspaceDirectory', () => {
+  it('returns an existing directory as it is', () => {
+    const directory = temporaryDirectory()
+
+    expect(existingWorkspaceDirectory(directory, 'darwin')).toBe(directory)
+  })
+
+  it('returns null for a folder that was deleted or moved', () => {
+    const directory = temporaryDirectory()
+
+    expect(existingWorkspaceDirectory(path.join(directory, 'gone'), 'darwin')).toBeNull()
+  })
+
+  it('returns null for a file in place of the folder', () => {
+    const directory = temporaryDirectory()
+    const file = path.join(directory, 'notes.txt')
+    fs.writeFileSync(file, 'x')
+
+    expect(existingWorkspaceDirectory(file, 'darwin')).toBeNull()
+  })
+
+  it.each(['EPERM', 'EACCES'])('still tells a Mac user to grant folder access when stat is refused with %s', (code) => {
+    // 文件夹还在，只是没开权限：不带文件夹打开会让人以为星芒把项目弄丢了。
+    expect(() => existingWorkspaceDirectory('/Users/tester/Desktop/project', 'darwin', failingStat(code)))
+      .toThrow(macosWorkspaceAccessDeniedMessage)
   })
 })

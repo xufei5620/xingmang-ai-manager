@@ -1,57 +1,4 @@
-/* 外接工具、技能、插件三页和精选页（v4 批12）。块与块之间统一空 16，和 app.css 里卡片的间距一样。 */
-.v2-ext-page { display: flex; flex-direction: column; gap: 16px; }
-.v2-ext-page > .xm-page-head { padding-bottom: 2px; }
-.v2-ext-page > .v2-skill-import-note { margin: 0; }
-
-/* 按工具分的页签：一个工具一块，选中的描金边；名字前是工具标志，后面是装了几个或「未安装」。 */
-.v2-ext-tools .xm-tabs { flex-wrap: wrap; gap: 6px; border-bottom: 0; }
-.v2-ext-tools .xm-tabs button { height: 38px; margin: 0; padding: 0 12px 0 8px; gap: 8px; border: 0; border-radius: 10px; corner-shape: squircle; background: var(--panel); box-shadow: inset 0 0 0 1px var(--line); font-size: var(--font-small); transition: box-shadow var(--duration-fast) var(--ease-standard), background var(--duration-fast) var(--ease-standard); }
-.v2-ext-tools .xm-tabs button:hover { box-shadow: inset 0 0 0 1px var(--line-2); }
-.v2-ext-tools .xm-tabs button.is-active { background: var(--panel-solid); color: var(--text); box-shadow: inset 0 0 0 1.5px var(--gold), var(--sh-1); }
-.v2-ext-tab-brand { display: inline-flex; }
-.v2-ext-tab-count { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--panel-2); font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
-.v2-ext-tools .xm-tabs button.is-active .v2-ext-tab-count { background: var(--soft); color: var(--soft-tx); }
-.v2-ext-tab-note { font-size: 12px; font-weight: 400; color: var(--text-3); }
-
-/* 「{工具名} 官方叫「…」」：一行平平的底条，让客户对得上官方文档里的叫法。 */
-.v2-ext-official { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; corner-shape: squircle; background: var(--panel); box-shadow: inset 0 0 0 1px var(--line); font-size: var(--font-small); }
-.v2-ext-official > span { display: inline-flex; }
-.v2-ext-official strong { font-weight: 600; }
-
-/* 工具还没装：已装列表的位置换成一条「还没有安装」和安装按钮，装的时候换成进度。 */
-.v2-ext-install-bar { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-radius: var(--radius-card); corner-shape: squircle; background: var(--panel); box-shadow: inset 0 0 0 1px var(--line); color: var(--text-3); }
-.v2-ext-install-copy { display: grid; gap: 2px; flex: 1; min-width: 0; }
-.v2-ext-install-copy strong { color: var(--text); }
-.v2-ext-install-copy span { font-size: var(--font-small); }
-.v2-ext-install-progress { display: grid; gap: 6px; width: 200px; font-size: var(--font-small); color: var(--text-2); }
-
-/* 已装列表：标题、搜索、数量一行，下面一张卡按范围分组。 */
-.v2-ext-installed > .xm-toolbar { padding-top: 0; }
-.v2-ext-section-title { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); white-space: nowrap; }
-.v2-ext-group-head { display: flex; align-items: center; gap: 10px; padding: 8px 16px; background: var(--panel-2); border-top: 1px solid var(--line); font-size: var(--font-micro); color: var(--text-3); }
-.v2-ext-group:first-child > .v2-ext-group-head { border-top: 0; }
-.v2-ext-group-head strong { flex: none; font-weight: 600; color: var(--text); }
-.v2-ext-group-head span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.v2-ext-group-head small { margin-left: auto; font-size: inherit; }
-.v2-ext-row-note { font-size: var(--font-small); color: var(--text-3); white-space: nowrap; }
-
-/* 精选和官方目录：标题一行，下面一格一张卡。 */
-.v2-ext-section { display: grid; gap: 12px; }
-.v2-ext-section-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; }
-.v2-ext-section-head h2 { margin: 0; font-size: 15px; font-weight: 600; color: var(--text); }
-.v2-ext-section-head span { color: var(--text-3); font-size: var(--font-small); }
-.v2-ext-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
-.v2-ext-card { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 14px; border-radius: var(--radius-card); corner-shape: squircle; background: var(--panel-solid); border: 1px solid var(--line); box-shadow: var(--surface-card-shadow); transition: box-shadow var(--duration-fast) var(--ease-standard); }
-.v2-ext-card:hover { box-shadow: inset 0 0 0 1px var(--line-2), var(--surface-card-shadow); }
-.v2-ext-card-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.v2-ext-tile { width: 30px; height: 30px; border-radius: 8px; corner-shape: squircle; background: var(--panel-2); box-shadow: var(--tile-ring); color: var(--text); display: grid; place-items: center; flex: none; }
-.v2-ext-card-name { display: grid; gap: 1px; min-width: 0; }
-.v2-ext-card-name > div { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.v2-ext-card-name strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
-.v2-ext-card-name small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); font-size: var(--font-micro); }
-.v2-ext-card-summary { margin: 0; flex: 1; color: var(--text-2); font-size: 13px; line-height: 1.6; text-wrap: pretty; }
-.v2-ext-card-tags { display: flex; flex-wrap: wrap; gap: 6px; }
-.v2-ext-card-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-height: 28px; }
+/* 「插件」页（0.2.25 精选、外接工具、技能、插件合成一页）和它的几个对话框。旧四页删了，这里只留合并页还在用的。 */
 
 /* 「自定义连接」里收起来的附加参数、附加设置。 */
 .v2-ext-more { display: grid; gap: 10px; }
@@ -68,8 +15,111 @@
 .v2-ext-tool-picker button[aria-pressed="true"] .v2-ext-tool-picker-check { background: var(--gold); box-shadow: none; color: var(--pri-tx); }
 .v2-ext-tool-picker-note { font-size: 11.5px; color: var(--text-3); }
 
-/* 精选页：免责说明和类型分段一行，卡底下左边是能用的工具。 */
-.v2-featured-filter { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
-.v2-featured-filter > span { flex: 1; min-width: 240px; color: var(--text-3); font-size: var(--font-small); line-height: 1.6; }
-.v2-featured-tools { display: inline-flex; gap: 4px; margin-right: auto; }
-.v2-featured-tools > span { display: inline-flex; }
+/* 「插件」页（扩展合并方案第二版）：左边一窄栏，右边内容最宽 820 居中，版式照 GPT 桌面端插件页。 */
+.v2-hub { display: grid; grid-template-columns: 236px minmax(0, 1fr); height: 100%; min-height: 0; }
+.v2-hub-side { display: flex; flex-direction: column; gap: 1px; min-height: 0; padding: 18px 10px; overflow: auto; border-right: 1px solid var(--line); }
+.v2-hub-nav { display: flex; flex-direction: column; gap: 1px; }
+.v2-hub-nav button, .v2-hub-installed button { display: flex; align-items: center; gap: 9px; width: 100%; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--text-2); font: inherit; text-align: left; cursor: pointer; }
+.v2-hub-nav button { height: 34px; font-size: 13.5px; }
+.v2-hub-nav button:hover, .v2-hub-installed button:hover { background: var(--panel-hover); color: var(--text); }
+.v2-hub-nav button.is-on { background: var(--nav-on); color: var(--text); font-weight: 600; box-shadow: var(--nav-on-sh); }
+.v2-hub-side-label { display: flex; justify-content: space-between; padding: 16px 10px 6px; color: var(--text-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.v2-hub-installed { display: flex; flex-direction: column; gap: 1px; margin: 0; padding: 0; list-style: none; }
+.v2-hub-installed button { height: 32px; font-size: 13px; }
+.v2-hub-installed button.is-on { background: var(--panel-hover); color: var(--text); }
+.v2-hub-installed .xm-plugin-icon { border-radius: 5px; box-shadow: none; background: transparent; }
+.v2-hub-installed .xm-plugin-icon.is-image { background: var(--surface-logo-tile); }
+.v2-hub-installed-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.v2-hub-warn { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
+.v2-hub-side-empty { margin: 0; padding: 4px 10px; color: var(--text-3); font-size: 12.5px; }
+.v2-hub-main { min-height: 0; overflow: auto; container-type: inline-size; padding: 30px max(28px, calc((100% - 820px) / 2)) 40px; }
+.v2-hub-inner { display: flex; flex-direction: column; gap: 0; }
+.v2-hub-inner > .xm-notice { margin-bottom: 14px; }
+.v2-hub-head { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.v2-hub-head-copy { flex: 1; min-width: 200px; }
+.v2-hub-head h1 { margin: 0; color: var(--text); font-size: 26px; font-weight: 700; line-height: 34px; }
+.v2-hub-head p { margin: 4px 0 0; color: var(--text-2); font-size: 13.5px; }
+.v2-hub-tools { display: flex; align-items: center; gap: 8px; }
+.v2-hub-tools .xm-search { width: 200px; }
+.v2-hub-tabs { display: flex; gap: 6px; margin: 22px 0 6px; }
+.v2-hub-tabs button { display: inline-flex; align-items: center; height: 32px; padding: 0 16px; border: 0; border-radius: 16px; background: transparent; color: var(--text-2); font: inherit; font-size: 13px; cursor: pointer; }
+.v2-hub-tabs button:hover { color: var(--text); }
+.v2-hub-tabs button.is-on { background: var(--panel-hover); color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 1px var(--line); }
+.v2-hub-list { display: flex; flex-direction: column; }
+.v2-hub-section { margin-top: 22px; }
+.v2-hub-section > h2 { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; margin: 0 0 6px; color: var(--text); font-size: 15px; font-weight: 650; }
+.v2-hub-section > h2 > button { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.v2-hub-section > h2 svg { color: var(--text-3); }
+.v2-hub-section > h2 small { color: var(--text-3); font-size: 12px; font-weight: 400; }
+.v2-hub-section > .xm-notice { margin: 6px 0 10px; }
+.v2-hub-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 20px; row-gap: 2px; }
+.v2-hub-grid-top { margin-top: 16px; }
+.v2-hub-row { display: flex; align-items: center; gap: 4px; min-width: 0; padding-right: 6px; border-radius: 12px; transition: background var(--duration-fast) var(--ease-standard); }
+.v2-hub-row:hover, .v2-hub-row:focus-within { background: var(--panel-hover); }
+.v2-hub-row-open { display: flex; flex: 1; align-items: center; gap: 12px; min-width: 0; padding: 10px; border: 0; border-radius: 12px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.v2-hub-row-main { flex: 1; min-width: 0; }
+.v2-hub-row-main strong { display: block; overflow: hidden; color: var(--text); font-size: 13.5px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.v2-hub-row-main > span { display: block; margin-top: 2px; overflow: hidden; color: var(--text-3); font-size: 12.5px; text-overflow: ellipsis; white-space: nowrap; }
+.v2-hub-marks { display: inline-flex; flex: none; align-items: center; gap: 4px; }
+.v2-hub-installed .v2-hub-marks { gap: 3px; opacity: .9; }
+.v2-hub-mark { position: relative; display: inline-flex; }
+.v2-hub-mark.is-done::after { content: ''; position: absolute; right: -2px; bottom: -2px; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 1.5px var(--bg); }
+.v2-hub-mark.is-na { opacity: .3; }
+.v2-hub-act { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 8px; color: var(--text-2); }
+span.v2-hub-act { color: var(--text-3); }
+.v2-hub-note { margin: 18px 10px 0; color: var(--text-3); font-size: 12px; line-height: 1.6; }
+.v2-hub-link, .v2-hub-inline-link { padding: 0; border: 0; background: transparent; color: var(--text-2); font: inherit; cursor: pointer; }
+.v2-hub-link { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; margin: 10px 10px 0; font-size: 12.5px; }
+.v2-hub-link:hover, .v2-hub-inline-link:hover { color: var(--text); text-decoration: underline; }
+.v2-hub-inline-link { text-decoration: underline; text-underline-offset: 2px; }
+.v2-hub-empty { margin: 16px 10px 0; color: var(--text-3); font-size: 13px; line-height: 1.6; }
+.v2-hub-missing { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 6px 0 10px; padding: 12px 14px; border-radius: 12px; background: var(--panel); box-shadow: inset 0 0 0 1px var(--line); color: var(--text-2); font-size: 13px; }
+.v2-hub-missing > span { flex: 1; min-width: 180px; }
+.v2-hub-markets { display: flex; flex-direction: column; gap: 2px; }
+.v2-hub-market { display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 12px; }
+.v2-hub-market:hover { background: var(--panel-hover); }
+.v2-hub-back { display: inline-flex; align-items: center; gap: 2px; align-self: flex-start; margin-bottom: 14px; padding: 0; border: 0; background: transparent; color: var(--text-2); font: inherit; font-size: 13px; cursor: pointer; }
+.v2-hub-back:hover { color: var(--text); }
+.v2-hub-detail { display: flex; flex-direction: column; }
+.v2-hub-detail-head { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; }
+.v2-hub-detail-head .xm-plugin-icon { border-radius: 14px; }
+.v2-hub-detail-title { flex: 1; min-width: 160px; }
+.v2-hub-detail-title h2 { margin: 0; color: var(--text); font-size: 22px; font-weight: 700; }
+.v2-hub-detail-title small { display: block; margin-top: 2px; color: var(--text-3); font-size: 13px; }
+.v2-hub-detail-title .v2-curated-tags { margin-top: 6px; }
+.v2-hub-detail-title .v2-curated-risk-details { margin: 6px 0 0; }
+.v2-hub-card { margin-top: 20px; border-radius: 12px; background: var(--panel); box-shadow: inset 0 0 0 1px var(--line); }
+.v2-hub-card > h3 { margin: 0; padding: 12px 16px 4px; color: var(--text-3); font-size: 13px; font-weight: 500; }
+.v2-hub-where { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--line); }
+.v2-hub-card > h3 + .v2-hub-where { border-top: 0; }
+.v2-hub-where-text { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.v2-hub-where strong { color: var(--text); font-size: 13.5px; }
+.v2-hub-where span { color: var(--text-3); font-size: 12.5px; }
+.v2-hub-where .v2-hub-where-error { color: var(--bad-tx); }
+.v2-hub-where.is-off { opacity: .65; }
+.v2-hub-about { padding: 4px 16px 14px; color: var(--text-2); font-size: 13px; line-height: 1.7; }
+.v2-hub-about p { margin: 0 0 10px; }
+.v2-hub-about p:last-child { margin-bottom: 0; }
+.v2-hub-about .v2-business-kv { margin: 6px 0 10px; }
+.v2-hub-remove { margin-top: 18px; }
+/* 安装框里「装到哪里」：一家一行，能勾的整行是一颗按钮，不能勾的灰着写为什么。 */
+.v2-hub-picker { display: flex; flex-direction: column; overflow: hidden; border-radius: 10px; box-shadow: inset 0 0 0 1px var(--line); }
+.v2-hub-picker-row { display: flex; align-items: center; gap: 10px; padding-right: 12px; }
+.v2-hub-picker-row + .v2-hub-picker-row { border-top: 1px solid var(--line); }
+.v2-hub-picker-row > button { display: flex; flex: 1; align-items: center; gap: 10px; min-width: 0; padding: 11px 12px; border: 0; background: transparent; color: var(--text-2); font: inherit; text-align: left; cursor: pointer; }
+.v2-hub-picker-row > button:hover:not(:disabled) { background: var(--panel-hover); }
+.v2-hub-picker-row > button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.v2-hub-picker-row > button:disabled { cursor: default; }
+.v2-hub-picker-row > button[aria-pressed="true"] .v2-ext-tool-picker-check { background: var(--gold); box-shadow: none; color: var(--pri-tx); }
+.v2-hub-picker-row.is-off > button { opacity: .6; }
+.v2-hub-picker-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.v2-hub-picker-text strong { color: var(--text); font-size: 13.5px; font-weight: 600; }
+.v2-hub-picker-text small { color: var(--text-3); font-size: 12px; }
+.v2-hub-picker-text .v2-hub-picker-note { color: var(--text-2); }
+/* 右边那一栏窄到放不下两列时一行一条：跟着这一栏自己的宽度走，不加窗口断点（窗口只有 1280 / 660 两个断点）。 */
+@container (max-width: 600px) {
+  .v2-hub-grid { grid-template-columns: minmax(0, 1fr); }
+  .v2-hub-tools .xm-search { width: 160px; }
+}
+.v2-hub-path-row { display: flex; align-items: flex-end; gap: 8px; }
+.v2-hub-path-row > .xm-field { flex: 1; min-width: 0; }

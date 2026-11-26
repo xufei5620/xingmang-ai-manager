@@ -80,6 +80,7 @@ describe('independent text generation', () => {
     const graph: CanvasRunGraph = { nodes: [{ id: 'image', kind: 'image-generate', definitionVersion: 1, data: { prompt: 'edited prompt', model: 'gpt-image-1', group: 'source', adoptedAssetId: 'old-asset' } }], edges: [] }
     const result = buildCanvasRunPreflight({ graph, scope: { kind: 'all' }, cachedNodeIds: ['image'], imageGroup: 'source', imageModels: ['gpt-image-1'], videoModels: [] })
     expect(result).toMatchObject({ paidRequestCount: 1, imageRequestCount: 1, cacheHitCount: 0 })
-    expect(result.items[0]).toMatchObject({ action: 'execute', reason: '输入跟上次一样就用上次的结果，不一样才重新生成（会扣费）' })
+    // 总单第 57 项起这一行说上次的结果通常直接用，但照旧写明对不上会扣费，上限也照算。
+    expect(result.items[0]).toMatchObject({ action: 'execute', requestCount: 1, keptResult: true, reason: '上次的结果还在，之后也没改过，通常直接用上次的，不扣费；对不上才重新生成（会扣费）' })
   })
 })

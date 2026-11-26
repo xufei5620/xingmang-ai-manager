@@ -16,16 +16,17 @@ import { beginBusinessOperation, errorMessage } from '../../business-common'
 // 国内直连下不动。以前从星芒点「打开」时会在后台替他连上加速（#1373）；网络加速 2026-10-30 下线以后不再连，
 // 这句改成实话（yoyo 10-31 回「检查改」）。
 const clientHints: Record<ExternalToolId, string> = {
-  claudeDesktop: '保存后要完全退出再重新打开 Claude Desktop。它第一次用和每次自己升级以后，都要从 Claude 官网下载组件（最多 1.6GB），这台电脑要能连上 Claude 官网才下得动。',
-  workbuddy: '请选择能调用工具的模型；保存后在 WorkBuddy 的模型列表里选它。',
-  opencode: '命令行版和桌面版共用这份配置。',
+  claudeDesktop: '保存后请完全退出并重新打开 Claude Desktop。首次使用及每次自动升级后，需从 Claude 官网下载组件（最大 1.6GB），本机须能连接 Claude 官网。',
+  workbuddy: '请选择支持调用工具的模型，保存后在 WorkBuddy 的模型列表中选择该模型。',
+  opencode: '命令行版与桌面版共用此配置。',
 }
 
-// Windows 上从星芒点「打开」时先替它放好聊天和 Code 要用的 Claude Code 程序（electron/claude-desktop-code-seed.ts），
-// 那一份不用再连官网；Cowork 的工作区国内没有来源，还得连官网。字是 yoyo 2026-11-04 回「放程序字改」批的。
-const claudeDesktopSeededHint = '保存后要完全退出再重新打开 Claude Desktop。从星芒点「打开」时，星芒会先替它放好聊天和 Code 要用的程序；Cowork 要用的工作区（约 1.3GB）还得这台电脑连得上 Claude 官网才下得动。'
+// 从星芒点「打开」时先替它放好聊天和 Code 要用的 Claude Code 程序（Windows 从 npm 镜像，electron/claude-desktop-code-seed.ts；
+// Mac 从星芒下载站，claude-desktop-mac-code-seed.ts）；Cowork 的工作区在装好、开机、点「打开」时从下载站在后台放好
+// （claude-desktop-workspace-seed.ts）。字是 yoyo 2026-11-20 回「工作区改」批的。
+const claudeDesktopSeededHint = '保存后请完全退出并重新打开 Claude Desktop。从星芒点击「打开」时，星芒会预先准备聊天和 Code 所需程序，并在后台自动下载 Cowork 所需工作区（约 1.3GB），均无需连接 Claude 官网。'
 
-/** 配置框最上面那一句。codeSeeded：这台电脑上从星芒打开 Claude Desktop 前会先替它放程序（Windows）。 */
+/** 配置框最上面那一句。codeSeeded：这台电脑上从星芒打开 Claude Desktop 前会先替它放程序和工作区（Windows、Mac）。 */
 export function externalClientHint(tool: ExternalToolId, codeSeeded: boolean): string {
   return tool === 'claudeDesktop' && codeSeeded ? claudeDesktopSeededHint : clientHints[tool]
 }
@@ -45,7 +46,7 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
    * Claude Code 常常是弹窗打开以后才写好密钥。缺省 = 只在打开时读一次。
    */
   liveConfig?: AppConfigSummary | null
-  /** 这台电脑上从星芒打开 Claude Desktop 前会先替它放好 Claude Code 程序（Windows）。缺省 = 不会，照旧说要连官网。 */
+  /** 这台电脑上从星芒打开 Claude Desktop 前会先替它放好 Claude Code 程序和工作区（Windows、Mac）。缺省 = 不会，照旧说要连官网。 */
   codeSeeded?: boolean
   onClose(): void
   onSaved(): void
@@ -152,7 +153,7 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
       setModels(values)
       const kept = detectedClientModel(tool, current, values)
       setModel(kept ?? values[0] ?? '')
-      if (!values.length) setError('这把密钥没有可用模型，请换一把密钥后重新检测。')
+      if (!values.length) setError('该密钥无可用模型，请更换密钥后重新检测。')
       return { values, kept }
     } catch (cause) { if (alive.current) { setModels([]); setError(modelCheckFailure(cause)) } return null }
     finally { lock.current = false; if (alive.current) setBusy('') }
@@ -182,7 +183,7 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
   const sourceOptions: PickerOption[] = [
     ...currentSources.map((entry) => ({ value: `configured:${entry.id}`, label: `使用 ${entry.name} 当前的星芒密钥` })),
     ...keys.map((key) => ({ value: `account:${key.id}`, label: key.name || key.maskedKey || '密钥预览未提供', description: accountKeyDescription(key) })),
-    { value: 'manual', label: '自己填写密钥', description: '粘贴星芒创建的密钥' },
+    { value: 'manual', label: '手动填写密钥', description: '粘贴星芒创建的密钥' },
   ]
   // 保存完主进程会把刚写下去的配置回读一遍再核对一次当前账号，结论跟在同一张
   // Notice 里：0.2.8 之前这里只能说一句「未验证实际模型调用」。配置文件的位置客户用不上，
@@ -200,18 +201,18 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
     <fieldset className="v2-config-controls" disabled={Boolean(busy)}>
       <div className="v2-config-key"><OptionPicker label="访问密钥" value={source} options={sourceOptions} onChange={changeSource} testId="external-client-source" />
         {keyError && <p role="status">{accountKeyListFailureText(keyError)}</p>}
-        {source === 'manual' && <Input label="星芒密钥" password mono autoComplete="off" value={secret} error={secretError || undefined} placeholder={strictKeyFormat ? '粘贴你在星芒创建的密钥，以 sk- 开头' : undefined}
+        {source === 'manual' && <Input label="星芒密钥" password mono autoComplete="off" value={secret} error={secretError || undefined} placeholder={strictKeyFormat ? '请粘贴在星芒创建的密钥，以 sk- 开头' : undefined}
           onChange={(event) => { setSecret(event.target.value); setSecretError(''); setModels([]); setModel(''); setResult(null); setDirty(true); setPickModel(false) }} testId="external-client-secret" />}
       </div>
       <div className="xm-field v2-config-model" ref={modelField}>
-        <div className="v2-config-model-row"><Select label="默认模型" value={model} options={models.length ? models.map((id) => ({ value: id, label: id })) : [{ value: model, label: model || '先检测这把密钥的可用模型' }]} onChange={(event) => { setModel(event.target.value); setDirty(true); setResult(null); setPickModel(false) }} disabled={!models.length} testId="external-client-model" />
+        <div className="v2-config-model-row"><Select label="默认模型" value={model} options={models.length ? models.map((id) => ({ value: id, label: id })) : [{ value: model, label: model || '请先检测该密钥的可用模型' }]} onChange={(event) => { setModel(event.target.value); setDirty(true); setResult(null); setPickModel(false) }} disabled={!models.length} testId="external-client-model" />
           <Button icon={RefreshCw} loading={busy === 'models'} disabled={source === 'manual' && !secret.trim()} onClick={() => void detect()} testId="external-client-detect">{busy === 'models' ? '检测中' : '检测模型'}</Button></div>
         {pickModel ? <p className="v2-field-note" role="status" data-testid="external-client-pick-model">{tool === 'claudeDesktop'
-          ? '这把密钥没有 Claude 型号，Claude Desktop 用不了。请在「访问密钥」里换一把，再点「检测模型」。'
-          : '还没保存。请在「默认模型」里选一个模型，再点「保存配置」。'}</p>
-          : detected && models.includes(model) && <p className="v2-ok-line"><Check size={13} aria-hidden="true" />这把密钥能用 {new Set(models).size} 个模型，{model} 可以用</p>}
+          ? '该密钥不含 Claude 模型，Claude Desktop 无法使用。请在「访问密钥」中更换密钥后点击「检测模型」。'
+          : '尚未保存。请在「默认模型」中选择模型后点击「保存配置」。'}</p>
+          : detected && models.includes(model) && <p className="v2-ok-line"><Check size={13} aria-hidden="true" />该密钥可用 {new Set(models).size} 个模型，{model} 可用</p>}
       </div>
-      {tool === 'opencode' && <div className="xm-field"><Select label="模型类型" value={protocol} options={[{ value: 'responses', label: 'Codex / GPT 系列模型' }, { value: 'chat-completions', label: '其他模型' }]} onChange={(event) => { setProtocol(event.target.value as typeof protocol); setDirty(true); setResult(null) }} testId="external-client-protocol" /><p className="v2-field-note">按上面选的模型挑一项；拿不准就选和模型名对应的那一项。</p></div>}
+      {tool === 'opencode' && <div className="xm-field"><Select label="模型类型" value={protocol} options={[{ value: 'responses', label: 'Codex / GPT 系列模型' }, { value: 'chat-completions', label: '其他模型' }]} onChange={(event) => { setProtocol(event.target.value as typeof protocol); setDirty(true); setResult(null) }} testId="external-client-protocol" /><p className="v2-field-note">请根据上方所选模型选择；如不确定，请选择与模型名称对应的选项。</p></div>}
     </fieldset>
     {isKeyGroupRejection(error)
       ? <KeyGroupRejectedNotice failure={error} onSwitch={usableSource ? () => switchToUsable(usableSource) : undefined}
@@ -221,7 +222,7 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
     {result && <Notice tone={externalClientSavedTone(connectionView)} title="配置已保存" body={<><p>{result.message}</p>
       {connectionView
         ? <><p data-testid="external-client-connection">连接自检：{connectionView.statusLabel} · {connectionView.title}</p><p>{connectionView.body}</p></>
-        : <p data-testid="external-client-connection">连接自检：这次没测成。配置已经写好了，可以到「检查」页点一次「测试连接」。</p>}
+        : <p data-testid="external-client-connection">连接自检：本次检测未完成。配置已写入，可前往「检查」页点击「测试连接」。</p>}
       <details className="v2-client-config-path" data-testid="external-client-path"><summary>查看详情</summary><p>{result.path}</p></details>{result.backups.length > 0 && <p>已保留 {result.backups.length} 份备份。</p>}</>} testId="external-client-result" />}
   </Dialog>
 }

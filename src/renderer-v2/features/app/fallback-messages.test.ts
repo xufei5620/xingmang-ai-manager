@@ -29,10 +29,10 @@ describe('deepLinkReadErrorText', () => {
   it('falls back to its own wording when the failure carries no usable reason', () => {
     const text = deepLinkReadErrorText(new Error('ECONNRESET'))
     expect(text).toContain('订单')
-    expect(text.startsWith('外部跳转没有读取到') || text.includes('网络')).toBe(true)
+    expect(text.startsWith('外部链接读取失败') || text.includes('网络')).toBe(true)
   })
 
   it('adds the missing full stop before the guidance', () => {
-    expect(deepLinkReadErrorText(new Error('回跳参数已过期'))).toContain('回跳参数已过期。如果刚完成支付')
+    expect(deepLinkReadErrorText(new Error('回跳参数已过期'))).toContain('回跳参数已过期。如刚完成支付')
   })
 })

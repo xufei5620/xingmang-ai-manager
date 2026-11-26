@@ -270,7 +270,7 @@ describe('cli process probe', () => {
       detail,
     })
     expect(counted).toBe(
-      'Codex CLI 卸载失败：文件被占用，检测到 Codex CLI 正在运行（1 个进程），请关掉它的窗口再试。'
+      'Codex CLI 卸载失败：文件被占用，检测到 Codex CLI 正在运行（1 个进程），请关闭其窗口后重试。'
         + `原始报错：${detail}`,
     )
     expect(classifyOperationError(counted!)).toBe('toolRunning')
@@ -284,7 +284,7 @@ describe('cli process probe', () => {
       detail: busy,
     })
     expect(uncounted).toBe(
-      'Codex CLI 卸载失败：文件被占用，Codex CLI 可能正在运行，请关掉正在使用它的窗口再试。'
+      'Codex CLI 卸载失败：文件被占用，Codex CLI 可能正在运行，请关闭正在使用它的窗口后重试。'
         + `原始报错：${busy}`,
     )
   })

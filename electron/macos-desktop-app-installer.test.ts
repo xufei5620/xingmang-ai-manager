@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { antigravityDesktopFeedOrigin } from './antigravity-desktop-release'
 import { CommandRunnerError, type CommandResult } from './command-runner'
 import { desktopBucketIndexUrl, desktopPackageBucketOrigin, downloadDesktopBucketPackage } from './desktop-package-bucket'
 import {
@@ -11,6 +12,7 @@ import {
   installMacosDesktopApp,
   isMacosVersionBelow,
   macosDesktopAppInstallable,
+  macosDesktopBucketPackageId,
   measureMacosDesktopVendorSpeed,
   MacosDesktopInstallError,
   type InstallMacosDesktopAppOptions,
@@ -343,7 +345,7 @@ describe('macOS desktop app installer', () => {
     expect(spctl.argv).toEqual(['--assess', '--type', 'execute', codesign.argv.at(-1)])
     expect(stagingLeftovers(f.home)).toEqual([])
     expect(f.progress[0]).toBe('正在下载 OpenCode 1.18.34')
-    expect(f.progress.slice(-2)).toEqual(['正在检查下载下来的安装包是不是完整的官方版', '正在放进「应用程序」'])
+    expect(f.progress.slice(-2)).toEqual(['正在校验下载的安装包是否为完整的官方版本', '正在放入「应用程序」'])
   })
 
   it.skipIf(process.platform === 'win32')('installs a release that ships latest-mac.yml but no latest.json, like OpenCode 1.19.5', async () => {
@@ -373,7 +375,7 @@ describe('macOS desktop app installer', () => {
     const f = setup()
     fs.mkdirSync(path.join(f.applications, 'OpenCode.app'))
     const error = await failure(installMacosDesktopApp(f.options))
-    expect(error.message).toBe('「应用程序」里已经有一个 OpenCode，但它不是官方原版。请先把它移到废纸篓，再点「安装」。')
+    expect(error.message).toBe('「应用程序」中已有一个 OpenCode，但并非官方原版。请先将其移到废纸篓，再点击「安装」。')
     expect(isMacosDesktopInstallFailure(error.message)).toBe(true)
     expect(f.requested).toEqual([])
     expect(f.plans).toEqual([])
@@ -383,7 +385,7 @@ describe('macOS desktop app installer', () => {
   it.skipIf(process.platform === 'win32')('refuses a feed that points the package anywhere but its fixed release address', async () => {
     const f = setup({ feedBody: feed({ files: ['opencode-desktop-mac-x64.zip', 'https://github.com/anomalyco/opencode/releases/download/v1.18.34/other.zip'] }) })
     const error = await failure(installMacosDesktopApp(f.options))
-    expect(error.message).toBe('OpenCode 没装好，请再点一次「安装」。')
+    expect(error.message).toBe('OpenCode 安装失败，请再次点击「安装」。')
     expect(error.detail).toContain('没有这台 Mac 能用的安装包')
     expect(f.requested.some((url) => url.includes('.tar.gz'))).toBe(false)
     expect(stagingLeftovers(f.home)).toEqual([])
@@ -392,7 +394,7 @@ describe('macOS desktop app installer', () => {
   it.skipIf(process.platform === 'win32')('reports a broken download as a network problem and keeps the reason for the log', async () => {
     const f = setup({ failPackage: true })
     const error = await failure(installMacosDesktopApp(f.options))
-    expect(error.message).toBe('OpenCode 没下载下来，请检查网络后再点一次「安装」。')
+    expect(error.message).toBe('OpenCode 下载失败，请检查网络后再次点击「安装」。')
     expect(error.detail).toBe('fetch failed')
     expect(isMacosDesktopInstallFailure(error.message)).toBe(true)
     expect(fs.readdirSync(f.applications)).toEqual([])
@@ -412,7 +414,7 @@ describe('macOS desktop app installer', () => {
   it.skipIf(process.platform === 'win32')('reports an archive that will not unpack as a failed install, not as a fake package', async () => {
     const f = setup({}, { rejectExecutable: '/usr/bin/tar', rejectStderr: 'tar: Error opening archive: Unrecognized archive format' })
     const error = await failure(installMacosDesktopApp(f.options))
-    expect(error.message).toBe('OpenCode 没装好，请再点一次「安装」。')
+    expect(error.message).toBe('OpenCode 安装失败，请再次点击「安装」。')
     expect(error.detail).toContain('/usr/bin/tar')
     expect(f.plans.some((plan) => plan.executable === '/usr/bin/codesign')).toBe(false)
     expect(fs.readdirSync(f.applications)).toEqual([])
@@ -422,7 +424,7 @@ describe('macOS desktop app installer', () => {
   it.skipIf(process.platform === 'win32')('says the disk is full instead of blaming the network or the package', async () => {
     const unpacking = setup({}, { rejectExecutable: '/usr/bin/tar', rejectStderr: 'tar: OpenCode.app/Contents/Frameworks/a: Write failed: No space left on device' })
     const unpacked = await failure(installMacosDesktopApp(unpacking.options))
-    expect(unpacked.message).toBe('OpenCode 安装失败：安装目录所在磁盘空间不足，请先清理磁盘再试')
+    expect(unpacked.message).toBe('OpenCode 安装失败：安装目录所在磁盘空间不足，请先清理磁盘后重试')
     expect(isMacosDesktopInstallFailure(unpacked.message)).toBe(false)
     expect(stagingLeftovers(unpacking.home)).toEqual([])
 
@@ -495,7 +497,7 @@ describe('macOS desktop app installer', () => {
   it.skipIf(process.platform === 'win32')('says plainly when this Mac is too old for the app', async () => {
     const f = setup({}, { systemVersion: '12.7.6', minimumSystemVersion: '13.0' })
     const error = await failure(installMacosDesktopApp(f.options))
-    expect(error.message).toBe('OpenCode 需要 macOS 13.0 或更新的系统，这台 Mac 装不了。')
+    expect(error.message).toBe('OpenCode 需要 macOS 13.0 或更高版本，本机无法安装。')
     expect(isMacosDesktopSystemTooOld(error.message)).toBe(true)
     expect(isMacosDesktopInstallFailure(error.message)).toBe(false)
     expect(fs.readdirSync(f.applications)).toEqual([])
@@ -571,7 +573,7 @@ describe('macOS desktop app updates in place', () => {
     expect(installedCheck.argv.at(-1)).toBe(f.installedPath)
     expect(installedCheck.argv).toContain('--deep')
     expect(installedCheck.argv.find((argument) => argument.startsWith('-R='))).toContain('certificate leaf[subject.OU] = "5NZ4Q7NXJ4"')
-    expect(f.progress.at(-1)).toBe('正在放进「应用程序」')
+    expect(f.progress.at(-1)).toBe('正在放入「应用程序」')
   })
 
   it.skipIf(process.platform === 'win32')('leaves the installed copy alone when the download is not newer', async () => {
@@ -644,7 +646,7 @@ describe('macOS desktop app updates in place', () => {
     renameRefusing((from, to) => to === f.installedPath ? errno('EIO') : null)
     const error = await failure(installMacosDesktopApp(f.options))
     // The old copy is not where it was, so "the old version is still there" would be untrue.
-    expect(error.message).toBe('OpenCode 没装好，请再点一次「安装」。')
+    expect(error.message).toBe('OpenCode 安装失败，请再次点击「安装」。')
     const parked = fs.readdirSync(f.applications)
     expect(parked).toHaveLength(1)
     expect(parked[0]).toMatch(/^\.OpenCode\.app\.xingmang-old-[0-9a-f]{12}$/)
@@ -775,6 +777,30 @@ function sha256Hex(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex')
 }
 
+// Google's feed refuses anything under 16 MiB, so this package is exactly that big.
+const antigravityArchive = Buffer.alloc(16 * 1024 * 1024, 5)
+const antigravityBuild = '5887025308631040'
+const antigravityHub = 'https://storage.googleapis.com/antigravity-public/antigravity-hub/'
+
+function antigravityPackageUrl(architecture: string, version = '2.34.0', build = antigravityBuild): string {
+  return `${antigravityHub}${version}-${build}/${architecture === 'arm64' ? 'darwin-arm' : 'darwin-x64'}/Antigravity.zip`
+}
+
+/** Shaped like Google's latest-<chip>-mac.yml on 2026-11-23. */
+function antigravityFeed(architecture = 'arm64', overrides: { version?: string, url?: string, size?: number } = {}): string {
+  const sha512 = createHash('sha512').update(antigravityArchive).digest('base64')
+  return [
+    `version: ${overrides.version ?? '2.34.0'}`,
+    'files:',
+    `  - url: ${overrides.url ?? antigravityPackageUrl(architecture)}`,
+    `    sha512: ${sha512}`,
+    `    size: ${overrides.size ?? antigravityArchive.byteLength}`,
+    'path: Antigravity.zip',
+    `sha512: ${sha512}`,
+    '',
+  ].join('\n')
+}
+
 /**
  * Shaped like api.anthropic.com's answer on 2026-10-10, which names a package for the chip in
  * the request path; `update` overrides fields of its one release.
@@ -836,6 +862,7 @@ function appcast(...items: string[]): string {
 interface VendorNetworkOptions {
   claudeFeedBody?: string
   appcastBody?: string
+  antigravityFeedBody?: string
   packageBody?: Buffer
   /** Runs when the package itself is requested, before any byte of it arrives. */
   onPackageRequest?: () => void
@@ -855,6 +882,16 @@ function fakeVendorNetwork(options: VendorNetworkOptions = {}) {
       const architecture = url.endsWith('-x64.xml') ? 'x64' : 'arm64'
       return new Response(options.appcastBody ?? appcast(appcastItem({ build: 12947, version: chatgptVersion, minimum: '13.0', architecture })))
     }
+    if (url.startsWith(`${antigravityDesktopFeedOrigin}/manifest/`)) {
+      const architecture = /latest-(arm64|x64)-mac\.yml$/.exec(url)?.[1]
+      return architecture ? new Response(options.antigravityFeedBody ?? antigravityFeed(architecture)) : new Response('not found', { status: 404 })
+    }
+    if (url.startsWith(antigravityHub)) {
+      options.onPackageRequest?.()
+      init?.signal?.throwIfAborted()
+      const body = options.packageBody ?? antigravityArchive
+      return new Response(body, { headers: { 'content-length': String(body.byteLength) } })
+    }
     if (url.startsWith('https://downloads.claude.ai/releases/darwin/') || url.startsWith(`${chatgptRoot}ChatGPT-darwin-`)) {
       options.onPackageRequest?.()
       init?.signal?.throwIfAborted()
@@ -869,10 +906,11 @@ function fakeVendorNetwork(options: VendorNetworkOptions = {}) {
 const vendorBundles = {
   claudeDesktop: { bundleName: 'Claude.app', bundleIdentifier: 'com.anthropic.claudefordesktop', minimumSystemVersion: '13.0' },
   codexDesktop: { bundleName: 'ChatGPT.app', bundleIdentifier: 'com.openai.codex', minimumSystemVersion: '13.0' },
+  antigravityDesktop: { bundleName: 'Antigravity.app', bundleIdentifier: 'com.google.antigravity', minimumSystemVersion: '13.0' },
 }
 
 function vendorSetup(
-  tool: 'claudeDesktop' | 'codexDesktop',
+  tool: 'claudeDesktop' | 'codexDesktop' | 'antigravityDesktop',
   network: VendorNetworkOptions = {},
   extra: Partial<InstallMacosDesktopAppOptions> = {},
   processes: FakeProcessOptions = {},
@@ -989,7 +1027,7 @@ describe('macOS installer for Claude Desktop and the Codex desktop app', () => {
   it.skipIf(process.platform === 'win32')('never asks a feed with a system version it could not read', async () => {
     const f = vendorSetup('claudeDesktop', {}, {}, { systemVersion: 'ProductVersion: 15.1' })
     const error = await failure(installMacosDesktopApp(f.options))
-    expect(error.message).toBe('Claude Desktop 没装好，请再点一次「安装」。')
+    expect(error.message).toBe('Claude Desktop 安装失败，请再次点击「安装」。')
     expect(error.detail).toContain('读不出这台 Mac 的系统版本')
     expect(f.requested).toEqual([])
   })
@@ -1007,7 +1045,7 @@ describe('macOS installer for Claude Desktop and the Codex desktop app', () => {
     for (const packageBody of [archiveBytes.subarray(0, 1024), Buffer.concat([archiveBytes, Buffer.from('x')])]) {
       const f = vendorSetup('claudeDesktop', { packageBody })
       const error = await failure(installMacosDesktopApp(f.options))
-      expect(error.message).toBe('Claude Desktop 没下载下来，请检查网络后再点一次「安装」。')
+      expect(error.message).toBe('Claude Desktop 下载失败，请检查网络后再次点击「安装」。')
       expect(f.plans.some((plan) => plan.executable === '/usr/bin/tar')).toBe(false)
       expect(fs.readdirSync(f.applications)).toEqual([])
       expect(stagingLeftovers(f.home)).toEqual([])
@@ -1034,7 +1072,7 @@ describe('macOS installer for Claude Desktop and the Codex desktop app', () => {
     for (const claudeFeedBody of bodies) {
       const f = vendorSetup('claudeDesktop', { claudeFeedBody })
       const error = await failure(installMacosDesktopApp(f.options))
-      expect(error.message).toBe('Claude Desktop 没装好，请再点一次「安装」。')
+      expect(error.message).toBe('Claude Desktop 安装失败，请再次点击「安装」。')
       expect(error.detail).toContain('没有这台 Mac 能用的安装包')
       expect(f.requested).toHaveLength(1)
     }
@@ -1076,7 +1114,7 @@ describe('macOS installer for Claude Desktop and the Codex desktop app', () => {
 
     const tooOld = vendorSetup('codexDesktop', { appcastBody: body }, {}, { systemVersion: '12.7.6' })
     const error = await failure(installMacosDesktopApp(tooOld.options))
-    expect(error.message).toBe('Codex 桌面端需要 macOS 14.0 或更新的系统，这台 Mac 装不了。')
+    expect(error.message).toBe('Codex 桌面端需要 macOS 14.0 或更高版本，本机无法安装。')
     expect(isMacosDesktopSystemTooOld(error.message)).toBe(true)
     expect(tooOld.requested).toEqual([`${chatgptRoot}appcast.xml`])
   })
@@ -1098,7 +1136,7 @@ describe('macOS installer for Claude Desktop and the Codex desktop app', () => {
     for (const appcastBody of bodies) {
       const f = vendorSetup('codexDesktop', { appcastBody })
       const error = await failure(installMacosDesktopApp(f.options))
-      expect(error.message).toBe('Codex 桌面端没装好，请再点一次「安装」。')
+      expect(error.message).toBe('Codex 桌面端安装失败，请再次点击「安装」。')
       expect(error.detail).toContain('没有这台 Mac 能用的安装包')
       expect(f.requested).toEqual([`${chatgptRoot}appcast.xml`])
     }
@@ -1331,6 +1369,228 @@ function bucketSetup(
   return { ...f, routed, fallbacks }
 }
 
+describe('macOS installer for the Antigravity desktop app', () => {
+  const feedFor = (architecture: string) => `${antigravityDesktopFeedOrigin}/manifest/latest-${architecture}-mac.yml`
+
+  it('holds Antigravity to Google\'s feed path and package bucket, redirects included', async () => {
+    const answers = (async () => new Response('x')) as typeof globalThis.fetch
+    for (const architecture of ['arm64', 'x64']) {
+      expect((await fetchMacosDesktopResource('antigravityDesktop', feedFor(architecture), {}, answers)).status).toBe(200)
+      expect((await fetchMacosDesktopResource('antigravityDesktop', antigravityPackageUrl(architecture), {}, answers)).status).toBe(200)
+    }
+    for (const refused of [
+      `${antigravityDesktopFeedOrigin}/manifest/latest-x64-win.yml`,
+      `${antigravityDesktopFeedOrigin}/manifest/latest-mac.yml`,
+      `${antigravityDesktopFeedOrigin}/releases`,
+      `${feedFor('arm64')}?channel=beta`,
+      `${antigravityPackageUrl('arm64')}?alt=media`,
+      'https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.15-5514532022517760/darwin-arm/cli_mac_arm64.tar.gz',
+      'https://storage.googleapis.com/other-bucket/Antigravity.zip',
+      'http://storage.googleapis.com/antigravity-public/antigravity-hub/2.34.0-5887025308631040/darwin-arm/Antigravity.zip',
+      claudePackageUrl(),
+    ]) {
+      await expect(fetchMacosDesktopResource('antigravityDesktop', refused, {}, answers)).rejects.toThrow('不认识的地址')
+    }
+    const elsewhere = (async () => redirect('https://example.com/Antigravity.zip')) as typeof globalThis.fetch
+    await expect(fetchMacosDesktopResource('antigravityDesktop', antigravityPackageUrl('arm64'), {}, elsewhere)).rejects.toThrow('example.com')
+    // Google's hosts count for nobody else.
+    await expect(fetchMacosDesktopResource('claudeDesktop', antigravityPackageUrl('arm64'), {}, answers)).rejects.toThrow('storage.googleapis.com')
+  })
+
+  it.skipIf(process.platform === 'win32')('installs Antigravity from Google\'s Apple silicon feed and checks Google\'s Developer ID', async () => {
+    const f = vendorSetup('antigravityDesktop')
+
+    const installed = await installMacosDesktopApp(f.options)
+
+    expect(installed).toEqual({ version: '2.34.0', path: path.posix.join(f.applications, 'Antigravity.app') })
+    expect(f.requested).toEqual([feedFor('arm64'), antigravityPackageUrl('arm64')])
+    // No system version is needed to pick the package; it is read once, for LSMinimumSystemVersion.
+    expect(f.plans.map((plan) => plan.executable)).toEqual(['/usr/bin/tar', '/usr/bin/plutil', '/usr/bin/sw_vers', '/usr/bin/codesign', '/usr/sbin/spctl'])
+    expect(f.plans[0].argv[0]).toBe('-xf')
+    expect(f.plans[0].argv[1]).toMatch(/\/package\.zip$/)
+    expect(signingRequirement(f.plans)).toContain('identifier "com.google.antigravity"')
+    expect(signingRequirement(f.plans)).toContain('certificate leaf[subject.OU] = "EQHXZ8M8AV"')
+    expect(f.progress[0]).toBe('正在下载 Antigravity 2.34.0')
+    expect(stagingLeftovers(f.home)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('reads the Intel feed on an Intel Mac and the Apple silicon one under Rosetta', async () => {
+    const intel = vendorSetup('antigravityDesktop', {}, { architecture: 'x64' })
+    await installMacosDesktopApp(intel.options)
+    expect(intel.requested).toEqual([feedFor('x64'), antigravityPackageUrl('x64')])
+    expect(intel.plans[0]).toMatchObject({ executable: '/usr/sbin/sysctl', argv: ['-n', 'hw.optional.arm64'] })
+
+    const rosetta = vendorSetup('antigravityDesktop', {}, { architecture: 'x64' }, { hardwareArm64: '1' })
+    await installMacosDesktopApp(rosetta.options)
+    expect(rosetta.requested).toEqual([feedFor('arm64'), antigravityPackageUrl('arm64')])
+  })
+
+  it.skipIf(process.platform === 'win32')('refuses a feed that offers anything but this chip\'s zip of the version it names', async () => {
+    const bodies = [
+      antigravityFeed('arm64', { url: antigravityPackageUrl('x64') }),
+      antigravityFeed('arm64', { version: '2.35.0' }),
+      antigravityFeed('arm64', { url: antigravityPackageUrl('arm64').replace('storage.googleapis.com', 'storage.example.com') }),
+      antigravityFeed('arm64', { url: antigravityPackageUrl('arm64').replace('Antigravity.zip', 'Antigravity.dmg') }),
+      antigravityFeed('arm64', { size: 1024 }),
+      `${antigravityFeed('arm64')}  - url: ${antigravityPackageUrl('arm64')}\n`,
+      'version: 2.34.0\n',
+      '{"version":"2.34.0"}',
+    ]
+    for (const antigravityFeedBody of bodies) {
+      const f = vendorSetup('antigravityDesktop', { antigravityFeedBody })
+      const error = await failure(installMacosDesktopApp(f.options))
+      expect(error.message).toBe('Antigravity 安装失败，请再次点击「安装」。')
+      expect(error.detail).toContain('没有这台 Mac 能用的安装包')
+      expect(f.requested).toEqual([feedFor('arm64')])
+    }
+  })
+
+  it.skipIf(process.platform === 'win32')('deletes a package that is not the size the feed declared before unpacking it', async () => {
+    for (const packageBody of [antigravityArchive.subarray(0, 1024), Buffer.concat([antigravityArchive, Buffer.from('x')])]) {
+      const f = vendorSetup('antigravityDesktop', { packageBody })
+      const error = await failure(installMacosDesktopApp(f.options))
+      expect(error.message).toBe('Antigravity 下载失败，请检查网络后再次点击「安装」。')
+      expect(f.plans.some((plan) => plan.executable === '/usr/bin/tar')).toBe(false)
+      expect(fs.readdirSync(f.applications)).toEqual([])
+      expect(stagingLeftovers(f.home)).toEqual([])
+    }
+  })
+
+  it.skipIf(process.platform === 'win32')('refuses an app that is not Google\'s, whatever the feed said', async () => {
+    const renamed = vendorSetup('antigravityDesktop', {}, {}, { bundleIdentifier: 'com.example.antigravity' })
+    expect((await failure(installMacosDesktopApp(renamed.options))).message).toBe(macosDesktopNotOfficialMessage)
+    const unsigned = vendorSetup('antigravityDesktop', {}, {}, { rejectExecutable: '/usr/bin/codesign' })
+    const error = await failure(installMacosDesktopApp(unsigned.options))
+    expect(error.message).toBe(macosDesktopNotOfficialMessage)
+    expect(error.detail).toContain('EQHXZ8M8AV')
+    for (const f of [renamed, unsigned]) {
+      expect(fs.readdirSync(f.applications)).toEqual([])
+      expect(stagingLeftovers(f.home)).toEqual([])
+    }
+  })
+
+  it('takes the Xingmang bucket package for the chip asked for', () => {
+    expect(macosDesktopBucketPackageId('antigravityDesktop', 'arm64')).toBe('antigravity-macos-arm64')
+    expect(macosDesktopBucketPackageId('antigravityDesktop', 'x64')).toBe('antigravity-macos-x64')
+    expect(macosDesktopAppInstallable('antigravityDesktop', 'arm64')).toBe(true)
+    expect(macosDesktopAppInstallable('antigravityDesktop', 'ia32')).toBe(false)
+  })
+
+  // scripts/sync-antigravity-desktop-cos.cjs writes one index for both Mac chips. The bucket holds 2.35.0 and
+  // Google's feed 2.34.0, so each test can tell which one was installed.
+  const bucketAntigravityVersion = '2.35.0'
+  const bucketAntigravityKey = (architecture: string) =>
+    `xingmang/offline/antigravity-desktop/macos-${architecture}/sha256-${bucketDigest}/Antigravity-darwin-${architecture}.zip`
+  const antigravityIndexUrl = `${desktopPackageBucketOrigin}/xingmang/offline/antigravity-desktop/macos.json`
+
+  function antigravityBucketIndex(checkedAt: string): string {
+    return JSON.stringify({
+      schemaVersion: 1, product: 'antigravity-desktop', family: 'macos', generatedAt: checkedAt, checkedAt,
+      version: bucketAntigravityVersion, build: antigravityBuild,
+      files: ['arm64', 'x64'].map((architecture) => ({
+        platformId: `macos-${architecture}`, platform: 'macos', architecture, kind: 'app-archive', format: 'zip',
+        fileName: `Antigravity-darwin-${architecture}.zip`, type: 'application/zip', verification: 'macos-developer-id-notarized',
+        version: bucketAntigravityVersion, key: bucketAntigravityKey(architecture),
+        url: `${desktopPackageBucketOrigin}/${bucketAntigravityKey(architecture)}`, size: bucketBytes.byteLength, sha256: bucketDigest,
+        sha512: 'ef'.repeat(64), sourceUrl: antigravityPackageUrl(architecture, bucketAntigravityVersion), cosEtag: '"etag"',
+      })),
+    })
+  }
+
+  function antigravityBucketSetup(
+    bucketOptions: { checkedAt?: string, vendorOffline?: boolean, packageBody?: Buffer } = {},
+    extra: Partial<InstallMacosDesktopAppOptions> = {},
+    processes: FakeProcessOptions = {},
+  ) {
+    const f = vendorSetup('antigravityDesktop', {}, extra, processes)
+    const vendorFetch = f.options.fetch
+    const routed: string[] = []
+    const fallbacks: string[] = []
+    const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      if (!url.startsWith(desktopPackageBucketOrigin)) {
+        if (!bucketOptions.vendorOffline) return vendorFetch(input, init)
+        f.requested.push(url)
+        throw new TypeError('fetch failed')
+      }
+      f.requested.push(url)
+      expect(init).toMatchObject({ redirect: 'manual', credentials: 'omit' })
+      if (url === antigravityIndexUrl) {
+        return new Response(antigravityBucketIndex(bucketOptions.checkedAt ?? new Date().toISOString()), { headers: { 'content-type': 'application/json' } })
+      }
+      const body = bucketOptions.packageBody ?? bucketBytes
+      return new Response(body, { headers: { 'content-type': 'application/zip', 'content-length': String(body.byteLength) } })
+    }) as typeof globalThis.fetch
+    f.options = {
+      ...f.options,
+      fetch,
+      bucket: { onFallback: (detail) => fallbacks.push(detail) },
+      withVendorDownloadRoute: async (operation) => {
+        routed.push('start')
+        try { return await operation() } finally { routed.push('end') }
+      },
+    }
+    return { ...f, routed, fallbacks }
+  }
+
+  it.skipIf(process.platform === 'win32')('installs Antigravity from the bucket, outside the download route, after the same Google checks', async () => {
+    const f = antigravityBucketSetup()
+
+    await expect(installMacosDesktopApp(f.options)).resolves.toEqual({ version: bucketAntigravityVersion, path: path.posix.join(f.applications, 'Antigravity.app') })
+
+    expect(f.requested).toEqual([antigravityIndexUrl, `${desktopPackageBucketOrigin}/${bucketAntigravityKey('arm64')}`])
+    expect(f.routed).toEqual([])
+    expect(f.fallbacks).toEqual([])
+    const tar = f.plans.find((plan) => plan.executable === '/usr/bin/tar')
+    expect(tar?.argv[1]).toMatch(/\/bucket\/package\.zip$/)
+    expect(signingRequirement(f.plans)).toContain('identifier "com.google.antigravity"')
+    expect(signingRequirement(f.plans)).toContain('certificate leaf[subject.OU] = "EQHXZ8M8AV"')
+    expect(f.plans.some((plan) => plan.executable === '/usr/sbin/spctl')).toBe(true)
+    // Same words as the Google route: the customer cannot tell which way it came.
+    expect(f.progress[0]).toBe(`正在下载 Antigravity ${bucketAntigravityVersion}`)
+    expect(stagingLeftovers(f.home)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('picks the bucket package by the Mac\'s own chip, so Rosetta still gets the Apple silicon one', async () => {
+    const intel = antigravityBucketSetup({}, { architecture: 'x64' })
+    await installMacosDesktopApp(intel.options)
+    expect(intel.requested).toEqual([antigravityIndexUrl, `${desktopPackageBucketOrigin}/${bucketAntigravityKey('x64')}`])
+
+    const rosetta = antigravityBucketSetup({}, { architecture: 'x64' }, { hardwareArm64: '1' })
+    await installMacosDesktopApp(rosetta.options)
+    expect(rosetta.requested).toEqual([antigravityIndexUrl, `${desktopPackageBucketOrigin}/${bucketAntigravityKey('arm64')}`])
+  })
+
+  it.skipIf(process.platform === 'win32')('asks Google inside the download route when the bucket bytes do not match the index', async () => {
+    const f = antigravityBucketSetup({ packageBody: Buffer.alloc(bucketBytes.byteLength, 1) })
+    await expect(installMacosDesktopApp(f.options)).resolves.toMatchObject({ version: '2.34.0' })
+    expect(f.routed).toEqual(['start', 'end'])
+    expect(f.fallbacks).toEqual(['antigravity-macos-arm64：存储桶的安装包 SHA-256 和清单不一致'])
+    expect(f.requested.slice(2)).toEqual([feedFor('arm64'), antigravityPackageUrl('arm64')])
+    expect(f.plans.filter((plan) => plan.executable === '/usr/bin/tar')).toHaveLength(1)
+    expect(stagingLeftovers(f.home)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('prefers Google over an index the sync has not refreshed for a day, and falls back to that index when Google is out of reach', async () => {
+    const checkedAt = new Date(Date.now() - 48 * 60 * 60_000).toISOString()
+    const reachable = antigravityBucketSetup({ checkedAt })
+    await expect(installMacosDesktopApp(reachable.options)).resolves.toMatchObject({ version: '2.34.0' })
+    expect(reachable.requested).toEqual([antigravityIndexUrl, feedFor('arm64'), antigravityPackageUrl('arm64')])
+    expect(reachable.fallbacks).toEqual([`antigravity-macos-arm64：存储桶清单超过 24 小时没和官方核对过（上次是 ${checkedAt}），桶里的可能不是最新版`])
+
+    const offline = antigravityBucketSetup({ checkedAt, vendorOffline: true })
+    await expect(installMacosDesktopApp(offline.options)).resolves.toMatchObject({ version: bucketAntigravityVersion })
+    expect(offline.requested).toEqual([
+      antigravityIndexUrl,
+      feedFor('arm64'),
+      antigravityIndexUrl,
+      `${desktopPackageBucketOrigin}/${bucketAntigravityKey('arm64')}`,
+    ])
+    expect(fs.readdirSync(offline.applications)).toEqual(['Antigravity.app'])
+    expect(stagingLeftovers(offline.home)).toEqual([])
+  })
+})
+
 describe('macOS installer from the Xingmang bucket', () => {
   it.skipIf(process.platform === 'win32')('installs the Codex desktop app from the bucket, outside the download route, after the same checks', async () => {
     const f = bucketSetup('codexDesktop')
@@ -1342,7 +1602,7 @@ describe('macOS installer from the Xingmang bucket', () => {
     expect(f.plans[1].argv[1]).toMatch(/\/bucket\/package\.zip$/)
     expect(signingRequirement(f.plans)).toContain('certificate leaf[subject.OU] = "2DC432GLL2"')
     expect(f.progress[0]).toBe(`正在下载 Codex 桌面端 ${bucketCodexVersion}`)
-    expect(f.progress).toContain('正在检查下载下来的安装包是不是完整的官方版')
+    expect(f.progress).toContain('正在校验下载的安装包是否为完整的官方版本')
     expect(stagingLeftovers(f.home)).toEqual([])
   })
 

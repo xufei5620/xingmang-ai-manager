@@ -70,7 +70,7 @@ export function AccountProfileDialog({
           <LocalAvatar identity={identity} name={shownName} size={48} />
           <div>
             <strong>头像</strong>
-            <p>只存在这台电脑上，支持 JPG、PNG、WebP，不超过 2 MB，选好后可以裁剪</p>
+            <p>仅保存在本机，支持 JPG、PNG、WebP，不超过 2 MB，选择后可裁剪</p>
           </div>
           <Button size="sm" icon={Pencil} onClick={() => setAvatarOpen(true)} disabled={busy} testId="account-avatar-change">更换头像</Button>
         </div>

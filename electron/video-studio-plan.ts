@@ -36,9 +36,11 @@ export interface VideoStudioPlan {
   shots: VideoStudioPlanShot[]
 }
 
-export const videoStudioPlanUnreadableMessage = '这次 AI 没按格式写出分镜，把想法写具体一点或换个文字模型再试'
+export const videoStudioPlanUnreadableMessage = '本次 AI 未按格式生成分镜，请将想法描述得更具体，或更换文字模型后重试'
 // 配乐那首歌选的时候（主进程存进作品库）和拼的时候（页面解码）读不出来，说同一句（yoyo 2026-11-09 批的字）。
-export const videoStudioMusicUnreadableMessage = '这首歌读不出来，换一首试试（支持 MP3、M4A、WAV、OGG）'
+export const videoStudioMusicUnreadableMessage = '该歌曲无法读取，请更换配乐后重试（支持 MP3、M4A、WAV、OGG）'
+/** 写分镜的回答到了单次输出上限、没写完（D10）。 */
+export const videoStudioPlanTooLongMessage = '分镜内容超出单次生成上限。请减少镜头数量后重试。'
 
 const aspectDescriptions: Readonly<Record<VideoStudioPlanAspect, string>> = {
   '16:9': '横屏 16:9',

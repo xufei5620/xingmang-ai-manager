@@ -336,8 +336,8 @@ describe('acceleration-service', () => {
     const backend = createBackend()
     let suspended = true
     const service = createAccelerationService({ getAccountScope: () => scope, backend, suspended: () => suspended })
-    await expect(service.startAcceleration(scope, 'system-proxy')).rejects.toThrow('网络加速暂时停用了，修好以后会自动恢复。')
-    await expect(service.startAutomaticAcceleration(scope, 'codex-desktop', 'system-proxy')).rejects.toThrow('网络加速暂时停用了')
+    await expect(service.startAcceleration(scope, 'system-proxy')).rejects.toThrow('网络加速已暂时停用，修复后将自动恢复。')
+    await expect(service.startAutomaticAcceleration(scope, 'codex-desktop', 'system-proxy')).rejects.toThrow('网络加速已暂时停用')
     expect(backend.startAcceleration).not.toHaveBeenCalled()
     vi.mocked(backend.getAccelerationState).mockResolvedValue(active())
     await expect(service.getAccelerationState(scope)).resolves.toMatchObject({ phase: 'active' })

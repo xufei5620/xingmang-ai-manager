@@ -14,6 +14,8 @@ const pluginsWorkflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.
 const grokWorkflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'sync-grok-cos.yml'), 'utf8'))
 const openCodeWorkflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'sync-opencode-cos.yml'), 'utf8'))
 const componentsWorkflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'sync-claude-components-cos.yml'), 'utf8'))
+const antigravityCliWorkflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'sync-antigravity-cli-cos.yml'), 'utf8'))
+const antigravityDesktopWorkflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'sync-antigravity-desktop-cos.yml'), 'utf8'))
 
 test('Claude backup packages support official native runners and independent manual platform selection', () => {
   assert.deepEqual(Object.keys(claudeWorkflow.on).sort(), ['schedule', 'workflow_dispatch'])
@@ -140,6 +142,8 @@ test('only a scheduled sync on main reports failures, from a job that can write 
     ['sync-grok-cos.yml', grokWorkflow, ['sync']],
     ['sync-opencode-cos.yml', openCodeWorkflow, ['sync']],
     ['sync-claude-components-cos.yml', componentsWorkflow, ['sync']],
+    ['sync-antigravity-cli-cos.yml', antigravityCliWorkflow, ['sync']],
+    ['sync-antigravity-desktop-cos.yml', antigravityDesktopWorkflow, ['sync']],
   ]) {
     const alert = parsed.jobs.alert
     assert.deepEqual(alert.needs, needs, file)
@@ -259,4 +263,80 @@ test('the Claude component sync compiles the client parser first and keeps the u
     assert.match(step.uses, /^[^@]+@[a-f0-9]{40}$/)
     assert.equal(step.env, undefined)
   }
+})
+
+// agy's Windows binary is checked with Windows' own Authenticode and its Mac archive with codesign
+// and lipo, so the one job runs once on each system. The two runs write different index files
+// (windows.json, macos.json) and checksum-named binaries, so they run side by side; the family
+// comes from the runner's own platform, not from anything a caller can pass.
+test('the Antigravity CLI sync runs once on each system, on a timer or by hand, only on main with the opt-in', () => {
+  const gate = "${{ github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' && vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}"
+  const parsed = antigravityCliWorkflow
+  assert.deepEqual(Object.keys(parsed.on).sort(), ['schedule', 'workflow_dispatch'])
+  assert.deepEqual(parsed.on.schedule, [{ cron: '23 */6 * * *' }])
+  assert.equal(parsed.on.workflow_dispatch, null)
+  assert.deepEqual(parsed.permissions, { contents: 'read' })
+  assert.deepEqual(parsed.concurrency, { group: 'cos-antigravity-cli-publish', 'cancel-in-progress': false })
+  const sync = parsed.jobs.sync
+  assert.equal(sync.if, gate)
+  assert.equal(sync.environment, 'cos-sync')
+  assert.equal(sync['runs-on'], '${{ matrix.runner }}')
+  assert.deepEqual(sync.strategy, { 'fail-fast': false, matrix: { runner: ['windows-latest', 'macos-latest'] } })
+  assert.equal(sync.permissions, undefined)
+  assert.equal(sync.env, undefined)
+  const runs = sync.steps.filter((step) => step.run).map((step) => step.run)
+  assert.deepEqual(runs, ['node scripts/sync-antigravity-cli-cos.cjs'])
+  const steps = sync.steps.filter((step) => Object.keys(step.env || {}).some((key) => key.startsWith('COS_SECRET_') || key === 'GITHUB_TOKEN'))
+  assert.equal(steps.length, 1)
+  assert.equal(steps[0].env.COS_SECRET_ID, '${{ secrets.COS_SECRET_ID }}')
+  assert.equal(steps[0].env.COS_SECRET_KEY, '${{ secrets.COS_SECRET_KEY }}')
+  assert.equal(steps[0].env.GITHUB_TOKEN, undefined)
+  assert.deepEqual(Object.keys(steps[0].env).filter((key) => !key.startsWith('COS_') && !key.startsWith('XINGMANG_COS_')), [])
+  const checkout = sync.steps.find((step) => /actions\/checkout@/.test(step.uses || ''))
+  assert.equal(checkout.with['persist-credentials'], false)
+  for (const step of sync.steps.filter((entry) => entry.uses)) {
+    assert.match(step.uses, /^[^@]+@[a-f0-9]{40}$/)
+    assert.equal(step.env, undefined)
+  }
+  const { FAMILIES, familyForRunner } = require('./sync-antigravity-cli-cos.cjs')
+  assert.deepEqual(['win32', 'darwin'].map(familyForRunner), Object.keys(FAMILIES))
+  assert.throws(() => familyForRunner('linux'))
+})
+
+// Same split for the Antigravity desktop packages: the Windows installer is checked with Windows' own
+// Authenticode and the Mac zip with codesign, spctl and lipo, so the one job runs once on each system. The two runs write different index files
+// (windows.json, macos.json) and checksum-named binaries, so they run side by side; the family
+// comes from the runner's own platform, not from anything a caller can pass.
+test('the Antigravity desktop sync runs once on each system, on a timer or by hand, only on main with the opt-in', () => {
+  const gate = "${{ github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' && vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}"
+  const parsed = antigravityDesktopWorkflow
+  assert.deepEqual(Object.keys(parsed.on).sort(), ['schedule', 'workflow_dispatch'])
+  assert.deepEqual(parsed.on.schedule, [{ cron: '11 */6 * * *' }])
+  assert.equal(parsed.on.workflow_dispatch, null)
+  assert.deepEqual(parsed.permissions, { contents: 'read' })
+  assert.deepEqual(parsed.concurrency, { group: 'cos-antigravity-desktop-publish', 'cancel-in-progress': false })
+  const sync = parsed.jobs.sync
+  assert.equal(sync.if, gate)
+  assert.equal(sync.environment, 'cos-sync')
+  assert.equal(sync['runs-on'], '${{ matrix.runner }}')
+  assert.deepEqual(sync.strategy, { 'fail-fast': false, matrix: { runner: ['windows-latest', 'macos-latest'] } })
+  assert.equal(sync.permissions, undefined)
+  assert.equal(sync.env, undefined)
+  const runs = sync.steps.filter((step) => step.run).map((step) => step.run)
+  assert.deepEqual(runs, ['node scripts/sync-antigravity-desktop-cos.cjs'])
+  const steps = sync.steps.filter((step) => Object.keys(step.env || {}).some((key) => key.startsWith('COS_SECRET_') || key === 'GITHUB_TOKEN'))
+  assert.equal(steps.length, 1)
+  assert.equal(steps[0].env.COS_SECRET_ID, '${{ secrets.COS_SECRET_ID }}')
+  assert.equal(steps[0].env.COS_SECRET_KEY, '${{ secrets.COS_SECRET_KEY }}')
+  assert.equal(steps[0].env.GITHUB_TOKEN, undefined)
+  assert.deepEqual(Object.keys(steps[0].env).filter((key) => !key.startsWith('COS_') && !key.startsWith('XINGMANG_COS_')), [])
+  const checkout = sync.steps.find((step) => /actions\/checkout@/.test(step.uses || ''))
+  assert.equal(checkout.with['persist-credentials'], false)
+  for (const step of sync.steps.filter((entry) => entry.uses)) {
+    assert.match(step.uses, /^[^@]+@[a-f0-9]{40}$/)
+    assert.equal(step.env, undefined)
+  }
+  const { FAMILIES, familyForRunner } = require('./sync-antigravity-desktop-cos.cjs')
+  assert.deepEqual(['win32', 'darwin'].map(familyForRunner), Object.keys(FAMILIES))
+  assert.throws(() => familyForRunner('linux'))
 })

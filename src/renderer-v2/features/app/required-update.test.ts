@@ -41,7 +41,7 @@ describe('requiredUpdateGate', () => {
     expect(requiredUpdateGate(snapshot({ phase: 'downloading', progress: { percent: 41.6, bytesPerSecond: 1, transferred: 1, total: 2 } })))
       .toMatchObject({ action: null, label: '正在下载 42%', percent: 42, progressDetail: '已下载 1 KB / 共 1 KB' })
     expect(requiredUpdateGate(snapshot({ phase: 'downloading', progress: { percent: 50, bytesPerSecond: 1, transferred: 50 * 1024 ** 2, total: 100 * 1024 ** 2, averageBytesPerSecond: 2 * 1024 ** 2, secondsRemaining: 25 } })))
-      .toMatchObject({ progressDetail: '已下载 50 MB / 共 100 MB · 每秒 2 MB · 大约还要 30 秒' })
+      .toMatchObject({ progressDetail: '已下载 50 MB / 共 100 MB · 每秒 2 MB · 预计还需 30 秒' })
     expect(requiredUpdateGate(snapshot({ phase: 'downloaded' }))).toMatchObject({ progressDetail: null })
     expect(requiredUpdateGate(snapshot({ phase: 'downloaded' }))).toMatchObject({ action: 'install', label: '立即更新' })
     expect(requiredUpdateGate(snapshot({ phase: 'downloaded' }), true)).toMatchObject({ action: null, label: '正在重启安装…' })
@@ -57,11 +57,17 @@ describe('requiredUpdateGate', () => {
   })
 
   it('drops the reinstall action when a Mac rejected the update signature', () => {
-    const message = '新版本已经下载好了，但这台 Mac 校验它的时候没通过，自动安装装不上，再点也一样。请点「打开下载页」下载新版本的安装包，装好后打开就行。'
+    const message = '新版本已下载，但未通过本机系统校验，无法自动安装，重试也无法解决。请点击「打开下载页」下载新版本安装包，安装后打开即可。'
     expect(requiredUpdateGate(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_SIGNATURE_REJECTED', message } })))
       .toMatchObject({ action: null, manualReinstall: true, failure: message, failureTitle: '安装更新失败' })
     expect(requiredUpdateGate(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'X', message: '没能启动安装' } })))
       .toMatchObject({ action: 'install', manualReinstall: false })
+  })
+
+  it('drops the reinstall action when a Windows PowerShell refused to run the install handoff', () => {
+    const message = '新版本已下载，但本机的安全设置不允许自动安装，重试也无法解决。请点击「打开下载页」下载新版本安装包，安装后打开即可。'
+    expect(requiredUpdateGate(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_HANDOFF_BLOCKED', message } })))
+      .toMatchObject({ action: null, manualReinstall: true, failure: message, failureTitle: '安装更新失败' })
   })
 
   it('titles and labels a failure exactly like the updates page and the home bubble', () => {
@@ -76,23 +82,23 @@ describe('requiredUpdateGate', () => {
   })
 
   it('does not promise the app keeps working when the startup check times out behind the gate', () => {
-    const gate = requiredUpdateGate(snapshot({ phase: 'error', failedStep: 'check', error: { code: 'STARTUP_UPDATE_TIMEOUT', message: '网络有点慢，这次没来得及查完有没有新版本。星芒会在后台接着查，不影响现在使用。' } }))
+    const gate = requiredUpdateGate(snapshot({ phase: 'error', failedStep: 'check', error: { code: 'STARTUP_UPDATE_TIMEOUT', message: '网络较慢，本次未能完成新版本检查。星芒将在后台继续检查，不影响当前使用。' } }))
     expect(gate).toMatchObject({ action: 'check', label: '重试' })
-    expect(gate?.failure).toContain('点「重试」')
+    expect(gate?.failure).toContain('请点击「重试」')
     expect(gate?.failure).not.toContain('不影响现在使用')
   })
 
   it('falls back to a plain sentence when a failure carries no message', () => {
     const gate = requiredUpdateGate(snapshot({ phase: 'error', failedStep: 'check', error: { code: 'X', message: '' } }))
-    expect(gate?.failure).toContain('找客服')
+    expect(gate?.failure).toContain('联系客服')
     expect(gate?.failure).not.toContain('查看日志')
   })
 
   it('explains a disk shortfall instead of offering a button that silently does nothing', () => {
-    // 主进程量盘不够时不抛错，阶段停在 available：门要带上缺口，按钮换成「再试一次」。
+    // 主进程量盘不够时不抛错，阶段停在 available：门要带上缺口，按钮换成「重试」。
     const diskShortfall = { neededBytes: 1800 * 1024 ** 2, freeBytes: 1200 * 1024 ** 2 }
     expect(requiredUpdateGate(snapshot({ diskShortfall })))
-      .toMatchObject({ action: 'download', label: '空间够了，再试一次', diskShortfall, failure: null })
+      .toMatchObject({ action: 'download', label: '重新检查空间', diskShortfall, failure: null })
     expect(requiredUpdateGate(snapshot())).toMatchObject({ label: '立即更新', diskShortfall: null })
     // 清出空间、开始下载后，缺口随阶段一起清掉，门回到正常的进度条。
     expect(requiredUpdateGate(snapshot({ phase: 'downloading', diskShortfall: null })))

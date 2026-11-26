@@ -6,7 +6,7 @@
       "id": "files",
       "kind": "mcp",
       "name": "本地文件",
-      "summary": "让 AI 直接读写你指定的那个文件夹：打开文件看内容、改文件、新建和整理文件，不用你来回复制粘贴。",
+      "summary": "让 AI 直接读写您指定的文件夹：查看文件内容、修改文件、新建和整理文件，无需来回复制粘贴。",
       "publisher": "MCP 官方",
       "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
       "providers": ["claude", "codex", "grok"],
@@ -20,25 +20,25 @@
         {
           "key": "directory",
           "label": "允许 AI 读写的文件夹",
-          "placeholder": "把这一项换成文件夹的完整路径",
-          "hint": "只填你愿意让 AI 动的那个文件夹。它读不到、也改不了这个文件夹之外的文件。"
+          "placeholder": "请替换为文件夹的完整路径",
+          "hint": "请仅填写允许 AI 访问的文件夹。AI 无法读取或修改该文件夹以外的文件。"
         }
       ],
       "runtime": "node",
       "network": "npm-first-run",
       "requiresAccount": false,
       "risks": ["local-fs-write"],
-      "riskNote": "它能删改你填的这个文件夹里的任何文件，改动不进回收站。建议先填一个具体的项目文件夹，不要填整个 C 盘或整个用户目录。",
+      "riskNote": "可删除或修改所填文件夹中的任何文件，且改动不进入回收站。建议填写具体的项目文件夹，不要填写整个 C 盘或整个用户目录。",
       "pinnedVersion": "2026.8.31",
       "marketplaceCommit": null,
       "verifiedAt": "2026-09-21",
-      "note": "不填文件夹就起不来，所以这一条会先把表单填好，让你补上路径。"
+      "note": "未填写文件夹将无法启动，因此会先预填表单，请补充路径。"
     },
     {
       "id": "browser",
       "kind": "mcp",
       "name": "浏览器",
-      "summary": "让 AI 自己打开网页去看、去点：查资料、翻文档、填表单、核对页面上显示的内容。",
+      "summary": "让 AI 自动打开网页浏览和点击：查资料、翻阅文档、填写表单、核对页面显示的内容。",
       "publisher": "微软（Playwright 团队）",
       "homepage": "https://github.com/microsoft/playwright-mcp",
       "providers": ["claude", "codex", "grok"],
@@ -53,7 +53,7 @@
       "network": "npm-first-run",
       "requiresAccount": false,
       "risks": ["browser"],
-      "riskNote": "AI 会按网页上读到的内容决定下一步，所以别让它去操作网银、后台这类一步就能造成损失的页面。第一次使用时它还要下载一份自带的浏览器，可能要等几分钟。",
+      "riskNote": "AI 会根据网页内容决定下一步操作，请勿让其操作网银、管理后台等一步操作即可能造成损失的页面。首次使用时还需下载自带的浏览器，可能需要等待几分钟。",
       "pinnedVersion": "0.0.82",
       "marketplaceCommit": null,
       "verifiedAt": "2026-09-21",
@@ -63,7 +63,7 @@
       "id": "memory",
       "kind": "mcp",
       "name": "记忆",
-      "summary": "让 AI 把你交代过的事情记在本机的一个文件里，换一次对话也还记得，不用每次重新讲一遍背景。",
+      "summary": "让 AI 将您交代过的事项记录在本机的文件中，更换对话后仍能记住，无需每次重新说明背景。",
       "publisher": "MCP 官方",
       "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
       "providers": ["claude", "codex", "grok"],
@@ -77,25 +77,25 @@
         {
           "key": "directory",
           "label": "记忆文件存放的文件夹",
-          "placeholder": "把这一项换成文件夹的完整路径",
-          "hint": "记下来的内容会存成这个文件夹里的 ai-memory.jsonl，你随时能打开看，也能直接删掉。"
+          "placeholder": "请替换为文件夹的完整路径",
+          "hint": "记录的内容将保存为该文件夹中的 ai-memory.jsonl，您可随时打开查看或直接删除。"
         }
       ],
       "runtime": "node",
       "network": "npm-first-run",
       "requiresAccount": false,
       "risks": ["local-fs-write"],
-      "riskNote": "它只写自己那一个记忆文件，不动别的东西。但记下来的都是明文，别让它记账号密码。",
+      "riskNote": "仅写入自身的记忆文件，不改动其他内容。但记录内容均为明文，请勿让其记录账号密码。",
       "pinnedVersion": "2026.8.31",
       "marketplaceCommit": null,
       "verifiedAt": "2026-09-21",
-      "note": "不指定文件夹的话记忆会存在临时目录里，换个版本就没了，所以这一条会先把表单填好，让你补上路径。"
+      "note": "如不指定文件夹，记忆将存放在临时目录中，更换版本后会丢失，因此会先预填表单，请补充路径。"
     },
     {
       "id": "sequential-thinking",
       "kind": "mcp",
       "name": "逐步思考",
-      "summary": "遇到复杂问题时，让 AI 先一步步把思路拆开、可以回头改，再给结论。排查问题和做方案时更靠得住。",
+      "summary": "遇到复杂问题时，让 AI 先逐步拆解思路、可回头修正，再给出结论。排查问题和制定方案时更加可靠。",
       "publisher": "MCP 官方",
       "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
       "providers": ["claude", "codex", "grok"],
@@ -110,7 +110,7 @@
       "network": "npm-first-run",
       "requiresAccount": false,
       "risks": [],
-      "riskNote": "不碰你的文件，也不联网办事。代价是同一个问题会多绕几步，用掉的额度比平时多。",
+      "riskNote": "不访问您的文件，也不联网执行操作。代价是同一问题需多花几步，消耗的额度高于平时。",
       "pinnedVersion": "2026.8.31",
       "marketplaceCommit": null,
       "verifiedAt": "2026-09-21",
@@ -120,7 +120,7 @@
       "id": "github",
       "kind": "mcp",
       "name": "GitHub",
-      "summary": "让 AI 直接看你 GitHub 上的仓库、问题和合并请求，也能按你的要求在上面提交改动。",
+      "summary": "让 AI 直接查看您 GitHub 上的仓库、问题和合并请求，也可按您的要求在其中提交改动。",
       "publisher": "GitHub 官方",
       "homepage": "https://github.com/github/github-mcp-server",
       "providers": ["claude", "codex", "grok"],
@@ -130,17 +130,17 @@
       "network": "always",
       "requiresAccount": true,
       "risks": ["remote-exec"],
-      "riskNote": "要一个 GitHub 账号，装好之后还得在工具里登录一次授权。授权之后 AI 能改你这个账号有权限的仓库，所以别用公司的管理员账号来授权。",
+      "riskNote": "需要 GitHub 账号，安装后还需在工具中登录授权一次。授权后 AI 可修改该账号有权限的仓库，请勿使用公司的管理员账号授权。",
       "pinnedVersion": null,
       "marketplaceCommit": null,
       "verifiedAt": "2026-09-21",
-      "note": "这一条是 GitHub 自己在线提供的服务，不在你电脑上装东西。"
+      "note": "这是 GitHub 官方在线提供的服务，不在本机安装任何内容。"
     },
     {
       "id": "code-review",
       "kind": "plugin",
       "name": "代码审查",
-      "summary": "让 Claude Code 在你提交之前把这次改动整体过一遍：分几个角度找可能的缺陷、被吞掉的报错、没跟上的测试，再按有多大把握排一遍序，把拿不准的筛掉。",
+      "summary": "让 Claude Code 在您提交前整体审查本次改动：从多个角度查找可能的缺陷、被忽略的报错和未同步的测试，再按把握程度排序，筛除不确定的问题。",
       "publisher": "Anthropic 官方",
       "homepage": "https://github.com/anthropics/claude-plugins-official/tree/main/plugins/code-review",
       "providers": ["claude"],
@@ -150,17 +150,17 @@
       "network": "install-only",
       "requiresAccount": false,
       "risks": ["extra-usage"],
-      "riskNote": "它只看代码、只给意见，不动你的文件。代价是一次审查要跑好几轮，用掉的额度比平时问一句多不少。",
+      "riskNote": "仅审阅代码并给出意见，不修改您的文件。代价是一次审查需运行多轮，消耗的额度明显高于普通提问。",
       "pinnedVersion": null,
       "marketplaceCommit": "c447c3207a425bc4e2a0d068435f64b0477ae981",
       "verifiedAt": "2026-09-21",
-      "note": "装完在 Claude Code 里打一个斜杠，命令列表里就能看到 code-review。"
+      "note": "安装后在 Claude Code 中输入斜杠，即可在命令列表中看到 code-review。"
     },
     {
       "id": "commit-commands",
       "kind": "plugin",
       "name": "提交与合并请求",
-      "summary": "把提交、推送、开合并请求这几步合成一条命令：让 Claude Code 自己看这次改了什么、写好提交说明、推上去，需要的话把合并请求也开出来。",
+      "summary": "将提交、推送、创建合并请求合并为一条命令：由 Claude Code 自行查看本次改动、撰写提交说明并推送，需要时一并创建合并请求。",
       "publisher": "Anthropic 官方",
       "homepage": "https://github.com/anthropics/claude-plugins-official/tree/main/plugins/commit-commands",
       "providers": ["claude"],
@@ -170,17 +170,17 @@
       "network": "install-only",
       "requiresAccount": false,
       "risks": ["git-write"],
-      "riskNote": "它会在你当前这个仓库里执行提交和推送。推出去的改动要你自己到远端撤回，所以别在拿不准的分支上用。每条命令执行前 Claude Code 仍然会问你一次。",
+      "riskNote": "会在当前仓库中执行提交和推送。已推送的改动需您自行在远端撤回，请勿在不确定的分支上使用。每条命令执行前 Claude Code 仍会向您确认。",
       "pinnedVersion": null,
       "marketplaceCommit": "c447c3207a425bc4e2a0d068435f64b0477ae981",
       "verifiedAt": "2026-09-21",
-      "note": "装完在斜杠命令列表里能看到 commit 和 commit-push-pr。"
+      "note": "安装后可在斜杠命令列表中看到 commit 和 commit-push-pr。"
     },
     {
       "id": "feature-dev",
       "kind": "plugin",
       "name": "功能开发流程",
-      "summary": "做一个稍大的功能时，让 Claude Code 先摸清现有代码、再定实现方案、写完自己回头查一遍，而不是一上来就动手改。",
+      "summary": "开发较大的功能时，让 Claude Code 先熟悉现有代码、再确定实现方案、完成后自行复查，而非直接动手修改。",
       "publisher": "Anthropic 官方",
       "homepage": "https://github.com/anthropics/claude-plugins-official/tree/main/plugins/feature-dev",
       "providers": ["claude"],
@@ -190,17 +190,17 @@
       "network": "install-only",
       "requiresAccount": false,
       "risks": ["extra-usage"],
-      "riskNote": "动代码前会先花几轮读代码和定方案，所以更慢、也更费额度；换来的是不容易改到不该改的地方。它不会跳过 Claude Code 本来的那些确认。",
+      "riskNote": "修改代码前会先用几轮阅读代码和确定方案，因此速度较慢、也更耗额度；换来的是更不容易改错地方。不会跳过 Claude Code 原有的各项确认。",
       "pinnedVersion": null,
       "marketplaceCommit": "c447c3207a425bc4e2a0d068435f64b0477ae981",
       "verifiedAt": "2026-09-21",
-      "note": "装完在斜杠命令列表里能看到 feature-dev，后面跟上你想做的功能。"
+      "note": "安装后可在斜杠命令列表中看到 feature-dev，在其后输入您要开发的功能即可。"
     },
     {
       "id": "frontend-design",
       "kind": "plugin",
       "name": "前端界面",
-      "summary": "让 Claude Code 写网页界面时更像做过设计的人：排版、间距、配色和各种状态都照能直接上线的标准来，而不是随手搭一个能跑的样子。",
+      "summary": "让 Claude Code 编写网页界面时更具设计水准：排版、间距、配色和各类状态均按可直接上线的标准实现，而非随意搭建一个能运行的版本。",
       "publisher": "Anthropic 官方",
       "homepage": "https://github.com/anthropics/claude-plugins-official/tree/main/plugins/frontend-design",
       "providers": ["claude"],
@@ -210,17 +210,17 @@
       "network": "install-only",
       "requiresAccount": false,
       "risks": [],
-      "riskNote": "只影响它写界面代码时的取舍，不额外碰别的东西，也不自己联网。",
+      "riskNote": "仅影响其编写界面代码时的取舍，不额外访问其他内容，也不自行联网。",
       "pinnedVersion": null,
       "marketplaceCommit": "c447c3207a425bc4e2a0d068435f64b0477ae981",
       "verifiedAt": "2026-09-21",
-      "note": "装完不用再做什么，下次让它写界面就会用上。"
+      "note": "安装后无需额外操作，下次让它编写界面时即会生效。"
     },
     {
       "id": "claude-md-management",
       "kind": "plugin",
       "name": "项目说明维护",
-      "summary": "帮你维护项目里那份给 AI 看的说明文件（CLAUDE.md）：检查哪里写得不清楚，把这次聊定的约定补进去，下次换个对话它还记得你们的规矩。",
+      "summary": "协助维护项目中供 AI 阅读的说明文件（CLAUDE.md）：检查表述不清之处，补充本次对话确定的约定，使 AI 在新对话中仍能遵循既定规范。",
       "publisher": "Anthropic 官方",
       "homepage": "https://github.com/anthropics/claude-plugins-official/tree/main/plugins/claude-md-management",
       "providers": ["claude"],
@@ -230,11 +230,11 @@
       "network": "install-only",
       "requiresAccount": false,
       "risks": ["local-fs-write"],
-      "riskNote": "它会改你项目里的 CLAUDE.md。改之前建议先把这个文件提交进 Git，不满意就能一条命令退回去。",
+      "riskNote": "会修改项目中的 CLAUDE.md。修改前建议先将该文件提交到 Git，如不满意可通过一条命令恢复。",
       "pinnedVersion": "1.0.0",
       "marketplaceCommit": "c447c3207a425bc4e2a0d068435f64b0477ae981",
       "verifiedAt": "2026-09-21",
-      "note": "装完在斜杠命令列表里能看到 revise-claude-md。"
+      "note": "安装后可在斜杠命令列表中看到 revise-claude-md。"
     }
   ]
 }

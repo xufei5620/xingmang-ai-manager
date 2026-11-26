@@ -231,7 +231,7 @@ async function resolveStable(dependencies, attemptFailed) {
   let lastError
   for (const url of STABLE_URLS) {
     try {
-      const version = parseVersion(await dependencies.fetchText({ url, allowedHosts: [new URL(url).hostname], maxBytes: MAX_STABLE_BYTES, headers: { accept: 'text/plain', 'user-agent': 'xingmang-grok-cos-sync/1' } }))
+      const version = parseVersion(await dependencies.fetchText({ url, allowedHosts: [new URL(url).hostname], maxBytes: MAX_STABLE_BYTES, headers: { accept: 'text/plain', 'user-agent': 'offline-package-sync/1' } }))
       if (!version) throw checkFailure('version-invalid', 'xAI 返回的 Grok stable 版本格式无效')
       return { version, url }
     } catch (error) {
@@ -246,7 +246,7 @@ async function downloadOfficial(dependencies, version, platformId, filePath, onP
   let lastError
   for (const url of sourceUrls(version, platformId)) {
     try {
-      const result = await dependencies.downloadResource({ url, filePath, allowedHosts: [new URL(url).hostname], maxBytes: MAX_BINARY_BYTES, headers: { accept: 'application/octet-stream', 'user-agent': 'xingmang-grok-cos-sync/1' }, onProgress })
+      const result = await dependencies.downloadResource({ url, filePath, allowedHosts: [new URL(url).hostname], maxBytes: MAX_BINARY_BYTES, headers: { accept: 'application/octet-stream', 'user-agent': 'offline-package-sync/1' }, onProgress })
       if (!result || !Number.isSafeInteger(result.bytes) || result.bytes < MIN_BINARY_BYTES || result.bytes > MAX_BINARY_BYTES || !SHA256_PATTERN.test(result.sha256 || '')) throw checkFailure('download-mismatch', 'Grok 安装包大小或摘要无效')
       return { url, bytes: result.bytes, sha256: result.sha256 }
     } catch (error) {

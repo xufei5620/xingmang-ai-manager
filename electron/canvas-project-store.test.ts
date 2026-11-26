@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { CanvasProjectStore, listCanvasProjectAssetDirectories } from './canvas-project-store'
+import { CanvasProjectStore, displayCanvasProjectName, listCanvasProjectAssetDirectories } from './canvas-project-store'
 import { setRelocatedFolderPolicy } from './relocated-folders'
 
 const roots: string[] = []
@@ -160,7 +160,7 @@ describe('CanvasProjectStore', () => {
     const created = await store.create(36, '好好的项目', workspace)
     const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-workspace-relink-elsewhere-'))
     roots.push(elsewhere)
-    await expect(store.relinkWorkspace(36, created.project.id, elsewhere)).rejects.toThrow('项目的工作文件夹还在')
+    await expect(store.relinkWorkspace(36, created.project.id, elsewhere)).rejects.toThrow('项目的工作文件夹仍然存在')
     await expect(store.relinkWorkspace(37, created.project.id, elsewhere)).rejects.toThrow()
     fs.rmSync(workspace, { recursive: true, force: true })
     await store.setArchived(36, created.project.id, true)
@@ -178,7 +178,7 @@ describe('CanvasProjectStore', () => {
     await store.create(36, '另一个项目', other)
     fs.rmSync(workspace, { recursive: true, force: true })
     await expect(store.relinkWorkspace(36, created.project.id, other)).rejects.toThrow('该工作文件夹已绑定项目「另一个项目」')
-    await expect(store.relinkWorkspace(36, created.project.id, empty)).rejects.toThrow('所选文件夹里没有这个项目的素材')
+    await expect(store.relinkWorkspace(36, created.project.id, empty)).rejects.toThrow('所选文件夹中没有此项目的素材')
     expect(fs.readdirSync(empty)).toEqual([])
     await expect(store.relinkWorkspace(36, created.project.id, path.join(empty, 'nowhere'))).rejects.toThrow('工作文件夹不存在')
     await expect(store.list(36)).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ id: created.project.id, workspaceStatus: 'missing' })]))
@@ -293,28 +293,28 @@ describe('CanvasProjectStore', () => {
     expect((await store.list(36)).filter((project) => !project.archivedAt)).toHaveLength(100)
     const other = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-workspace-limit-other-'))
     roots.push(other)
-    await expect(store.create(36, '第一百零一个', other)).rejects.toThrow('画布项目最多 100 个（已归档的不算），请先归档一些不用的项目')
-    await expect(store.createImported(36, '导入的', other, workflow('包'))).rejects.toThrow('已归档的不算')
+    await expect(store.create(36, '第一百零一个', other)).rejects.toThrow('画布项目最多 100 个（不含已归档），请先归档部分不再使用的项目')
+    await expect(store.createImported(36, '导入的', other, workflow('包'))).rejects.toThrow('不含已归档')
     const archived = (await store.list(36)).find((project) => project.archivedAt)!
     await expect(store.setArchived(36, archived.id, false)).rejects.toThrow('请先归档一个再恢复')
 
     await store.setArchived(36, hundredth.project.id, true)
     await expect(store.setArchived(36, archived.id, false)).resolves.not.toHaveProperty('archivedAt')
-    await expect(store.create(36, '第一百零一个', other)).rejects.toThrow('已归档的不算')
+    await expect(store.create(36, '第一百零一个', other)).rejects.toThrow('不含已归档')
   })
 
   it('stops at five hundred projects counting the archived ones', async () => {
     const { root, workspace, store } = createFixture('stored-limit')
     seedProjects(root, 36, 500, true)
     await expect(store.list(36)).resolves.toHaveLength(500)
-    await expect(store.create(36, '新项目', workspace)).rejects.toThrow('画布项目连同已归档的最多 500 个，请先在「已归档」里删掉一些')
+    await expect(store.create(36, '新项目', workspace)).rejects.toThrow('画布项目（含已归档）最多 500 个，请先在「已归档」中删除部分项目')
   })
 
   it('removes only an archived project and only its record', async () => {
     const { workspace, store } = createFixture('remove')
     const created = await store.create(36, '旧海报', workspace)
     fs.writeFileSync(path.join(workspace, 'assets', 'image.png'), 'png')
-    await expect(store.remove(36, created.project.id)).rejects.toThrow('请先归档这个项目再删除')
+    await expect(store.remove(36, created.project.id)).rejects.toThrow('请先归档此项目，再进行删除')
     await store.setArchived(36, created.project.id, true)
     await expect(store.remove(37, created.project.id)).rejects.toThrow()
 
@@ -347,7 +347,7 @@ describe('CanvasProjectStore', () => {
     }), 'utf8')
     const emptyTarget = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-workspace-legacy-target-'))
     roots.push(emptyTarget)
-    await expect(store.duplicate(36, legacyId, '旧项目副本', emptyTarget)).rejects.toThrow('没有独立工作文件夹')
+    await expect(store.duplicate(36, legacyId, '旧项目副本', emptyTarget)).rejects.toThrow('没有独立的工作文件夹')
     expect(fs.readdirSync(emptyTarget)).toEqual([])
   })
 
@@ -426,6 +426,54 @@ describe('CanvasProjectStore on a relocated documents folder', () => {
   })
 })
 
+describe('listLibrarySources', () => {
+  it('lists unarchived projects with where their media live and what their nodes hold, most recently opened first', async () => {
+    const { root, workspace, store } = createFixture('library-sources')
+    const gone = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-workspace-library-gone-'))
+    const shelved = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-workspace-library-shelved-'))
+    roots.push(gone, shelved)
+    const ready = await store.create(36, '有文件夹的', workspace)
+    await store.save(36, ready.project.id, workflow('有文件夹的'))
+    const missing = await store.create(36, '文件夹不在了', gone)
+    fs.rmSync(gone, { recursive: true, force: true })
+    const archived = await store.create(36, '收起来的', shelved)
+    await store.setArchived(36, archived.project.id, true)
+    const legacyId = '11111111-1111-4111-8111-111111111111'
+    fs.writeFileSync(path.join(root, 'user-36', `${legacyId}.json`), JSON.stringify({
+      version: 1, id: legacyId, createdAt: '2026-08-13T00:00:00.000Z', updatedAt: '2026-08-13T00:00:00.000Z',
+      workflow: JSON.parse(workflow('  旧\n项目  ')),
+    }), 'utf8')
+    fs.writeFileSync(path.join(root, 'user-36', `${randomUUID()}.json`), '{ not json')
+
+    const sources = await store.listLibrarySources(36)
+
+    expect(sources.map((source) => source.id).sort()).toEqual([ready.project.id, missing.project.id, legacyId].sort())
+    expect(sources.at(-1)).toEqual({ id: legacyId, name: '旧 项目', workspaceStatus: 'legacy', assetIds: ['A'.repeat(43)] })
+    expect(sources.find((source) => source.id === ready.project.id)).toEqual({ id: ready.project.id, name: '有文件夹的', workspaceStatus: 'ready', assetIds: ['A'.repeat(43)] })
+    expect(sources.find((source) => source.id === missing.project.id)).toEqual({ id: missing.project.id, name: '文件夹不在了', workspaceStatus: 'missing', assetIds: [] })
+    // Nothing of the folder's path leaves the store, and another account lists nothing.
+    expect(JSON.stringify(sources)).not.toContain(path.basename(workspace))
+    await expect(store.listLibrarySources(37)).resolves.toEqual([])
+  })
+
+  it('keeps the order and the result of list unchanged', async () => {
+    const { root, store } = createFixture('library-list-order')
+    seedProjects(root, 36, 5, false)
+    const listed = await store.list(36)
+    expect(listed.map((project) => project.lastOpenedAt)).toEqual([...listed.map((project) => project.lastOpenedAt)].sort().reverse())
+    expect((await store.listLibrarySources(36)).map((source) => source.id)).toEqual(listed.map((project) => project.id))
+  })
+})
+
+describe('displayCanvasProjectName', () => {
+  it('cuts a name the canvas page wrote down to one capped line of text', () => {
+    expect(displayCanvasProjectName('  橘猫\n回家\u0000 ')).toBe('橘猫 回家')
+    expect(displayCanvasProjectName('\n\t')).toBe('未命名项目')
+    expect(displayCanvasProjectName('图'.repeat(200))).toBe('图'.repeat(128))
+    expect(displayCanvasProjectName('<img src=x onerror=alert(1)>')).toBe('<img src=x onerror=alert(1)>')
+  })
+})
+
 describe('listCanvasProjectAssetDirectories', () => {
   it('lists the media folder of every bound project of every account, archived or missing ones included', async () => {
     const { root, workspace, store } = createFixture('asset-folders')
@@ -449,5 +497,76 @@ describe('listCanvasProjectAssetDirectories', () => {
 
   it('has nothing to list before the first project', async () => {
     await expect(listCanvasProjectAssetDirectories(path.join(os.tmpdir(), `xingmang-no-canvas-${randomUUID()}`))).resolves.toEqual([])
+  })
+})
+
+describe('CanvasProjectStore transfer (迁移到新电脑)', () => {
+  const times = { createdAt: '2026-10-01T08:00:00.000Z', updatedAt: '2026-11-20T09:30:00.000Z', lastOpenedAt: '2026-11-21T10:00:00.000Z' }
+
+  it('lists every project with its workflow and folder state, archived ones too, never the folder path', async () => {
+    const { root, workspace, store } = createFixture('transfer-list')
+    const ready = await store.create(36, '主图', workspace)
+    await store.save(36, ready.project.id, workflow('主图'))
+    const shelved = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-workspace-transfer-shelved-'))
+    roots.push(shelved)
+    const archived = await store.create(36, '收起来的', shelved)
+    await store.setArchived(36, archived.project.id, true)
+    seedProjects(root, 36, 1, false)
+
+    const listed = await store.listTransferable(36)
+
+    expect(listed.map((project) => project.workspaceStatus).sort()).toEqual(['legacy', 'ready', 'ready'])
+    expect(listed.find((project) => project.id === ready.project.id)).toMatchObject({ workflow: { name: '主图', nodes: [expect.objectContaining({ id: 'audio' })] } })
+    expect(listed.find((project) => project.id === archived.project.id)).toHaveProperty('archivedAt')
+    expect(JSON.stringify(listed)).not.toContain(path.basename(workspace))
+    await expect(store.listTransferable(41)).resolves.toEqual([])
+  })
+
+  it('registers a migrated project under its own id, times, archived state and the new folder, and never twice', async () => {
+    const { workspace, store } = createFixture('transfer-restore')
+    const id = randomUUID()
+    await expect(store.admitTransferred(36, id, false)).resolves.toBe('ok')
+    await expect(store.restoreTransferred(36, { id, ...times, workflow: workflow('双十一主图') }, workspace)).resolves.toBe('added')
+
+    await expect(store.list(36)).resolves.toEqual([expect.objectContaining({
+      id, name: '双十一主图', ...times, workspaceStatus: 'ready', workspaceName: path.basename(workspace), nodeCount: 1,
+    })])
+    expect(fs.existsSync(path.join(workspace, 'assets'))).toBe(true)
+    await expect(store.admitTransferred(36, id, false)).resolves.toBe('existing')
+    await expect(store.restoreTransferred(36, { id, ...times, workflow: workflow('别的内容') }, workspace)).resolves.toBe('existing')
+    await expect(store.open(36, id)).resolves.toMatchObject({ project: { name: '双十一主图' } })
+
+    // A project that had no folder of its own stays without one; an archived one stays archived.
+    const legacyId = randomUUID()
+    await expect(store.restoreTransferred(36, { id: legacyId, ...times, archivedAt: times.updatedAt, workflow: workflow('老项目') })).resolves.toBe('added')
+    await expect(store.list(36)).resolves.toContainEqual(expect.objectContaining({ id: legacyId, workspaceStatus: 'legacy', archivedAt: times.updatedAt }))
+  })
+
+  it('reports a full account before anything is copied and again when registering', async () => {
+    const { root, workspace, store } = createFixture('transfer-full')
+    seedProjects(root, 36, 100, false)
+    const id = randomUUID()
+    await expect(store.admitTransferred(36, id, false)).resolves.toBe('full')
+    await expect(store.restoreTransferred(36, { id, ...times, workflow: workflow('放不下') }, workspace)).resolves.toBe('full')
+    // An archived project does not take one of the hundred, only one of the five hundred.
+    await expect(store.admitTransferred(36, id, true)).resolves.toBe('ok')
+    seedProjects(root, 36, 400, true)
+    await expect(store.admitTransferred(36, id, true)).resolves.toBe('full')
+  })
+
+  it('refuses a workflow, a time or a folder that would not be accepted otherwise, and never replaces an unreadable record', async () => {
+    const { root, workspace, store } = createFixture('transfer-refuse')
+    const id = randomUUID()
+    await expect(store.restoreTransferred(36, { id, ...times, workflow: '{"schemaVersion":2}' }, workspace)).rejects.toThrow('画布项目工作流')
+    await expect(store.restoreTransferred(36, { id, ...times, createdAt: 'yesterday', workflow: workflow('项目') }, workspace)).rejects.toThrow('画布项目时间格式错误')
+    await expect(store.restoreTransferred(36, { id: '../escape', ...times, workflow: workflow('项目') }, workspace)).rejects.toThrow('画布项目标识无效')
+    await expect(store.restoreTransferred(36, { id, ...times, workflow: workflow('项目') }, path.join(workspace, 'gone'))).rejects.toThrow('画布项目工作文件夹不存在')
+    const bound = await store.create(36, '已经在用的', workspace)
+    await expect(store.restoreTransferred(36, { id, ...times, workflow: workflow('项目') }, workspace)).rejects.toThrow(`该工作文件夹已绑定项目「${bound.project.name}」`)
+    const brokenId = randomUUID()
+    fs.writeFileSync(path.join(root, 'user-36', `${brokenId}.json`), '{ not json')
+    await expect(store.admitTransferred(36, brokenId, false)).resolves.toBe('existing')
+    await expect(store.restoreTransferred(36, { id: brokenId, ...times, workflow: workflow('项目') })).resolves.toBe('existing')
+    expect(fs.readFileSync(path.join(root, 'user-36', `${brokenId}.json`), 'utf8')).toBe('{ not json')
   })
 })

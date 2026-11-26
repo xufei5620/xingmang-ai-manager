@@ -3,6 +3,7 @@
 import { BrowserWindow, dialog, type OpenDialogOptions } from 'electron'
 import { cliCatalog, isActiveProviderId } from '../../catalog'
 import type { ProviderExtensionsSnapshot } from '../../provider-extensions'
+import { discardSkillArchiveExtractions, extractSkillArchive } from '../../skill-archive'
 import { optionalString, requiredString } from '../parsers/common'
 import { parseMarketplaceInput, parseMcpCopyInput, parseMcpInput, parseProviderExtensionMutation, parseSkillInput } from '../parsers/extensions'
 import type { IpcHandlerContext } from './context'
@@ -29,6 +30,27 @@ export function registerExtensionHandlers(ctx: IpcHandlerContext): void {
   registerTrustedHandler('skills:import', (_event, input: unknown) => (
     options.extensionService.importSkill(parseSkillInput(input))
   ))
+  // 压缩包只从原生选择框来，这条通道不收渲染层给的路径（I5）；解开的位置交回去以后，
+  // 导入照旧走 skills:import / extensions:mutate，那边对来源文件夹的检查再做一遍（I8）。
+  registerTrustedHandler('skills:choose-archive', async (event) => {
+    const baseDirectory = options.skillArchiveDirectory
+    if (!baseDirectory) throw new Error('从压缩包导入暂时不能用，请改用「从文件夹导入」。')
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const dialogOptions: OpenDialogOptions = {
+      title: '选择技能压缩包',
+      properties: ['openFile'],
+      filters: [{ name: 'zip 压缩包', extensions: ['zip'] }],
+    }
+    const result = parentWindow
+      ? await dialog.showOpenDialog(parentWindow, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions)
+    if (result.canceled || !result.filePaths[0]) return null
+    return extractSkillArchive(result.filePaths[0], baseDirectory)
+  })
+  // 导入框关掉时删解开的那份。同样不收渲染层的路径，只删主进程自己定的那个文件夹里星芒起名的几份。
+  registerTrustedHandler('skills:discard-archives', async () => {
+    if (options.skillArchiveDirectory) await discardSkillArchiveExtractions(options.skillArchiveDirectory)
+  })
   registerTrustedHandler('skills:toggle', (_event, skillPath: unknown, enabled: unknown) => {
     if (typeof enabled !== 'boolean') throw new Error('Skill 状态格式错误')
     return options.extensionService.setSkillEnabled(requiredString(skillPath, 'Skill 路径', 32_767), enabled)
@@ -76,10 +98,6 @@ export function registerExtensionHandlers(ctx: IpcHandlerContext): void {
   registerTrustedHandler('extensions:list', async (_event, provider: unknown) => {
     if (!isActiveProviderId(provider)) throw new Error('未知的 AI 工具')
     return recordExtensionWarnings(await options.providerExtensionService.list(provider))
-  })
-  registerTrustedHandler('extensions:list-all', async () => {
-    const snapshots = await options.providerExtensionService.listAll()
-    return snapshots.map(recordExtensionWarnings)
   })
   registerTrustedHandler('extensions:mutate', (_event, input: unknown) => (
     options.providerExtensionService.mutate(parseProviderExtensionMutation(input))

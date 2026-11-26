@@ -117,15 +117,15 @@ export function buildWindowsArmSummary(input: {
   appArch: string
 }): string {
   const node = !input.nodeInstalled
-    ? '这台电脑是 ARM 芯片，装 Node.js 时会自动装 ARM 版，之后装的工具跑起来更快、更省电'
+    ? '本机为 ARM 芯片，安装 Node.js 时将自动安装 ARM 版，此后安装的工具运行更快、更省电'
     : input.nodeMachine === 'arm64'
-      ? '这台电脑是 ARM 芯片，Node.js 已是 ARM 版，用它装的工具也按 ARM 版运行'
+      ? '本机为 ARM 芯片，Node.js 已是 ARM 版，通过其安装的工具也以 ARM 版运行'
       : input.nodeMachine === 'x64' || input.nodeMachine === 'x86'
-        ? '这台电脑是 ARM 芯片，现有的 Node.js 是给普通电脑用的版本，工具能正常用，只是会慢一些、更费电'
-        : '这台电脑是 ARM 芯片'
+        ? '本机为 ARM 芯片，现有的 Node.js 为普通电脑版本，工具可正常使用，但运行稍慢、耗电更多'
+        : '本机为 ARM 芯片'
   const app = input.appArch === 'arm64'
     ? ''
-    : '。星芒本身暂时只有普通电脑版，在这台电脑上靠系统转换运行，打开时会慢一点'
+    : '。星芒目前仅提供普通电脑版，在本机通过系统转换运行，启动时会稍慢'
   return `${node}${app}`
 }
 
@@ -184,7 +184,7 @@ export function buildSystemChecks(context: DiagnosticsContext): CheckDefinition[
       // 工具是哪一版，要看 node.exe 自己，不能看本进程。这一项只做说明，不算故障。
       code: 'WINDOWS_ARM',
       title: '电脑芯片',
-      timeoutOutcome: { state: 'pass', summary: '这台电脑是 ARM 芯片' },
+      timeoutOutcome: { state: 'pass', summary: '本机为 ARM 芯片' },
       run: async (signal: AbortSignal): Promise<CheckOutcome> => {
         const node = await inspectTool('node', signal)
         const nodeMachine = node.installed && node.path
@@ -208,7 +208,7 @@ export function buildSystemChecks(context: DiagnosticsContext): CheckDefinition[
       // 电脑正忙时它没问完，不该让用户以为出了故障。
       timeoutOutcome: {
         state: 'warn',
-        summary: '电脑这会儿比较忙，没来得及确认运行权限。这不影响软件使用，稍后点「重新检测」再看一次',
+        summary: '电脑当前较为繁忙，未能确认运行权限。这不影响软件使用，请稍后点击「重新检测」',
         details: { timedOut: true },
       },
       run: async (signal): Promise<CheckOutcome> => {
@@ -231,7 +231,7 @@ export function buildSystemChecks(context: DiagnosticsContext): CheckDefinition[
           // 这时再说「当前以普通用户权限运行」就和实际行为对不上，客服会被带偏。
           return {
             state: 'warn',
-            summary: `软件这次是以管理员权限打开的，但没能确认细节，已按管理员方式处理，所以安装和打开工具可能会失败。原因：${describeWindowsExecutionProbeFailure(probeFailure.reason)}。请关掉软件，直接双击重新打开（不要选「以管理员身份运行」）；还不行请在「反馈与客服」页导出报告发给客服`,
+            summary: `软件本次以管理员权限打开，但未能确认详细信息，已按管理员方式处理，因此安装和打开工具可能失败。原因：${describeWindowsExecutionProbeFailure(probeFailure.reason)}。请关闭软件后直接双击重新打开（不要选择「以管理员身份运行」）；如仍有问题，请在「反馈与客服」页导出报告并发送给客服`,
             details: { elevated, required: false, ...probeDetails },
           }
         }
@@ -244,7 +244,7 @@ export function buildSystemChecks(context: DiagnosticsContext): CheckDefinition[
           // 已撤掉，原因见 windows-store-availability.ts 开头。
           return {
             state: 'pass',
-            summary: '这台电脑登录的账号本身就带管理员权限，软件每次都是这样打开的，已按平常方式运行，不用处理',
+            summary: '本机登录的账号本身具有管理员权限，软件每次均以此方式打开，已按常规方式运行，无需处理',
             details: { elevated, required: false, alwaysElevated: true },
           }
         }
@@ -266,9 +266,12 @@ export function buildSystemChecks(context: DiagnosticsContext): CheckDefinition[
         }
         const capability = platform === 'win32' ? await inspectElevation(signal) : 'unknown'
         if (capability === 'standard') {
+          // 不叫人「输入管理员账号的密码」：授权窗口里输了别人的密码，两个安装程序都只认本人，
+          // 照样装不成（2225，#1321）。说法跟 windows-elevation.ts 的 windowsStandardAccountAdvice 对齐。
+          // 句末不接「重新检测」：这一页的按钮叫「重新检查」，装好 Node.js 以后这一行也不会变。
           return {
             state: 'warn',
-            summary: '当前以普通用户权限运行。这个 Windows 账号不在管理员组，自动安装 Node.js、Codex 桌面端时会要求输入一个管理员账号的密码；公司或学校的电脑请联系 IT 协助，也可以请 IT 先装好 Node.js LTS 再回来点「重新检测」',
+            summary: '当前以普通用户权限运行。该 Windows 账号不在管理员组，无法完成安装 Node.js、Codex 桌面端时所需的管理员授权。Node.js 可先使用管理员账号登录 Windows 完成安装，安装后本机所有 Windows 账号均可使用；公司或学校的电脑请联系 IT 协助，也可请 IT 预先安装 Node.js LTS 版',
             details: { elevated, required: false, canElevate: false },
           }
         }
@@ -281,12 +284,12 @@ export function buildSystemChecks(context: DiagnosticsContext): CheckDefinition[
     },
     {
       code: 'SYSTEM_POWERSHELL',
-      title: '打开工具用的命令窗口',
+      title: '打开工具使用的命令窗口',
       run: async (signal) => {
         if (platform === 'darwin') {
           return {
             state: 'pass',
-            summary: 'Mac 不需要这一项',
+            summary: 'Mac 无需此项',
             details: { required: false, installed: null, path: null },
           }
         }
@@ -296,8 +299,8 @@ export function buildSystemChecks(context: DiagnosticsContext): CheckDefinition[
           const outcome: CheckOutcome = {
             state: terminal ? 'pass' : 'fail',
             summary: terminal
-              ? `可用，会用「${terminal.label}」打开工具`
-              : '这台电脑上没找到能打开命令窗口的程序（终端），工具没法从星芒打开。打开系统自带的应用商店，搜「终端」装一个，再回来点「重新检测」',
+              ? `可用，将使用「${terminal.label}」打开工具`
+              : '本机未找到可打开命令窗口的程序（终端），无法从星芒打开工具。请打开系统自带的应用商店，搜索「终端」并安装，然后点击「重新检测」',
             details: {
               required: true,
               installed: Boolean(terminal),
@@ -312,7 +315,7 @@ export function buildSystemChecks(context: DiagnosticsContext): CheckDefinition[
           state: status.installed ? 'pass' : 'fail',
           summary: status.installed
             ? '可用'
-            : '这台电脑上找不到打开工具要用的系统命令窗口，工具没法从星芒打开。请在「反馈与客服」页导出报告发给客服',
+            : '本机未找到打开工具所需的系统命令窗口，无法从星芒打开工具。请在「反馈与客服」页导出报告并发送给客服',
           details: {
             required: true,
             installed: status.installed,

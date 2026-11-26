@@ -3,7 +3,7 @@ import path from 'node:path'
 import { sameLocalPathIdentity } from './path-identity'
 
 /**
- * 卸载后没删掉、交给客户手动清理的那几个文件（已知48「帮我清理」）。
+ * 卸载后没删掉、交给客户手动清理的那几个文件（已知48「一键清理」）。
  *
  * The renderer never names a path. The uninstall that produced the manual
  * command records exactly the files that command names, each pinned to the
@@ -319,7 +319,7 @@ async function removeLeftover(
   return removePinnedLeftover(leftover, options, live)
 }
 
-// 客户关掉工具马上点「帮我清理」时，Windows（或正扫着这个文件的杀毒软件）可能还要一小会儿才
+// 客户关掉工具马上点「一键清理」时，Windows（或正扫着这个文件的杀毒软件）可能还要一小会儿才
 // 放开工具刚跑过的那个文件，删除被拒（EBUSY / EPERM），界面就会叫已经关掉的客户「关掉所有窗口
 // 后再点一次」（#1152）。所以 Windows 上被拒的那几个等一下再试，前后约 3 秒；每次试都把上面那几项
 // 核对从头做一遍，不只是重试 unlink。工具真还开着的，只是晚这么一会儿才告诉客户。

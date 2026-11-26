@@ -6,6 +6,7 @@
 // 各类检查共用的那份在 diagnostics-context.ts；这里只 import diagnostics.ts 的类型，免得两个文件互相 require。
 import fs from 'node:fs'
 import path from 'node:path'
+import { mapWithConcurrency } from './async-map'
 import { readBoundedFile, readBoundedUtf8FileSync } from './bounded-file'
 import { activeProviderIds, cliCatalog, isRetiredProviderId, providerConfigDirectoryNames, type ProviderId } from './catalog'
 import type { IgnoredCodexHome, ProviderConfigRoots } from './codex-home'
@@ -247,6 +248,10 @@ const maximumFishConfFiles = 32
 // 手写的启动文件不会有几百 KB（同 macos-shell-profile.ts）；再大就不是该去读的文件了。
 const maximumShellSettingsBytes = 512 * 1024
 
+// 同时最多读几个终端设置文件（读盘用 async-map.ts 限流）。Mac、Linux 上候选有十来个，一个等一个的话，
+// 这一项总是整份检查里最后跑完的。
+const shellSettingsReadConcurrency = 4
+
 interface ShellSettingsSource {
   filePath: string
   format: ShellSettingsFormat
@@ -327,9 +332,27 @@ export function decodeShellSettingsBytes(bytes: Buffer): string {
   return bytes.toString('utf8')
 }
 
+/**
+ * 这个位置上有没有东西，只问一次、不在主线程上等：最后一级是链接也算有（不跟随它），没把握的（没权限之类）
+ * 一律当有，交给 readSafeUtf8File 去拒绝、去报。
+ */
+async function shellSettingsFilePresent(filePath: string): Promise<boolean> {
+  try {
+    await fs.promises.lstat(filePath)
+    return true
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    return code !== 'ENOENT' && code !== 'ENOTDIR'
+  }
+}
+
 /** 没有这个文件返回 null；读不了（链接、多个硬链接、太大）照抛，由调用方记一笔跳过。 */
 async function readShellSettingsText(source: ShellSettingsSource): Promise<string | null> {
   if (source.format !== 'powershell') {
+    // 这些文件一台电脑上多半只有一两个，而 readSafeUtf8File 每读一个都先在主线程上把整条路径逐级同步核一遍
+    // （I8），同一个主目录要核十来遍；Windows 上每一级都慢，检查页的这一项就压着超时线跑完。不在的先排除掉，
+    // 在的（包括是个链接的）照旧整套核过再读，一道检查不少。
+    if (!await shellSettingsFilePresent(source.filePath)) return null
     return readSafeUtf8File(source.filePath, '终端设置文件', maximumShellSettingsBytes)
   }
   try {
@@ -354,8 +377,8 @@ async function readShellSettings(
   names: readonly string[],
   skipped: (file: string, error: unknown) => void,
 ): Promise<ShellSettingsExports[]> {
-  const found: ShellSettingsExports[] = []
-  for (const source of sources) {
+  // 结果照 sources 的次序排（同一个名字在几个文件里都有时，报告里按这个次序列）。
+  const found = await mapWithConcurrency(sources, shellSettingsReadConcurrency, async (source) => {
     const file = pathForDisplay(source.filePath, displayRoots) ?? path.basename(source.filePath)
     let text: string | null
     try {
@@ -363,13 +386,13 @@ async function readShellSettings(
     } catch (error) {
       // dotfiles 仓库常把 ~/.zshrc 做成指向别处的链接。I8 只放行单链接普通文件，这一项只是提醒，不为它放宽。
       skipped(file, error)
-      continue
+      return null
     }
-    if (text === null) continue
+    if (text === null) return null
     const exports = parseShellSettings(text, source.format, names, userHome)
-    if (exports.length) found.push({ file, exports })
-  }
-  return found
+    return exports.length ? { file, exports } : null
+  })
+  return found.filter((settings): settings is ShellSettingsExports => settings !== null)
 }
 
 /**
@@ -446,7 +469,7 @@ function droppedByMacosLauncher(provider: ProviderId, relayProviders: ReadonlySe
 }
 
 /**
- * 检查页「删掉这几项设置」能替用户删的那几个名字：盖过当前账号的地址、密钥、模型。
+ * 检查页「删除这些设置」能替用户删的那几个名字：盖过当前账号的地址、密钥、模型。
  * 指向别的文件夹的那两个（CLAUDE_CONFIG_DIR、CODEX_HOME）不删：它们指着用户自己的
  * 一整份配置，删了等于把他原来的设置、记录换了个地方，这个得他自己决定。
  * 改走云厂商的开关也不删：设它的人多半自己在终端里用 Bedrock、Vertex，从星芒打开时已经不带了
@@ -466,7 +489,7 @@ export function clearableEnvironmentOverrides(
 export const environmentOverrideNames: readonly string[] = ENVIRONMENT_OVERRIDE_VARIABLES.map((variable) => variable.name)
 
 /**
- * Windows 上有能删的，就在结论里挂上「删掉这几项设置」（details.fix，详情抽屉不显示它）。只挂在「待处理」上：
+ * Windows 上有能删的，就在结论里挂上「删除这些设置」（details.fix，详情抽屉不显示它）。只挂在「待处理」上：
  * 那是进程环境里的变量判出来的，按钮删的正是它们；只在终端设置文件里找到的那几条是「需留意」，按钮删不到文件里，
  * 挂上去点了也不会好（深查 Shell差异 SH-5）。
  */
@@ -502,7 +525,7 @@ function environmentOverrideOutcome(
   const labels = matches.map((match) => {
     const note = !match.overriding
       ? '，已指向当前账号'
-      : match.shellFile ? `，在 ${match.shellFile}` : match.breaking ? '，会绕开当前账号' : ''
+      : match.shellFile ? `，在 ${match.shellFile}` : match.breaking ? '，将绕开当前账号' : ''
     return `${match.name}（${cliCatalog[match.provider].name}${note}）`
   })
   const breaking = matches.filter((match) => match.breaking)
@@ -510,12 +533,12 @@ function environmentOverrideOutcome(
     // 都盖不过星芒替当前账号写的配置（见 breaksAccount），客户什么都不用做，所以是「正常」。名字只进导出报告
     // （reportOnlyVariables 在 diagnostic-details.ts 里没有中文名，检查页不上屏）：这一行不用他去找、去删，
     // 一串英文名只会让人以为出了事（yoyo 11-06「体检改」）。
-    if (!matches.length) return { state: 'pass', summary: '没有另外设过工具地址或密钥', details: { count: 0 } }
+    if (!matches.length) return { state: 'pass', summary: '未另行设置工具地址或密钥', details: { count: 0 } }
     return {
       state: 'pass',
       summary: matches.some((match) => match.overriding)
-        ? '电脑里另外设的工具地址或密钥盖不过当前账号的设置，不影响使用'
-        : '电脑里另外设的工具地址也指向当前账号，不影响使用',
+        ? '电脑中另行设置的工具地址或密钥不会覆盖当前账号的设置，不影响使用'
+        : '电脑中另行设置的工具地址同样指向当前账号，不影响使用',
       details: { reportOnlyVariables: labels.join('、') },
     }
   }
@@ -529,7 +552,7 @@ function environmentOverrideOutcome(
       // 这几个变量实测会让 CLI 绕开写入的配置（见 breaksAccount），用户在终端里
       // 跑就连不上当前账号，所以是「待处理」。本程序仍然不替他删。
       state: 'fail',
-      summary: `电脑里另外设了 ${namesOf(reachingTools)}，会让 ${toolsOf(reachingTools)} 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈与客服」页导出报告发给客服`,
+      summary: `电脑中另行设置了 ${namesOf(reachingTools)}，将导致 ${toolsOf(reachingTools)} 不使用当前账号的设置。请删除这些设置后重新打开工具；如不清楚如何删除，请在「反馈与客服」页导出报告并发送给客服`,
       details,
     }
   }
@@ -537,7 +560,7 @@ function environmentOverrideOutcome(
     // Mac 上从星芒打开工具时启动脚本已经去掉了这几个（已知45），只有客户自己开终端直接用工具时才绕开
     // 当前账号，所以是「需留意」，开机提示不数它。
     state: 'warn',
-    summary: `终端设置里另外设了 ${namesOf(breaking)}：从星芒打开的工具不受影响，自己开终端直接用 ${toolsOf(breaking)} 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉`,
+    summary: `终端设置中另行设置了 ${namesOf(breaking)}：从星芒打开的工具不受影响，自行在终端中直接使用 ${toolsOf(breaking)} 时将不使用当前账号的设置。如无需使用，请将这几项从终端设置中删除`,
     details,
   }
 }
@@ -583,16 +606,16 @@ function withIgnoredCodexHome(outcome: CheckOutcome, finding: IgnoredCodexHomeFi
     count: labels.length + 1,
   }
   // 写错的原值可能带着用户名，和其它变量一样只有名字进报告。
-  const ordered = [`CODEX_HOME（${cliCatalog.codex.name}，写得不对，已忽略）`, ...labels]
+  const ordered = [`CODEX_HOME（${cliCatalog.codex.name}，设置有误，已忽略）`, ...labels]
   ordered.forEach((label, index) => {
     details[`variable${index + 1}`] = label
   })
-  const effect = finding.blocking ? '，但在软件外面打开 Codex 会连不上当前账号' : ''
+  const effect = finding.blocking ? '，但在软件外打开 Codex 将无法连接当前账号' : ''
   const others = outcome.state === 'pass' ? '' : `；${outcome.summary}`
   // 连不上当前账号才算「待处理」（开机横幅只数这一档）；软件里打开的 Codex 本来
   // 就不受影响，其余情况只是提醒。其它变量已经判出更重的一档时不往下拉。
   const state = finding.blocking || outcome.state === 'fail' ? 'fail' : 'warn'
-  return { state, summary: `电脑里有一个 Codex 的设置写得不对，软件已经忽略它${effect}${others}`, details }
+  return { state, summary: `电脑中有一项 Codex 设置有误，软件已忽略该设置${effect}${others}`, details }
 }
 
 /**
@@ -605,7 +628,7 @@ function withIgnoredCodexHome(outcome: CheckOutcome, finding: IgnoredCodexHomeFi
  */
 function readClaudeBypass(homeDirectory: string, ownership: ToolConfigOwnership | null): CheckOutcome {
   const configPath = path.join(homeDirectory, '.claude', 'settings.json')
-  if (!fs.existsSync(configPath)) return { state: 'pass', summary: '跑命令前会先问你' }
+  if (!fs.existsSync(configPath)) return { state: 'pass', summary: '执行命令前将先征求您的确认' }
   const parsed = JSON.parse(readBoundedUtf8FileSync(
     configPath,
     MAX_CLAUDE_SETTINGS_BYTES,
@@ -613,17 +636,17 @@ function readClaudeBypass(homeDirectory: string, ownership: ToolConfigOwnership 
   )) as unknown
   const permissions = isRecord(parsed) && isRecord(parsed.permissions) ? parsed.permissions : null
   const bypass = permissions?.defaultMode === 'bypassPermissions'
-  if (!bypass) return { state: 'pass', summary: '跑命令前会先问你', details: { bypass, managed: false } }
+  if (!bypass) return { state: 'pass', summary: '执行命令前将先征求您的确认', details: { bypass, managed: false } }
   if (ownership === 'account') {
     return {
       state: 'pass',
-      summary: '按当前账号的设置，跑命令前不再逐条问你',
+      summary: '按当前账号的设置，执行命令前不再逐条征求确认',
       details: { bypass, managed: true },
     }
   }
   return {
     state: 'warn',
-    summary: '被设成了跑命令前不问你，这个设置不是星芒写的。留意它会直接执行命令',
+    summary: '已被设置为执行命令前不征求确认，该设置并非星芒写入。请注意，它将直接执行命令',
     details: { bypass, managed: false },
   }
 }
@@ -638,7 +661,7 @@ const homeFolderTrustNames: Readonly<Record<HomeFolderTrustProvider, string>> = 
 /**
  * 「个人文件夹里早先留下的设置」（已知36）。#321 以前客户选个人文件夹打开工具时，星芒往
  * 那里放过一份 AGENTS.md、替工具记过「信任整个个人文件夹」，之后不再放也不再记，已经留下
- * 的没有任何地方提一句。说明还是星芒那份、客户没改过的才提，并给「挪开这份说明」；信任只
+ * 的没有任何地方提一句。说明还是星芒那份、客户没改过的才提，并给「停用此说明」；信任只
  * 说一声、不给按钮，同「Claude 跑命令前要不要先问你」那项的口径。两样都有时两段连着说。
  * 「有的工具会连它一起读」「可能不会先问」是推测（只有 Gemini CLI 在不是 git 仓库的项目里
  * 一路往上读到个人文件夹这一点有把握），所以字里留着「有的」「可能」。
@@ -649,23 +672,23 @@ export function homeFolderLeftoversOutcome(input: {
 }): CheckOutcome {
   const parts: string[] = []
   if (input.untouchedInstructions) {
-    parts.push('个人文件夹里有一份星芒早先放的项目说明（AGENTS.md）。在个人文件夹下打开项目时，'
-      + '有的工具会连它一起读、照它办事，比如改代码前先等你确认。不需要的话点「挪开这份说明」。')
+    parts.push('个人文件夹中有一份星芒早期放置的项目说明（AGENTS.md）。在个人文件夹下打开项目时，'
+      + '部分工具会一并读取并遵照执行，例如修改代码前先等待您确认。如不需要，请点击「停用此说明」。')
   }
   if (input.trustedBy.length) {
     const names = input.trustedBy.map((provider) => homeFolderTrustNames[provider]).join('、')
     const pronoun = input.trustedBy.length > 1 ? '它们' : '它'
-    parts.push(`${names} 记着“信任整个个人文件夹”：个人文件夹下的项目，${pronoun}打开时可能不会先问一句信不信得过。`)
+    parts.push(`${names} 记录了“信任整个个人文件夹”：打开个人文件夹下的项目时，${pronoun}可能不会先确认是否信任。`)
   }
   const details: Record<string, boolean | number | string | null> = {
     untouchedInstructions: input.untouchedInstructions,
     trustedBy: input.trustedBy.join(',') || null,
   }
-  // 「挪开这份说明」：改个名留在原处，不删（diagnostic-fixes.ts）。信任那半不给按钮。
+  // 「停用此说明」：改个名留在原处，不删（diagnostic-fixes.ts）。信任那半不给按钮。
   if (input.untouchedInstructions) details.fix = 'set-aside-home-agents-md'
   return parts.length
     ? { state: 'warn', summary: parts.join(''), details }
-    : { state: 'pass', summary: '没有早先留下的项目说明和信任设置', details }
+    : { state: 'pass', summary: '没有早期遗留的项目说明和信任设置', details }
 }
 
 export function buildOverrideChecks(context: DiagnosticsContext): CheckDefinition[] {
@@ -713,7 +736,7 @@ export function buildOverrideChecks(context: DiagnosticsContext): CheckDefinitio
   return [
     {
       code: 'PROVIDER_ENVIRONMENT_OVERRIDE',
-      title: '电脑里另外设过的工具地址或密钥',
+      title: '电脑中另行设置的工具地址或密钥',
       run: async () => {
         const relayProviders = new Set(activeProviderIds.filter((provider) => {
           const inspection = providerInspections.get(provider)
@@ -746,33 +769,33 @@ export function buildOverrideChecks(context: DiagnosticsContext): CheckDefinitio
     },
     {
       code: 'WORKSPACE_CONFIG_OVERRIDE',
-      title: '项目文件夹里的设置',
+      title: '项目文件夹中的设置',
       run: () => workspaceOverrideOutcome(),
     },
     {
       code: 'CODEX_DOTENV',
-      title: 'Codex 文件夹里的额外设置',
+      title: 'Codex 文件夹中的额外设置',
       run: () => {
         const envPath = path.join(codexHome, '.env')
         const exists = fs.existsSync(envPath)
         const details: Record<string, boolean | number | string | null> = { exists, path: pathForDisplay(envPath, displayRoots) }
-        // 有这份文件时给「挪开这份设置」：改个名留在原处，不删（diagnostic-fixes.ts）。
+        // 有这份文件时给「停用此设置」：改个名留在原处，不删（diagnostic-fixes.ts）。
         if (exists) details.fix = 'set-aside-codex-dotenv'
         return {
           state: exists ? 'warn' : 'pass',
-          summary: exists ? 'Codex 文件夹里有一份额外设置，可能盖过当前账号的连接' : 'Codex 文件夹里没有额外设置',
+          summary: exists ? 'Codex 文件夹中有一份额外设置，可能覆盖当前账号的连接' : 'Codex 文件夹中没有额外设置',
           details,
         }
       },
     },
     {
       code: 'CLAUDE_BYPASS_PERMISSIONS',
-      title: 'Claude Code 跑命令前要不要先问你',
+      title: 'Claude Code 执行命令前是否征求确认',
       run: () => readClaudeBypass(userHome, dependencies.readClaudeConfigOwnership?.() ?? null),
     },
     {
       code: 'HOME_FOLDER_LEFTOVERS',
-      title: '个人文件夹里早先留下的设置',
+      title: '个人文件夹中早期遗留的设置',
       run: () => homeFolderLeftoversOutcome({
         untouchedInstructions: hasUntouchedHomeProjectInstructions(userHome),
         // Gemini CLI 下线后星芒不再提它记着的信任：那是客户自己的工具设置，星芒也不再从这里打开它。

@@ -1,6 +1,6 @@
 // 卸载命令行工具（Claude Code、Codex、Grok）的那一段（#1070 第 3 步，从 system-service.ts 的 createSystemService 原样
 // 搬来）：按安装来源定卸法（npm 包、官方安装器装的 Claude Code、Grok 原生程序，Mac 上先核 xAI 签名再删）、卸之前
-// 看工具是不是还开着、卸完核对命令真的没了、记下删不掉的文件供「帮我清理」用。
+// 看工具是不是还开着、卸完核对命令真的没了、记下删不掉的文件供「一键清理」用。
 //
 // 各簇共用的那份在 system-service-context.ts；归首页检测和 Codex 型号名单的几样由 createSystemService 传进来
 // （CliUninstallServiceDependencies）。这里只 import system-service.ts 的类型。
@@ -93,7 +93,7 @@ function buildDarwinGrokCleanupCommand(paths: readonly string[]): string {
  */
 export class DarwinGrokRetainedPathsError extends Error {
   readonly manualCommand: string
-  /** Exactly the paths manualCommand names, for the 「帮我清理」 record. */
+  /** Exactly the paths manualCommand names, for the 「一键清理」 record. */
   readonly retainedPaths: readonly string[]
 
   constructor(message: string, manualCommand: string, retainedPaths: readonly string[]) {
@@ -361,7 +361,7 @@ export function createCliUninstallService(context: ServiceContext, dependencies:
     return buildClaudeRetainedFiles(result, process.platform)
   }
 
-  // 「帮我清理」只删卸载那一刻记下的文件（已知48）：界面只说是哪个工具，路径永远由这里给，
+  // 「一键清理」只删卸载那一刻记下的文件（已知48）：界面只说是哪个工具，路径永远由这里给，
   // 不收界面传来的。下一次卸这个工具时清掉，清干净了也清掉。
   const uninstallLeftovers = new Map<ProviderId, UninstallLeftover[]>()
 
@@ -369,7 +369,7 @@ export function createCliUninstallService(context: ServiceContext, dependencies:
     return {
       platform: process.platform,
       ownerUid: process.platform === 'win32' ? undefined : process.getuid?.(),
-      // Mac 上卸载本来不按路径删改名后的链接，「帮我清理」要删（yoyo 2026-10-06「Mac 也帮我清理」）：
+      // Mac 上卸载本来不按路径删改名后的链接，「一键清理」要删（yoyo 2026-10-06「Mac 也帮我清理」）：
       // 只在别的账户改不了的目录里删，核对和删除之间就只剩客户自己能动它。
       isForeignWritableDirectory: process.platform === 'darwin'
         ? (directory) => isDarwinForeignWritablePath(directory)
@@ -377,7 +377,7 @@ export function createCliUninstallService(context: ServiceContext, dependencies:
     }
   }
 
-  /** 记下这次卸载留下的文件；一个都核对不了就不记，界面也就不给「帮我清理」。 */
+  /** 记下这次卸载留下的文件；一个都核对不了就不记，界面也就不给「一键清理」。 */
   function rememberUninstallLeftovers(provider: ProviderId, filePaths: readonly string[]): boolean {
     const leftovers = captureUninstallLeftovers(filePaths, uninstallLeftoverOptions())
     if (!leftovers.some((leftover) => leftover.kind === 'pinned')) {
@@ -414,7 +414,7 @@ export function createCliUninstallService(context: ServiceContext, dependencies:
     // 和卸载、安装排同一个队：删的是工具目录里的文件，不能和正在装的那一份同时动。
     return installationQueue.enqueue(`cli:clean-leftovers:${provider}`, async () => {
       const leftovers = uninstallLeftovers.get(provider)
-      // 界面只在卸载记下了文件时给「帮我清理」，清干净以后框就关了；走到这里只会是连点。
+      // 界面只在卸载记下了文件时给「一键清理」，清干净以后框就关了；走到这里只会是连点。
       if (!leftovers) return { remaining: 0 }
       const cleanup = await removeUninstallLeftovers(leftovers, {
         ...uninstallLeftoverOptions(),
@@ -479,9 +479,9 @@ export function createCliUninstallService(context: ServiceContext, dependencies:
             // 窗口里的字说中文（已知33）；中间卸载程序自己吐的几行还是英文。
             text: {
               title: `星芒：卸载 ${name}`,
-              running: `正在卸载 ${name}，请稍等，别关这个窗口。`,
-              succeeded: '卸载完成。现在可以关掉这个窗口，回星芒点「重新检测」。',
-              failed: '卸载没有完成（错误代码 {code}）。关掉这个窗口，回星芒点「重新检测」看看；还不行请找客服。',
+              running: `正在卸载 ${name}，请稍候，请勿关闭此窗口。`,
+              succeeded: '卸载完成。现在可以关闭此窗口，返回星芒点击「重新检测」。',
+              failed: '卸载未完成（错误代码 {code}）。请关闭此窗口，返回星芒点击「重新检测」；如仍未卸载，请联系客服。',
             },
             machinePaths: resolveWindowsMachinePaths(),
           })

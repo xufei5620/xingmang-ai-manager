@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import * as TOML from '@iarna/toml'
 import { AppSettingsStore } from './app-settings'
 import { providerBaseUrls, providerIds, type ProviderId } from './catalog'
 import {
@@ -355,7 +356,7 @@ describe('durable tool configuration ownership', () => {
     await service.saveConfig(f.payload, false, undefined, { source: 'account', automatic: false })
     const record = fs.readFileSync(f.ownerFile(), 'utf8')
     const unblock = blockNextWrite(f)
-    await expect(service.saveConfig({ ...f.payload, apiKey: '' }, false)).rejects.toThrow('为了安全，星芒不往链接里写')
+    await expect(service.saveConfig({ ...f.payload, apiKey: '' }, false)).rejects.toThrow('为保障安全，星芒不会写入链接')
     expect(fs.readFileSync(f.ownerFile(), 'utf8')).toBe(record)
     unblock()
     await service.saveConfig({ ...f.payload, apiKey: '' }, false)
@@ -370,7 +371,7 @@ describe('durable tool configuration ownership', () => {
     await service.saveConfig(f.payload, false, undefined, { source: 'account', automatic: false })
     const rotated = { ...f.payload, apiKey: 'sk-account-rotated' }
     const unblock = blockNextWrite(f)
-    await expect(service.saveConfig(rotated, false, undefined, { source: 'account', automatic: true })).rejects.toThrow('为了安全，星芒不往链接里写')
+    await expect(service.saveConfig(rotated, false, undefined, { source: 'account', automatic: true })).rejects.toThrow('为保障安全，星芒不会写入链接')
     unblock()
     await service.saveConfig(rotated, false, undefined, { source: 'account', automatic: true })
     expect(f.current().apiKey).toBe('sk-account-rotated')
@@ -382,7 +383,7 @@ describe('durable tool configuration ownership', () => {
     await service.saveConfig(f.payload, false)
     const record = fs.readFileSync(f.ownerFile(), 'utf8')
     const unblock = blockNextWrite(f)
-    await expect(service.saveConfig({ ...f.payload, apiKey: '' }, false)).rejects.toThrow('为了安全，星芒不往链接里写')
+    await expect(service.saveConfig({ ...f.payload, apiKey: '' }, false)).rejects.toThrow('为保障安全，星芒不会写入链接')
     unblock()
     expect(fs.readFileSync(f.ownerFile(), 'utf8')).toBe(record)
     expect(service.getConfig(false).providers.codex.configurationOwnership).toBe('manual')
@@ -393,7 +394,7 @@ describe('durable tool configuration ownership', () => {
     saveProviderConfig('codex', f.payload.apiKey, f.payload.model, 'merge', f.roots, {}, providerBaseUrls)
     const service = f.makeService()
     const unblock = blockNextWrite(f)
-    await expect(service.saveConfig({ ...f.payload, apiKey: '' }, false)).rejects.toThrow('为了安全，星芒不往链接里写')
+    await expect(service.saveConfig({ ...f.payload, apiKey: '' }, false)).rejects.toThrow('为保障安全，星芒不会写入链接')
     unblock()
     expect(fs.readdirSync(path.join(f.data, 'tool-config-ownership'))).toEqual([])
     expect(service.getConfig(false).providers.codex.configurationOwnership).toBe('unknown')
@@ -531,6 +532,54 @@ describe('durable tool configuration ownership', () => {
     await service.alignRestoredAccountSource('codex')
 
     expect(service.readStoredConfig().officialProviders).toContain('codex')
+  })
+})
+
+// 总单 17（全面检查 I-1）：Mac、Linux 上 Grok 从 npm 装，安装包装完自己写一份只有安装方式的 config.toml。以前它被当成
+// 来源不明，新装的 Grok 不会自动连上当前账号，首页挂着「来源未经确认」的黄条。
+describe('the config Grok\'s own installer leaves behind', () => {
+  const grokPayload = { provider: 'grok' as const, apiKey: 'sk-managed-grok', model: 'fixture-model', mode: 'merge' as const }
+  function seedGrok(f: ReturnType<typeof fixture>, content: string): string {
+    const [configPath] = providerConfigPaths('grok', f.roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, content, 'utf8')
+    return configPath
+  }
+
+  it('connects a freshly installed Grok automatically and keeps the installer lines', async () => {
+    const f = fixture()
+    const configPath = seedGrok(f, '[cli]\ninstaller = "npm"\nnpm_registry = "https://registry.npmmirror.com/"\n')
+    const service = f.makeService()
+    expect(service.getConfig(false).providers.grok.configurationOwnership).toBe('missing')
+
+    await service.saveConfig(grokPayload, false, undefined, { source: 'account', automatic: true })
+
+    expect(inspectProviderConfig('grok', f.roots)).toMatchObject({ apiKey: 'sk-managed-grok', matchesRelay: true })
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).cli).toEqual({
+      installer: 'npm', npm_registry: 'https://registry.npmmirror.com/', auto_update: false,
+    })
+    expect(f.makeService().getConfig(false).providers.grok.configurationOwnership).toBe('account')
+  })
+
+  it.each([
+    ['a line the customer added', '[cli]\ninstaller = "npm"\nauto_update = true\n', false],
+    ['a table the customer added', '[cli]\ninstaller = "npm"\n\n[features]\nvideo_gen = true\n', false],
+    ['a Grok account signed in next to it', '[cli]\ninstaller = "npm"\n', true],
+  ] as const)('still leaves the installer config alone with %s', async (_label, content, signedIn) => {
+    const f = fixture()
+    const configPath = seedGrok(f, content)
+    if (signedIn) {
+      fs.writeFileSync(path.join(path.dirname(configPath), 'auth.json'), JSON.stringify({
+        'https://auth.x.ai::fixture': { key: 'session-secret', auth_mode: 'oidc', email: 'user@example.com' },
+      }), 'utf8')
+    }
+    const service = f.makeService()
+    expect(service.getConfig(false).providers.grok.configurationOwnership).toBe('unknown')
+
+    await expect(service.saveConfig(grokPayload, false, undefined, { source: 'account', automatic: true })).rejects.toThrow('来源未经确认')
+
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(content)
+    expect(f.fetch).not.toHaveBeenCalled()
   })
 })
 

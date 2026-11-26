@@ -42,7 +42,7 @@ export async function requestMacCommandLineToolsInstall(
     const output = error instanceof CommandRunnerError ? `${error.stdout}\n${error.stderr}` : ''
     if (/already installed/i.test(output)) return 'already-installed'
     // xcode-select 交回来的退出码和原话挂在 cause 上，随这次失败进运行日志。
-    throw new Error('没能打开苹果的安装窗口，可以再点一次「安装 Git」；还不行请联系客服', { cause: error })
+    throw new Error('未能打开系统安装窗口，请再次点击「安装 Git」；如仍失败，请联系客服', { cause: error })
   }
 }
 
@@ -145,12 +145,12 @@ export async function waitForMacCommandLineTools(
 
 /** 装完 / 取消 / 等太久，首页各给一句话。 */
 export function macGitInstallOutcomeMessage(outcome: MacGitInstallWaitOutcome): string {
-  if (outcome === 'installed') return 'Git 装好了。'
-  if (outcome === 'cancelled') return '没有装 Git。需要时再点一次「安装 Git」就行。'
+  if (outcome === 'installed') return 'Git 安装完成。'
+  if (outcome === 'cancelled') return '未安装 Git。如有需要，请再次点击「安装 Git」。'
   if (outcome === 'unconfirmed') {
-    return '在苹果的窗口里装完后，点首页右上角的「重新检测」就好；要是点了取消，需要时再点一次「安装 Git」。'
+    return '在系统窗口中完成安装后，请点击首页右上角的「重新检测」；如已取消安装，可在需要时再次点击「安装 Git」。'
   }
-  return '苹果的安装窗口还没装完。装完后点首页右上角的「重新检测」就好。'
+  return '系统安装窗口尚未完成安装。完成后请点击首页右上角的「重新检测」。'
 }
 
 export interface MacGitRuntimeInstallDependencies {
@@ -165,7 +165,7 @@ export interface MacGitRuntimeInstallDependencies {
 
 /** 苹果说「已经装过」，Git 却还是用不了（多半是开发者目录指错了或被删了一半）。 */
 export const macGitAlreadyInstalledButMissingMessage =
-  '这台 Mac 上苹果的开发者工具显示已经装过，但 Git 还是用不了。可以重启电脑后再点一次「安装 Git」；还不行请联系客服'
+  '本机的苹果开发者工具显示已安装，但 Git 仍无法使用。请重启电脑后再次点击「安装 Git」；如仍失败，请联系客服'
 
 export async function installMacGitRuntime(
   dependencies: MacGitRuntimeInstallDependencies,
@@ -184,7 +184,7 @@ export async function installMacGitRuntime(
   })
   const existing = await dependencies.inspectInstalled()
   if (existing) {
-    progress('Git 本来就装好了，不用重复安装', 'complete')
+    progress('Git 已安装，无需重复安装', 'complete')
     return installed(existing.version, 'unchanged')
   }
   // 装了 Xcode 但没点过「同意」时，苹果的安装窗口不会弹（它认为已经装好了），

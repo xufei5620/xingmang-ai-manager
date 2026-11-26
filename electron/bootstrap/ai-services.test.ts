@@ -57,6 +57,7 @@ function create(overrides: Partial<RealmBusinessesOptions> = {}) {
     systemService: { fetchAvailableModels: vi.fn(async () => []) },
     readAccountGroupHints: async () => null,
     readDocumentsDirectory: () => null,
+    canvasProjectsDirectory: () => path.join(root, '星芒画布'),
     runtimeLog: { log: vi.fn(), exception: vi.fn() } as unknown as RuntimeLogStore,
     sessionFetch: vi.fn() as unknown as typeof fetch,
     routedRelayFetch: vi.fn() as unknown as typeof fetch,
@@ -121,6 +122,24 @@ describe('realm businesses', () => {
       expect.objectContaining({ userId: 7, assetId: stored.assetId, reason: '磁盘满了' }))
     await writer.readImageDataUri(7, 'img')
     expect(references.readImageDataUri).toHaveBeenCalledWith(7, 'img')
+  })
+
+  // 融合第 5 步：作品库里列出来的画布作品放在项目自己的文件夹里，对话拿它当附图要读得到。
+  it('lets the chat read back a picture a canvas project keeps in its own folder, for its owner only', async () => {
+    const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+    const { ensureBusiness } = create()
+    const solov = ensureBusiness('solov')
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ai-services-workspace-'))
+    directories.push(workspace)
+    const project = (await solov.canvasProjects.create(7, '项目', workspace)).project
+    const made = await solov.canvasProjectAssets.storeBase64(7, png, { projectId: project.id })
+    const chatImage = await solov.assetStore.storeBase64(7, png)
+    await expect(solov.assetStore.readOwned(7, made.assetId)).rejects.toThrow()
+
+    await expect(solov.chatAttachments.readDataUri(7, made.assetId)).resolves.toBe(png)
+    await expect(solov.chatAttachments.readDataUri(7, chatImage.assetId)).resolves.toBe(png)
+    await expect(solov.chatAttachments.readDataUri(8, made.assetId)).rejects.toThrow()
+    await expect(ensureBusiness('solov-api').chatAttachments.readDataUri(7, made.assetId)).rejects.toThrow()
   })
 
   it('attaches a canvas run listener to every site, including sites built after it subscribed', () => {

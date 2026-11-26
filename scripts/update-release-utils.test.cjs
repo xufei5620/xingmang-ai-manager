@@ -7,6 +7,7 @@ const { createHash } = require('node:crypto')
 const { spawn, spawnSync } = require('node:child_process')
 const { gzipSync } = require('node:zlib')
 const { test } = require('node:test')
+const fc = require('fast-check')
 const YAML = require('yaml')
 const { BUILD_MODE_ENVIRONMENT_NAMES } = require('./run-macos-free-build.cjs')
 const {
@@ -25,6 +26,7 @@ const {
   parseLatestMetadata,
   readRemoteManifest,
   resolveEmptyReleaseOutputDirectory,
+  safeRelativeArtifactPath,
   resolveUpdateUrlForVersion,
   validateLocalLinuxRelease,
   validateLocalRelease,
@@ -213,6 +215,32 @@ test('preserves the raw metadata URL and primary path spelling alongside normali
   assert.equal(metadata.files[0].rawUrl, ` ${fileName} `)
   assert.equal(metadata.rawPrimaryPath, '%58ingMang-AI-Manager-1.2.3-Apple-Silicon-arm64.zip')
   assert.equal(metadata.primaryPath, fileName)
+})
+
+test('refuses control characters in the update base URL before parsing it', () => {
+  for (const raw of [
+    'https://updates.example.test/xingmang\t-manager/',
+    'https://updates.example.test\n/xingmang-manager/',
+    'https://updates.example.test/xingmang-manager/\u007F',
+  ]) {
+    assert.throws(() => normalizeUpdateBaseUrl(raw), { code: 'UPDATE_URL_INVALID' }, JSON.stringify(raw))
+  }
+})
+
+test('refuses artifact paths whose resolved address would leave the update directory', () => {
+  const fileName = 'XingMang-AI-Manager-1.2.3-Setup.exe'
+  const contents = Buffer.from('fixture')
+  for (const url of [
+    `h\tttps://other.example.test/${fileName}`,
+    `.\t./.\t./${fileName}`,
+    `XingMang-AI-Manager-1.2.3\n-Setup.exe`,
+    `${fileName}\u007F`,
+  ]) {
+    assert.throws(() => parseLatestMetadata(fixtureMetadata(url, contents)), {
+      code: 'METADATA_FILE_UNSAFE',
+    }, JSON.stringify(url))
+    assert.throws(() => safeRelativeArtifactPath(url, 'path'), { code: 'METADATA_FILE_UNSAFE' }, JSON.stringify(url))
+  }
 })
 
 test('validates local installer hashes and requires the blockmap', async (t) => {
@@ -412,14 +440,14 @@ test('electron-builder production config requires signing and stays hardened', (
   const copyrightAfter = buildReleaseCopyright(new Date())
   const config = JSON.parse(result.stdout)
   assert.equal(config.package.name, 'xingmang-ai-manager')
-  assert.equal(config.package.author, '绍兴星芒文化传媒有限责任公司')
+  assert.equal(config.package.author, '星芒文化')
   assert.equal(config.package.description, '星芒AI管理工具')
   assert.equal(config.appId, 'com.xingmang.ai.manager')
   assert.equal(config.productName, '星芒AI管理工具')
   // D103: the year is the build's own, so the child may have read the clock on
   // either side of a Beijing new year's midnight.
   assert.ok([copyrightBefore, copyrightAfter].includes(config.copyright), config.copyright)
-  assert.match(config.copyright, /^Copyright © \d{4} 绍兴星芒文化传媒有限责任公司$/)
+  assert.match(config.copyright, /^Copyright © \d{4} 星芒文化$/)
   assert.equal(config.forceCodeSigning, true)
   assert.equal(config.win.requestedExecutionLevel, 'asInvoker')
   // electron-builder 26 起 publisherName 属于 publish 配置；只有它写进
@@ -843,6 +871,56 @@ test('remote feed verification never follows cross-origin or out-of-directory re
   assert.equal(redirectedRequests, 0)
 })
 
+test('remote feed verification sends no request for an artifact address outside the update directory', async (t) => {
+  const fileName = 'XingMang-AI-Manager-1.2.3-Setup.exe'
+  const contents = Buffer.from('signed-installer-fixture')
+  let outsideRequests = 0
+  let metadata = ''
+  const feedRequests = []
+
+  const elsewhere = http.createServer((_request, response) => {
+    outsideRequests += 1
+    response.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': contents.length,
+    }).end(contents)
+  })
+  await new Promise((resolve) => elsewhere.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise((resolve) => elsewhere.close(resolve)))
+  const elsewhereHost = `127.0.0.1:${elsewhere.address().port}`
+
+  const feed = http.createServer((request, response) => {
+    feedRequests.push(request.url)
+    if (request.url === '/feed/latest.yml') {
+      response.writeHead(200, {
+        'Content-Type': 'application/yaml',
+        'Content-Length': Buffer.byteLength(metadata),
+      }).end(metadata)
+      return
+    }
+    if (!request.url?.startsWith('/feed/')) outsideRequests += 1
+    response.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': contents.length,
+    }).end(contents)
+  })
+  await new Promise((resolve) => feed.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise((resolve) => feed.close(resolve)))
+  const baseUrl = `http://127.0.0.1:${feed.address().port}/feed/`
+
+  for (const url of [`h\ttp://${elsewhereHost}/${fileName}`, `.\t./${fileName}`]) {
+    metadata = fixtureMetadata(url, contents)
+    feedRequests.length = 0
+    await assert.rejects(verifyRemoteFeed({
+      baseUrl,
+      allowLocalHttp: true,
+      platform: 'windows',
+    }), { code: 'METADATA_FILE_UNSAFE' }, JSON.stringify(url))
+    assert.deepEqual(feedRequests, ['/feed/latest.yml'])
+  }
+  assert.equal(outsideRequests, 0)
+})
+
 test('remote feed verification rejects oversized metadata before reading its body', async (t) => {
   const server = http.createServer((_request, response) => {
     response.writeHead(200, {
@@ -1262,4 +1340,34 @@ test('the release preflight reads a single manifest, allows a first release and 
     readRemoteManifest({ baseUrl, metadataFile: 'latest-linux-ia32.yml', allowLocalHttp: true }),
     (error) => error.code === 'VERIFY_PLATFORM_INVALID',
   )
+})
+
+test('every artifact path the parser accepts resolves inside the update directory, with random inputs', () => {
+  // Pieces the URL parser treats specially, mixed with ordinary file-name text.
+  const pieces = [
+    'a', 'B', '1', '-', '_', '~', 'exe', 'zip', '.', '..', '/', '//', '\\', ':', '@', '?', '#', '%',
+    '%25', '%2e', '%2E', '%2f', '%5c', '%09', '%00', 'h', 'ttp', 'ttps', 'http:', 'https:', '127.0.0.1',
+    ' ', '\t', '\n', '\r', '\u0000', '\u001F', '\u007F', '\u00A0', '\u3002', '\uFF0E', '\uFF0F', '|',
+  ]
+  const candidate = fc.array(fc.constantFrom(...pieces), { minLength: 1, maxLength: 12 })
+    .map((parts) => parts.join(''))
+  const bases = [
+    'https://updates.example.test/',
+    'https://updates.example.test/xingmang-manager/',
+    'https://updates.example.test/a/b/c/',
+    'http://127.0.0.1:8123/feed/',
+  ]
+  fc.assert(fc.property(candidate, fc.constantFrom(...bases), (raw, base) => {
+    try {
+      safeRelativeArtifactPath(raw)
+    } catch (error) {
+      if (typeof error?.code !== 'string') throw error
+      return
+    }
+    const target = new URL(raw.trim(), base)
+    const root = new URL(base)
+    assert.equal(target.origin, root.origin, `${JSON.stringify(raw)} -> ${target.href}`)
+    assert.ok(target.pathname.startsWith(root.pathname), `${JSON.stringify(raw)} -> ${target.href}`)
+    assert.equal(target.search + target.hash, '', `${JSON.stringify(raw)} -> ${target.href}`)
+  }), { numRuns: 3000 })
 })

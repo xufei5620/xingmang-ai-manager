@@ -59,7 +59,7 @@ describe('canvas default project folder', () => {
     fs.mkdirSync(root, { recursive: true })
     fs.mkdirSync(path.join(root, '海报'))
     for (let index = 2; index <= 100; index += 1) fs.mkdirSync(path.join(root, `海报 (${index})`))
-    expect(() => claimCanvasDefaultProjectFolder(root, '海报')).toThrow('同名的项目太多')
+    expect(() => claimCanvasDefaultProjectFolder(root, '海报')).toThrow('同名项目过多')
   })
 
   it.runIf(process.platform !== 'win32')('refuses a default folder reached through a symbolic link', () => {
@@ -119,12 +119,12 @@ describe('canvas default project folder', () => {
     function systemError(code: string): Error {
       return Object.assign(new Error(`${code}: operation failed, mkdir '/Users/someone/Documents/星芒画布'`), { code })
     }
-    expect(describeCanvasDefaultProjectFolderFailure(systemError('EPERM'))).toBe('没有权限写入')
-    expect(describeCanvasDefaultProjectFolderFailure(systemError('EACCES'))).toBe('没有权限写入')
+    expect(describeCanvasDefaultProjectFolderFailure(systemError('EPERM'))).toBe('没有写入权限')
+    expect(describeCanvasDefaultProjectFolderFailure(systemError('EACCES'))).toBe('没有写入权限')
     expect(describeCanvasDefaultProjectFolderFailure(systemError('ENOSPC'))).toBe('磁盘空间不够')
-    expect(describeCanvasDefaultProjectFolderFailure(systemError('EROFS'))).toBe('磁盘是只读的')
-    expect(describeCanvasDefaultProjectFolderFailure(systemError('ENOTDIR'))).toBe('文件夹建不出来')
+    expect(describeCanvasDefaultProjectFolderFailure(systemError('EROFS'))).toBe('磁盘为只读')
+    expect(describeCanvasDefaultProjectFolderFailure(systemError('ENOTDIR'))).toBe('无法创建文件夹')
     expect(describeCanvasDefaultProjectFolderFailure(new Error('「星芒画布」文件夹必须是普通目录'))).toBe('「星芒画布」文件夹必须是普通目录')
-    expect(describeCanvasDefaultProjectFolderFailure('boom')).toBe('文件夹建不出来')
+    expect(describeCanvasDefaultProjectFolderFailure('boom')).toBe('无法创建文件夹')
   })
 })

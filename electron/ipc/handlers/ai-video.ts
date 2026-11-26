@@ -6,12 +6,14 @@ import { BrowserWindow, dialog, type OpenDialogOptions, type WebContents } from 
 import { assetThumbnailUrl } from '../../asset-thumbnail'
 import { BoundedOperationQueue } from '../../bounded-operation-queue'
 import { CanvasGenerationAdmission } from '../../canvas-generation-admission'
+import { AiAnswerCutOffError } from '../../ai-answer-cut-off'
 import type { AiOperationProgressStage } from '../../ai-operation-progress'
 import type { AiStoredVideoAsset } from '../../ai-video-asset-store'
 import type { AiVideoProgressObserver } from '../../ai-video-service'
 import { ipcEventChannels, type AiVideoClip, type AiVideoProgressEvent, type VideoStudioMusic } from '../../ipc-contract'
 import { videoStudioOffMessage } from '../../remote-features'
-import { buildVideoStudioPlanMessages, parseVideoStudioPlanJson, videoStudioMusicUnreadableMessage } from '../../video-studio-plan'
+import { buildVideoStudioPlanMessages, parseVideoStudioPlanJson, videoStudioMusicUnreadableMessage, videoStudioPlanTooLongMessage } from '../../video-studio-plan'
+import { parseVideoStudioProjectsScope, parseVideoStudioProjectsWrite } from '../../video-studio-project-store'
 import { requiredString } from '../parsers/common'
 import {
   parseAiAudioAssetId,
@@ -34,7 +36,7 @@ const unrecordedFlushDelayMs = 500
 
 // 写进作品库失败（磁盘满、没权限）时音频库那句原话照说；别的（格式不认、太大、读的时候文件变了）对客户来说
 // 都是「这首歌用不了」，换成页面上同一句。
-const musicStorageFailure = '作品没能存进保存位置'
+const musicStorageFailure = '作品未能存入保存位置'
 
 /** 页面上显示的歌名：文件名去掉扩展名，控制字符和连着的空白并成一个空格，太长截断。 */
 export function videoStudioMusicName(filePath: string): string {
@@ -142,6 +144,13 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     if (!options.videoAssets) throw new Error('视频作品库未就绪')
     return options.videoAssets
   }
+  // 这段视频在哪个库里（融合第 5 步）：视频里出的片段、拼的成片都在 AI 作品文件夹；从作品库拿来的片段可能是
+  // 画布项目文件夹里的。只有读（读片段、打开、另存）才这样找，存成片还是只存进 AI 作品文件夹。
+  // 两处都没有时还是问 AI 作品文件夹，报的还是它原来那句话。
+  const videoStoreOf = async (userId: number, assetId: string) => {
+    const global = videoAssets()
+    return options.accountAssets ? (await options.accountAssets.holderOf(userId, 'video', assetId)).videos : global
+  }
   const audioAssets = () => {
     if (!options.audioAssets) throw new Error('音频作品库未就绪')
     return options.audioAssets
@@ -155,7 +164,7 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     await options.remoteFeatures?.assertOn('video-studio', videoStudioOffMessage)
     observeSender(event.sender)
     const key = `${event.sender.id}:${parsed.requestId}`
-    if (plans.has(key)) throw new Error('这份分镜正在写，请等它写完')
+    if (plans.has(key)) throw new Error('该分镜正在生成，请等待完成')
     const controller = new AbortController()
     plans.set(key, controller)
     const { system, user } = buildVideoStudioPlanMessages(parsed)
@@ -177,7 +186,9 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
       }
       return parseVideoStudioPlanJson(await ask(), parsed)
     } catch (error) {
-      if (controller.signal.aborted) throw new Error('已停止写分镜')
+      if (controller.signal.aborted) throw new Error('已停止生成分镜')
+      // 分镜写到一半被截断，再问一次多半照样截断，还多扣一次钱；不重发，直接说清怎么改（D10）。
+      if (error instanceof AiAnswerCutOffError && error.cutOff === 'length') throw new Error(videoStudioPlanTooLongMessage)
       throw error
     } finally {
       if (plans.get(key) === controller) plans.delete(key)
@@ -193,6 +204,10 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     await options.remoteFeatures?.assertOn('video-studio', videoStudioOffMessage)
     observeSender(event.sender)
     flushPageStorage(event.sender)
+    // 这一镜的请求号现在跟着分镜存在主进程的文件里（video-studio:write-projects，页面在发这一单之前先发那一次保存）：
+    // 等它写完再交给服务端，强退、断电以后重开才找得回已经付了钱的这一单（同上面 flushPageStorage 防的那件事）。
+    // 保存自己失败了不拦这一单（idle 不会抛），页面那边另有「存不下这份分镜」的提示。
+    await options.videoStudioProjects?.idle()
     const asset = await generation.run(event.sender.id, () => videoService.generate(
       event.sender.id,
       { ...parsed, expectedUserId },
@@ -227,10 +242,13 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
 
   registerTrustedHandler('video:read-clip', async (event, assetId: unknown) => {
     const id = parseAiVideoAssetId(assetId)
-    const store = videoAssets()
+    videoAssets()
     currentUserId()
     // 排到了再认一次账号：排队时换了号，不能把前一个号的片段读给新号的页面。
-    return transferClip(event.sender, async () => (await store.readOwned(currentUserId(), id)).bytes)
+    return transferClip(event.sender, async () => {
+      const userId = currentUserId()
+      return (await (await videoStoreOf(userId, id)).readOwned(userId, id)).bytes
+    })
   })
 
   registerTrustedHandler('video-studio:store-export', async (event, bytes: unknown) => {
@@ -273,10 +291,23 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     return transferClip(event.sender, async () => (await store.readOwned(currentUserId(), id)).bytes)
   })
 
+  // 视频的分镜一条一个文件（总单 #79）。同聊天记录那两条：不等账号（换账号途中，上一个账号最后那一次保存还要落下去），
+  // 归属由页面带的 scope 定，只经它的哈希当目录名；里面写什么主进程不看，大小和个数在 store 里卡。
+  registerTrustedHandler('video-studio:read-projects', (_event, scope: unknown) => {
+    if (!options.videoStudioProjects) throw new Error('视频草稿存储未就绪')
+    return options.videoStudioProjects.read(parseVideoStudioProjectsScope(scope))
+  })
+  registerTrustedHandler('video-studio:write-projects', (_event, input: unknown) => {
+    if (!options.videoStudioProjects) throw new Error('视频草稿存储未就绪')
+    return options.videoStudioProjects.write(parseVideoStudioProjectsWrite(input))
+  })
+
   // 交给系统按 .mp4 的默认程序打开（Windows 上经资源管理器转交，不从本进程直接起，system-shell.ts）。
   // 路径由作品库按编号找到，只会是这个账号自己作品目录里的 xingmang-<编号>.mp4。
   registerTrustedHandler('video:open', async (_event, assetId: unknown) => {
-    const filePath = await videoAssets().resolveOwnedFilePath(currentUserId(), parseAiVideoAssetId(assetId))
+    const userId = currentUserId()
+    const id = parseAiVideoAssetId(assetId)
+    const filePath = await (await videoStoreOf(userId, id)).resolveOwnedFilePath(userId, id)
     await externalShell.openPath(filePath)
   })
 
@@ -284,7 +315,7 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     const userId = currentUserId()
     const id = parseAiVideoAssetId(assetId)
     const fileName = parseVideoSaveName(suggestedName)
-    const saved = await videoAssets().saveAs(userId, id, () => {
+    const saved = await (await videoStoreOf(userId, id)).saveAs(userId, id, () => {
       if (currentUserId() !== userId) throw new Error('账号已切换，请重新另存')
     }, fileName)
     return { saved }

@@ -84,8 +84,12 @@ describe('updateFailureTone', () => {
 
 describe('updateNeedsManualReinstall', () => {
   // 主进程 updater.test.ts 钉住同一个字面量，两边改一边就会红。
-  it('sends only a Mac signature rejection to the download page', () => {
+  it('sends only a Mac signature rejection and a Windows handoff PowerShell refused to run to the download page', () => {
     expect(updateNeedsManualReinstall(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_SIGNATURE_REJECTED', message: '校验没通过' } }))).toBe(true)
+    expect(updateNeedsManualReinstall(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_HANDOFF_BLOCKED', message: '本机的安全设置不允许自动安装' } }))).toBe(true)
+    // A declined prompt or a handoff that failed some other way can still be retried.
+    expect(updateNeedsManualReinstall(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_INSTALL_CANCELLED', message: '已取消安装' } }))).toBe(false)
+    expect(updateNeedsManualReinstall(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_HANDOFF_FAILED', message: '安装程序未能启动' } }))).toBe(false)
     expect(updateNeedsManualReinstall(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_ERROR', message: '更新程序未能启动' } }))).toBe(false)
     expect(updateNeedsManualReinstall(snapshot())).toBe(false)
     expect(updateNeedsManualReinstall(null)).toBe(false)
@@ -95,23 +99,24 @@ describe('updateNeedsManualReinstall', () => {
 describe('updateOffersDownloadPage', () => {
   // 主进程 updater.test.ts 同样按字面量钉住停住时报的错误代码。
   it('offers the download page for a stalled download and a Mac signature rejection', () => {
-    const stalled = snapshot({ phase: 'error', failedStep: 'download', error: { code: 'UPDATE_DOWNLOAD_STALLED', message: '连接更新服务器超时，请检查网络后再试。' } })
+    const stalled = snapshot({ phase: 'error', failedStep: 'download', error: { code: 'UPDATE_DOWNLOAD_STALLED', message: '连接更新服务器超时，请检查网络后重试。' } })
     expect(updateOffersDownloadPage(stalled)).toBe(true)
     // 停住了照样能「重新下载」：换个网络、过一会儿再点也可能就好了。
     expect(updateNeedsManualReinstall(stalled)).toBe(false)
     expect(updateOffersDownloadPage(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_SIGNATURE_REJECTED', message: '校验没通过' } }))).toBe(true)
+    expect(updateOffersDownloadPage(snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_HANDOFF_BLOCKED', message: '本机的安全设置不允许自动安装' } }))).toBe(true)
   })
 
   it('offers the download page when the update check itself stalls', () => {
     // 主进程 updater.test.ts 钉住检查被看门狗掐断时报的这个代码。
-    const stalled = snapshot({ phase: 'error', failedStep: 'check', error: { code: 'UPDATE_CHECK_STALLED', message: '连接更新服务器超时，请检查网络后再试。' } })
+    const stalled = snapshot({ phase: 'error', failedStep: 'check', error: { code: 'UPDATE_CHECK_STALLED', message: '连接更新服务器超时，请检查网络后重试。' } })
     expect(updateOffersDownloadPage(stalled)).toBe(true)
     expect(updateNeedsManualReinstall(stalled)).toBe(false)
   })
 
   it('keeps other failures to the retry button alone', () => {
     // 同一句「超时」，没经过看门狗的不算停住。
-    expect(updateOffersDownloadPage(snapshot({ phase: 'error', failedStep: 'download', error: { code: 'ETIMEDOUT', message: '连接更新服务器超时，请检查网络后再试。' } }))).toBe(false)
+    expect(updateOffersDownloadPage(snapshot({ phase: 'error', failedStep: 'download', error: { code: 'ETIMEDOUT', message: '连接更新服务器超时，请检查网络后重试。' } }))).toBe(false)
     expect(updateOffersDownloadPage(snapshot({ phase: 'error', failedStep: 'check', error: { code: 'ENOTFOUND', message: '连不上' } }))).toBe(false)
     expect(updateOffersDownloadPage(snapshot())).toBe(false)
     expect(updateOffersDownloadPage(null)).toBe(false)

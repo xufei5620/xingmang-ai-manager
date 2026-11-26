@@ -1,5 +1,5 @@
-// 一键检测里「别的代理软件」这一项：系统设置里开着的代理（客户自己的翻墙软件、加速器、公司代理）有没有挡住星芒。
-// 原来「电脑里的代理设置」那一项顺带说一句系统代理，只看端口开没开，说不出经它到底连不连得上星芒；星芒自己连不上时
+// 一键检测里「其他代理软件」这一项：系统设置里开着的代理（客户自己的翻墙软件、加速器、公司代理）有没有挡住星芒。
+// 原来「电脑中的代理设置」那一项顺带说一句系统代理，只看端口开没开，说不出经它到底连不连得上星芒；星芒自己连不上时
 // 会改走直连（proxy-bypass.ts），可 Codex（命令行和桌面端）、Claude 桌面端照旧跟着系统代理走，客户只看到工具连不上
 // （客户问题归类第 3 类）。这里真的经系统代理连一次星芒，再直接连一次，两边一比就知道是不是它挡的路。
 //
@@ -77,7 +77,7 @@ async function resolveWithin(resolve: (url: string) => Promise<string>, url: str
 
 export async function inspectProxySoftware(url: string, probes: ProxySoftwareProbes, signal: AbortSignal): Promise<ProxySoftwareFinding> {
   if (await probes.accelerationActive().catch(() => false)) return { kind: 'acceleration' }
-  // DIRECT、认不出的写法都按没开代理算，和以前「电脑里的代理设置」那半句一样。
+  // DIRECT、认不出的写法都按没开代理算，和以前「电脑中的代理设置」那半句一样。
   const endpoint = parseChromiumProxyResult(await resolveWithin(probes.resolveProxy, url))
   if (!endpoint) return { kind: 'none' }
   const local = isLoopbackDownloadProxy(endpoint)
@@ -93,9 +93,9 @@ export async function inspectProxySoftware(url: string, probes: ProxySoftwarePro
 }
 
 export const proxySoftwareSummaries = {
-  none: '系统设置里没有开代理，星芒和工具直接联网',
-  acceleration: '系统设置里的代理是星芒自己的加速设的，不是别的软件',
-  timeout: '电脑这会儿比较忙，这一项没来得及查完，稍后点「重新检查」再看一次。',
+  none: '系统设置中未开启代理，星芒和工具直接联网',
+  acceleration: '系统设置中的代理由星芒自身的加速功能设置，并非其他软件',
+  timeout: '电脑当前较为繁忙，此项未能检查完成，请稍后点击「重新检查」。',
 } as const
 
 const affectedTools = 'Codex（命令行和桌面端）、Claude 桌面端'
@@ -109,29 +109,29 @@ export function proxySoftwareOutcome(finding: ProxySoftwareFinding, platform: No
   if (finding.kind === 'none') return { state: 'pass', summary: proxySoftwareSummaries.none, details: { systemProxy: 'none' } }
   if (finding.kind === 'acceleration') return { state: 'pass', summary: proxySoftwareSummaries.acceleration, details: { systemProxy: 'acceleration' } }
   const { kind, port } = finding
-  const where = port === null ? '开着代理（用的是别的机器上的代理）' : `开着别的代理软件（本机 ${port} 端口）`
+  const where = port === null ? '已开启代理（使用其他机器上的代理）' : `已开启其他代理软件（本机 ${port} 端口）`
   const details: Record<string, string | number> = { systemProxy: kind, ...(port === null ? { proxyHost: 'remote' } : { proxyPort: port }) }
   const button = proxySettingsButton(platform)
   const fix: Record<string, string> = button ? { fix: 'open-proxy-settings' } : {}
-  if (kind === 'forwarding') return { state: 'pass', summary: `${where}，星芒经它能连上`, details }
+  if (kind === 'forwarding') return { state: 'pass', summary: `${where}，星芒可通过该代理连接`, details }
   if (kind === 'unreachable') {
-    return { state: 'pass', summary: `${where}。这会儿经它和直接连都连不上星芒，先看上面「星芒 AI 网络」那一行。`, details }
+    return { state: 'pass', summary: `${where}。当前通过该代理或直接连接均无法连接星芒，请先查看上方「星芒 AI 网络」一项。`, details }
   }
   if (kind === 'blocking') {
     return {
       state: 'warn',
-      summary: `${where}，可是经它连不上星芒。星芒自己会自动改成直接连，不用管；${affectedTools}跟着它走，会连不上。`
-        + '用这几个工具时，在代理软件里把星芒设成直连，或者先退出代理软件。',
+      summary: `${where}，但通过该代理无法连接星芒。星芒将自动改为直接连接，无需处理；${affectedTools}会使用该代理，将无法连接。`
+        + '使用这几个工具时，请在代理软件中将星芒设为直连，或先退出代理软件。',
       details: { ...details, ...fix },
     }
   }
   const lead = port === null
-    ? '系统设置里还开着代理（用的是别的机器上的代理），可是它连不上。'
-    : `系统设置里还开着代理（本机 ${port} 端口），可是那个代理软件没在运行。`
+    ? '系统设置中仍开启着代理（使用其他机器上的代理），但该代理无法连接。'
+    : `系统设置中仍开启着代理（本机 ${port} 端口），但该代理软件未在运行。`
   return {
     state: 'warn',
-    summary: `${lead}星芒自己会自动改成直接连；${affectedTools}还会去连它，会连不上。`
-      + `打开那个代理软件，或者${button ? '点「打开系统代理设置」' : '在系统设置里'}把代理关掉。`,
+    summary: `${lead}星芒将自动改为直接连接；${affectedTools}仍会尝试使用该代理，将无法连接。`
+      + `请打开该代理软件，或${button ? '点击「打开系统代理设置」' : '在系统设置中'}关闭代理。`,
     details: { ...details, ...fix },
   }
 }
@@ -143,7 +143,7 @@ export function buildProxySoftwareChecks(context: DiagnosticsContext): CheckDefi
   if (!resolveSystemProxy || !fetchThroughSystemProxy || !fetchDirect) return []
   return [{
     code: 'SYSTEM_PROXY_SOFTWARE',
-    title: '别的代理软件',
+    title: '其他代理软件',
     // 只做说明、不决定软件行为，超时不亮红灯（同「安全证书」）。
     timeoutOutcome: { state: 'pass', summary: proxySoftwareSummaries.timeout, details: { timedOut: true } },
     run: async (signal) => {

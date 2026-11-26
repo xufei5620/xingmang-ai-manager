@@ -49,7 +49,7 @@
 
 ## 写进 CLI 配置的附加项：钩子、状态行、型号
 - `cli-hooks.ts` — 往四家 CLI 配置里写「开始 / 做完 / 出错 / 等你」钩子的那几行：Claude Code 用不经 shell 的 exec 形式，Gemini、Grok 只收整条 shell 命令、要按平台加引号，Codex 用 notify 数组；路径里有引号、`$`、反引号、`%` 或换行就干脆不写，绝不把安装路径交给 shell 展开（I1 的同类）。认得出、收得回本软件写的那几行
-- `cli-hook-events.ts` — 读钩子脚本丢进数据目录的小文件，决定弹不弹「终端里没回上 / 做完了 / 在等你」的系统通知；那个目录用户可写，文件一律当敌意输入：固定文件名格式、单链接有界读取（I8）、字段白名单重建（I5），文件里的字一个都不进通知
+- `cli-hook-events.ts` — 读钩子脚本丢进数据目录的小文件，决定弹不弹「未能回复 / 已完成 / 等待确认」的系统通知；那个目录用户可写，文件一律当敌意输入：固定文件名格式、单链接有界读取（I8）、字段白名单重建（I5），文件里的字一个都不进通知
 - `cli-keep-awake.ts` — 终端里 Claude Code / Gemini / Grok 正在跑一轮时挡住系统自动睡眠，做完、出错、退出就放开，最多挡两小时；信号就是上面那套钩子记录。Codex 用它自己的防睡开关，不走这里
 - `claude-status-line.ts` — Claude Code 状态行：随包脚本的定位、命令拼装（两段路径都加引号，带 shell 元字符就不写）、「用户自己设过就不动」的判定
 - `editor-claude-login-prompt.ts` — VS Code、Cursor 用户设置里的 `claudeCode.disableLoginPrompt`：写 Claude Code 配置时、开机补设置那一轮顺手补上，编辑器里的 Claude Code 插件就不再先要登录 Anthropic 账号；编辑器没打开过不建，客户写过的不动，设置文件按 JSONC 原样只插这一行，经 `config-files.ts` 同一套两阶段提交写入（I8、I9）
@@ -74,6 +74,7 @@
 - `codex-sessions.ts` — Codex 会话的权威源是 `CODEX_HOME/state_5.sqlite` 的 `threads` 表（只读打开）；认不出的 schema 写操作一律关掉，归档、删除带操作日志与备份
 - `codex-config-toml.ts` — 保存配置以外单改 Codex `config.toml`（和存着的那份星芒配置）的统一入口 `mutateCodexConfigToml`：从读到写整段同步，本进程里谁也插不进来；改前留 `.bak`；能只动几行就只动几行，解析回去对不上才整份重写。扩展页启停插件和技能（卸载、导入技能时清掉它的启停记录，#1093 第 9 条）、星芒画图技能开关、桌面端语言在用（#1068）
 - `codex-extensions.ts` — Codex 专用的 MCP / 插件 / 市场 / Skill 管理（经 Codex 自己的命令行）；DTO 只暴露 env **变量名**不暴露值（I3）
+- `skill-import-snapshot.ts` — 技能导入（Codex、Claude Code、Grok 三家和「从压缩包导入」共用）只复制当初核过的那一份：先记下整棵树，复制照记下的一项项拿、一项项对，落在受管目录的临时文件夹里，核完才改名成技能文件夹；对不上就整次停下，只删临时文件夹，来源只读（审查总表 O17）
 - `codex-plugin-catalog.ts` — 替 Codex 下官方插件目录快照（`$CODEX_HOME/.tmp/plugins`），国内它自己同步不下来；只在快照不存在时写，从不覆盖 Codex 自己的完整快照
 - `codex-plugin-catalog-bucket.ts` — 插件目录先从星芒腾讯云存储桶下（`scripts/sync-codex-plugins-cos.cjs` 定时同步），读不到、对不上、太慢就换回 GitHub
 - `codex-responses-probe.ts` — 检查页的 Codex 协议检查：用当前配置向中转发两次 Responses 请求，确认函数调用真的走得通；要花额度，所以先要用户勾选确认，同时点多次共用同一次，账号或配置中途变了就作废
@@ -88,35 +89,35 @@
 - `codex-desktop-acceleration.ts` — 打开桌面端前悄悄替用户连上加速（桌面端只认系统代理）：不扣免费时长、用完就断、用户自己连的线路一律不碰、不在加速页和托盘上露面，连不上照常打开。不含 Electron 依赖
 - `codex-desktop-state.ts` — 修 `.codex-global-state.json` 里权限选择器那一项：旧版写的是布尔值，新版界面拿到它就把权限选择禁掉；只改这一项，别的状态不动
 - `codex-desktop-install-failure.ts` — 桌面端装不上 / 更新不了时客户看到的那句话（按原因分几类，原话只进日志），外加微软商店链接（外链白名单全等收录，I12）；主进程与渲染层共用，不许引 Node（I6）
-- `codex-desktop-known-issues.ts` — 已知打不开的桌面端版本表：只提示并引到 Codex 命令行版，不给「退回上一版」（商店几小时就换回去）；上游修好、真机核过后删掉那一行。主进程与渲染层共用
+- `codex-desktop-known-issues.ts` — 已知打不开的桌面端版本表：只提示并引到 Codex CLI，不给「退回上一版」（商店几小时就换回去）；上游修好、真机核过后删掉那一行。主进程与渲染层共用
 
-## 手机遥控 Codex（设置 › 工具管理；只认配对过的一个人的私聊，命令要在聊天里点同意）
+## 手机遥控 Codex（侧栏「手机遥控」，0.2.25 前在设置 › 工具管理；只认配对过的一个人的私聊，命令要在聊天里点同意）
 - `codex-remote-channel.ts` — 渠道（飞书、微信）和底座之间的接口：入站消息、出站文字与审批、渠道状态、`RemoteChannelDependencies`（主进程 fetch、凭据读写、日志、版本号），以及给界面的快照类型（带 `revision`，界面只收新的那份）。零依赖，在 `valueImportable` 名单上（I6），渲染层用它的 `remoteChannelIds`
 - `codex-remote-http.ts` — 渠道请求平台开放接口的唯一出口：只许 HTTPS 和渠道给的那几个主机、超时、响应体上限、不跟跳转（I10），报错不带令牌和消息正文；取图用的 `requestRemoteBytes` 是同样四件、交回原样字节
 - `codex-remote-images.ts` — 手机上发来的图暂放 `<userData>/codex-remote/images`（YF-14）：只收开头字节认得的 PNG、JPEG、GIF、WebP，随机文件名、经 safe-local-data 原子写（I8），只删自己存的；关遥控、换人、退出时删，下次打开遥控先清
-- `codex-remote-text.ts` — 发到手机上的每一句话（帮助、配对成功、审批、断开）和脱敏：主目录换成 `~`、密钥和 Codex 自己的 Key 打码（I13）
+- `codex-remote-text.ts` — 发到手机上的每一句话（帮助、配对成功、审批、断开、「对话」列表和换对话的回复）和脱敏：主目录换成 `~`、密钥和 Codex 自己的 Key 打码（I13）
 - `codex-remote-app-server.ts` — 驱动 `codex app-server` 的 JSON-RPC 客户端（stdio，一行一条）：握手、开对话、发一轮、中断，Codex 反过来问的审批交给底座；退出时 stderr 只留尾巴
 - `codex-remote-process.ts` — 起 `codex app-server`：可执行文件由 `resolveCodexCommand` 认过、argv 数组不经 shell（I1）；Windows 上停的时候用 System32 的 `taskkill /T` 连 Codex 跑起来的命令一起停（I14）
-- `codex-remote-store.ts` — 遥控的设置（干活的文件夹：正在用的 `workspaceDirectory` 加电脑上加过的 `workspaceDirectories`，最多 5 个，YF-19；每个渠道绑定的人、上一条审批的编号）和渠道凭据（`safeStorage` 加密，Linux 没有密钥环时只记在内存）；「打开遥控」开关故意不落盘，每次打开星芒都是关的，只有客户自己打开了「打开星芒时自动打开遥控」（`autoStart`，默认关，YF-9）才由 `startOnLaunch` 替他连配对过人的渠道（连不上时原因进快照 `autoStartFailure`、卡片上说，3 分钟后再试一次，YR-7）
-- `codex-remote-service.ts` — **底座**：配对码（10 分钟、错 20 次作废）、只认绑定的那个人的私聊、一次只跑一轮、审批转到手机（10 分钟没回自动拒绝；编号重开星芒也接着数，卡片按钮另带只对这一条有效的随机串，旧卡片点了只回「已失效」）、发回的内容脱敏、闲置到设置里选的时长（4 / 12 小时，缺省不自动关，YF-10）断开、退出时全部收掉；开对话固定 `untrusted` + 工作区可写，不给完全权限，也不带客户自己接的 MCP 服务、插件和 ChatGPT 应用（开对话前用 `config/read` 逐层查出名字逐个停用，电脑上照旧）。Windows 上在星芒里更新、卸载 Codex 之前（安装队列里，`system-service-context.ts` 的 `releaseRemoteCodex`）调它的 `releaseCodex`：遥控那份 Codex 闲着就停掉、等它真退出，正在干活就挡下来。快照带手机最近一条的时间和结果（`lastRequest`，不带原话，YF-13）；电脑卡片上的「停下这一轮」「都拒绝」走 `stopTurnFromComputer` / `declineApprovalsFromComputer`，跟手机上发「停止」、点「拒绝」同一条路，手机上也收得到。长任务中途给进度（YF-15）：渠道有 `sendProgress` / `updateProgress` 的（飞书）发一张原地更新的进度卡，卡上「停止」只认这一轮的随机串；没有的（微信）每 5 分钟发一句，等同意时不发。手机上发来的图（YF-14）核过是绑定的人才去取，认过开头字节存进 `codex-remote-images.ts`，攒着跟下一句话一起作为 `localImage` 交给 Codex，最多 5 张、每张 10 MB
+- `codex-remote-store.ts` — 遥控的设置（干活的文件夹：正在用的 `workspaceDirectory` 加电脑上加过的 `workspaceDirectories`，最多 5 个，YF-19；每个渠道绑定的人、上一条审批的编号、手机上单独选的模型 `model`，读回来只收像型号名的字）和渠道凭据（`safeStorage` 加密，Linux 没有密钥环时只记在内存）；「打开遥控」开关故意不落盘，每次打开星芒都是关的，只有客户自己打开了「打开星芒时自动打开遥控」（`autoStart`，默认关，YF-9）才由 `startOnLaunch` 替他连配对过人的渠道（连不上时原因进快照 `autoStartFailure`、卡片上说，3 分钟后再试一次，YR-7）
+- `codex-remote-service.ts` — **底座**：配对码（10 分钟、错 20 次作废）、只认绑定的那个人的私聊、一次只跑一轮、审批转到手机（10 分钟没回自动拒绝；编号重开星芒也接着数，卡片按钮另带只对这一条有效的随机串，旧卡片点了只回「已失效」）、发回的内容脱敏、闲置到设置里选的时长（4 / 12 小时，缺省不自动关，YF-10）断开、退出时全部收掉；开对话用 `on-request`，权限两档（设置里的 `permission`）：缺省「默认」= 工作区可写、跟电脑上的 Codex 一样，选「只读」才存 `readOnly`，不给完全权限，开着的对话中途换档就在下一句的 `turn/start` 带上 `sandboxPolicy`（`threadPermission` 记着这条对话现在用哪档）；「手机端的对话」（设置里的 `conversation`，只在它的文件夹是正在用的那个时算数，`resolveChosenConversation`）选了电脑上已有的那段时，手机上下一句先 `thread/resume` 接上它，原对话权限超出手机这档就在第一句降下来（`resumedPermissionFits`），遥控的规矩接上时用试验方法 `thread/settings/update` 的 `collaborationMode` 写进去，再 `thread/resume` 一次核 Codex 报回的就是这段（`applyRemoteRules` / `remoteRulesInEffect`），核不上就说这一版不支持、消息不交给 Codex（0.169 起开放，不按版本号挡更新的版本，`codexSupportsResume`；`codex-remote-app-server.ts` 握手时因此开 `experimentalApi`）；电脑页列对话（`listConversations`，遥控关着时临时起一份 Codex 读完就停）、选对话（`chooseConversation`，只认上一次列出来的编号，文件夹由主进程核过才换），手机上发「对话」「对话 N」只列、只换电脑上加过的文件夹里的；手机端使用的模型缺省与电脑端相同，单独选过（设置里的 `model`）就在开对话和每一轮带上，改回跟电脑时用 `config/read` 读出电脑上的型号带回去（`turn/start` 带的型号会一直留在这条对话上，`threadModel` 记着这条对话现在用的哪个），也不带客户自己接的 MCP 服务、插件和 ChatGPT 应用（开对话前用 `config/read` 逐层查出名字逐个停用，电脑上照旧）。Windows 上在星芒里更新、卸载 Codex 之前（安装队列里，`system-service-context.ts` 的 `releaseRemoteCodex`）调它的 `releaseCodex`：遥控那份 Codex 闲着就停掉、等它真退出，正在干活就挡下来。快照带手机最近一条的时间和结果（`lastRequest`，不带原话，YF-13）；电脑卡片上的「停下这一轮」「都拒绝」走 `stopTurnFromComputer` / `declineApprovalsFromComputer`，跟手机上发「停止」、点「拒绝」同一条路，手机上也收得到。长任务中途给进度（YF-15）：渠道有 `sendProgress` / `updateProgress` 的（飞书）发一张原地更新的进度卡，卡上「停止」只认这一轮的随机串；没有的（微信）每 5 分钟发一句，等同意时不发。手机上发来的图（YF-14）核过是绑定的人才去取，认过开头字节存进 `codex-remote-images.ts`，攒着跟下一句话一起作为 `localImage` 交给 Codex，最多 5 张、每张 10 MB；一条消息带的图一张都没收下，同来的字不交给 Codex（M04）；换了工作文件夹（电脑上、手机上「文件夹 N」、接别的文件夹里的对话）跟「新对话」一样清掉攒着的图，上一句也不留给「重试」（`leaveFolderWork`，M06）；「文件夹 N」按手机上次发「文件夹」看到的那份单子取（`folderChoices`，M18）
 - `codex-remote-keep-awake.ts` — 有渠道开着（在连、已连上、连不上正在重试）就挡住系统自动睡眠，全关了、要重新登录了、渠道自己停下不再连了（状态带 `halted`，如飞书在别处连着，YKS-12）、闲置断开了就放开（关屏、合盖照旧）；跟着底座推给界面的快照走，按 `revision` 只认新的那份。Codex 自己的防睡开关只管它跑一轮，两轮之间等手机那段靠这里
 - `codex-remote-channels.ts` — 按渠道建适配器（无 default 的 switch，加渠道漏了是编译错）
 - `codex-remote-feishu.ts` / `codex-remote-feishu-frame.ts` — 飞书渠道：长连接（开放平台的 WebSocket，帧格式照官方 SDK 逐字节对过）收私聊和卡片点击，开放接口发文字、带「同意 / 拒绝」按钮的卡片和进度卡（`PATCH` 消息接口原地更新，YF-15；审批卡处理过以后也原地改成结果、去掉按钮，YK-8）；图片消息和富文本里的图交给底座一个取图句柄，`fetchImage` 从「获取消息中的资源文件」接口取（只去 `open.feishu.cn`，没开权限、太大、别的失败分开报，YF-14）；App ID / App Secret 填错报「要重新登录」，不无限重试
 - `codex-remote-weixin.ts` / `codex-remote-weixin-api.ts` — 微信渠道（实验功能）：腾讯 iLink 长轮询收消息、发文字，写法照 `@tencent-weixin/openclaw-weixin` 2.4.10 核对；只认 https 的 `*.weixin.qq.com`（跳转主机和登录给的地址都过这道），64 位消息编号保精度解析，只交回扫码人的消息、也只往他那里发；收到的图从腾讯图片服务器 `novac2c.cdn.weixin.qq.com` 取、AES-128-ECB 解开（只认这一个 origin，YF-14，yoyo 2026-11-11 亲手打字「微信图片网址加」）；登录过期（-14、401/403）报「要重新登录」不再重试
 - `codex-remote-weixin-login.ts` / `codex-remote-weixin-credential.ts` / `codex-remote-weixin-login-state.ts` — 微信扫码登录：二维码在主进程画成图（登录链接不出主进程），5 分钟一张、最多换 3 张、整体 8 分钟；手机上要输数字时停下来等；取二维码时请微信每次都要这串数字（`bot_spam_business_data` 的 verify_pin），这张二维码微信要过数字并且输对了、也说了是谁扫的，扫码人直接记成绑定的人、不用配对码（YF-5），没要过的照旧配对；拿到的令牌直接进底座的加密凭据存储，不过 IPC；服务端认出是本机原来那份令牌（「已经连着这台电脑了」）时不存，只让停在「需要重新登录」的渠道重连一次（YKS-6）。`-login-state.ts` 只有类型，界面 `import type` 它
-- `bootstrap/codex-remote.ts` — 主进程接线：存储放 `<userData>/codex-remote`、渠道走主进程会话 fetch、用客户装好的 Codex 命令行工具；Windows 上星芒以管理员身份或高完整性运行时不许开（手机上点一下就是管理员级操作）
+- `bootstrap/codex-remote.ts` — 主进程接线：存储放 `<userData>/codex-remote`、渠道走主进程会话 fetch、用客户装好的 Codex 命令行工具；Windows 上右键「以管理员身份运行」或认不出是不是时不许开（手机上点一下就是管理员级操作）；账号本身就带管理员权限的（自带 Administrator、关了 UAC，2026-11-20 yoyo 打字同意）许开，卡上多一句提醒（`isAlwaysElevatedWindowsAccount`）
 - 通道在 `ipc/handlers/codex-remote.ts` + `ipc/parsers/codex-remote.ts`（`codex-remote:*`，存飞书凭据那条记为密钥入参；「用这个」「移除」文件夹的 `use-workspace` / `remove-workspace` 只收界面上显示的那串字，主进程只在加过的单子里找，YF-19），状态变化经 `codex-remote:state-changed` 推给界面；微信扫码的三条（`codex-remote:weixin-login-start` / `-poll` / `-cancel`）在 `ipc/handlers/codex-remote-weixin.ts` + `ipc/parsers/codex-remote-weixin.ts`，成功不记日志
 
 ## 外部桌面客户端：WorkBuddy / Claude Desktop / OpenCode
 - `external-client-runtime.ts` — **三家客户端的探测、安装与打开**：Windows 用一段 PowerShell 盘点并核签名，Claude Desktop 装法是存储桶 → winget → 官网 MSIX，OpenCode 走 winget，WorkBuddy 一律让客户去官网自己下；Mac 交给 `macos-desktop-app-installer.ts` 并核 Developer ID。「打开」不排安装队列，是 I11 的登记例外（只等同一家正在装的那一次）
 - `external-client-route-service.ts` — **三家客户端在系统服务里的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `scanExternalClients`、`configureExternalTool`、`switchExternalClientSource` 这些）：盘点（合并、落盘先画首页）、安装、打开、测试连接，写配置前绕过缓存现查型号、核账号没换，Claude Desktop 切回官方账号或改用当前账号；换线路、换 Key 以后替当前账号写的那份跟着换，客户端开着就每 5 分钟看一眼进程、等它退出再换（星芒退出时撤掉这个定时）。写配置、切账号、跟线路改的是同一批文件，排同一个队（`queueExternalConfigWork`，原来手抄三份）；开机后台替 Claude Desktop 补账号新上的型号（`topUpClaudeDesktopModels`，查型号、试型号在队外，只有最后那一笔写排队）
-- `external-client-contract.ts` — 三家的共用类型、名字表、「去官网下载」网址（主进程外链白名单逐条全等收录，I12）和配置请求的入参校验（I5）；`ipc-contract.ts` 引它的类型
+- `external-client-contract.ts` — 三家的共用类型、名字表、「前往官网下载」网址（主进程外链白名单逐条全等收录，I12）和配置请求的入参校验（I5）；`ipc-contract.ts` 引它的类型
 - `external-tool-config.ts` — WorkBuddy 与 OpenCode 的配置文件：找位置、合并，经 `config-files.ts` 同一套两阶段提交写入（I9）；换线路时只改星芒写的那几处地址，客户刚改过就一个字不写。Claude Desktop 不在这里，见 `claude-desktop-config.ts`
 - `external-client-connection.ts` — 三家的连接自检：回读客户端自己的配置，用里面那把密钥问一次星芒（WorkBuddy、OpenCode 查模型清单不花额度，Claude Desktop 照它自己的样子发一个字）；客户端里真正发的对话本机测不到，结论照实说，不假绿
 - `external-client-ownership.ts` — 记「这份客户端配置是替哪个账号写的」：只存地址加密钥的 sha256，是本机证据不是凭据库（I3）
 - `external-client-snapshot-cache.ts` — 上一次三家的检测结果留在本机，下次启动先拿它画首页那几行；只用来「先画个样子」，主进程里要回答装没装、配给谁的地方都不读它
 - `external-client-service.test-support.ts` — 测试专用：`external-client-service*.test.ts` 四个文件共用的夹具（经 `createSystemService` 接三家客户端真的配置读写，客户端运行时、中转请求、换线路的定时器是假的）。原来一个 138 条的文件在 Windows 上占几分钟、分片拆不开，按 describe 拆开了（#2006）；`tsconfig.electron.json` 排除 `*.test-support.ts`，不进发布包
-- `desktop-package-bucket.ts` — **星芒腾讯云存储桶的共用下载器**：Codex / Claude 桌面端和 Mac 版 OpenCode 的官方离线包都从这里先下，插件目录和 Grok 也借它的取法。桶地址是常量、对象 key 形状固定、拒一切重定向（I10），清单里的大小与 SHA-256 绑住下载，调用方照样核官方签名，桶被改了最多白下一次、装不进东西；同步脚本是 `scripts/sync-*-cos.cjs`
+- `desktop-package-bucket.ts` — **星芒腾讯云存储桶的共用下载器**：Codex / Claude 桌面端、Mac 版 OpenCode 和 Antigravity 桌面端的官方包都从这里先下，插件目录、Grok 和 Antigravity 命令行也借它的取法。桶地址是常量、对象 key 形状固定、拒一切重定向（I10），清单里的大小与 SHA-256 绑住下载，调用方照样核官方签名，桶被改了最多白下一次、装不进东西；同步脚本是 `scripts/sync-*-cos.cjs`
 - `claude-desktop-config.ts` — Claude Desktop 的第三方推理（网关）配置：写 `configLibrary` 与 `claude_desktop_config.json`，「切回官方账号」只把 `deploymentMode` 改成 `1p`；输入里有 Key，绝不回传渲染层（I3）
 - `claude-desktop-local-transaction.ts` — 上面那几份文件的事务写入：先写临时文件、留 `.bak.<随机>` 备份（每个文件只留最近 5 份）、失败回滚（I9），只清自己起名的备份
 - `claude-desktop-paths.ts` — 定 Claude Desktop 的配置目录：由当前装着的那一份（和它的 MSIX 虚拟化设置）决定，不看遗留目录；测试用的主目录绝不继承真实 AppData
@@ -128,6 +129,23 @@
 - `claude-desktop-msix-installer.ts` — Windows 上 Claude Desktop 的离线 MSIX 一路（存储桶或 Claude 官网，官网只认 `claude.ai` 入口与 `downloads.claude.ai/releases/` 的逐跳重定向），PowerShell 只读核对包身份与 Anthropic 签名，再交给 `codex-desktop-appx.ts` 的共用安装（带服务的包走 UAC）
 - `claude-desktop-acceleration.ts` — 从星芒打开 Claude Desktop 前悄悄替用户连上加速，好让它从 `downloads.claude.ai` 下得到 Claude Code 程序和 Cowork 工作区（#1373）：约束同 `codex-desktop-acceleration.ts`，Claude 退出或连满一小时就断，和 Codex 桌面端共用同一次会话时先用完的那边交给另一边（`heldElsewhere`）。不含 Electron 依赖
 - `claude-desktop-install-failure.ts` — Claude Desktop 没装上时那句话（按原因分类，原话只进日志）和官网下载页地址（外链白名单全等收录，I12）；主进程与渲染层共用，不许引 Node
+- `claude-desktop-code-seed.ts` — Windows 上从星芒打开 Claude Desktop 前，从国内 npm 镜像替它放好 Claude Code 程序（按官方源 SHA-512 对账，只在同用户模式）；读 `app.asar` 的几个只读工具也在这里
+- `claude-desktop-component-manifest.ts` / `claude-desktop-component-keys.ts` — 从 Claude 自己的 `app.asar` 读出它要的工作区和 Claude Code 版本、校验值；算这些文件在星芒存储桶里的位置（同步作业和客户端共用）
+- `claude-desktop-workspace-seed.ts` — 从星芒存储桶替 Claude Desktop 放好 Cowork 工作区（官网原样 `.zst` + `.origin`，它自己解开再核）；装好、开机、点「打开」时在后台做
+- `claude-desktop-vm-code-seed.ts` — Cowork 虚拟机里那份 Linux 版 Claude Code，从国内 npm 镜像放进 `claude-code-vm/<版本>/`
+- `claude-desktop-mac-code-seed.ts` — Mac 上打开 Claude Desktop 前从星芒存储桶放好带签名的 `claude.app` 程序包（核 SHA-256、自写 tar 解析、核 Mach-O 芯片）
+
+## Antigravity（谷歌的 agy 命令行与桌面端）接中转
+- `antigravity-gateway.ts` — 算出写给 Antigravity 的四个「企业网关」变量（地址、密钥、`genai` 协议、型号菜单）：地址只收中转某条线路自己的 https 裸域，密钥不许带空白、引号、`%`、`$` 和控制字符，菜单是这把密钥当时列出的全部型号（照 `isCliModelName` 收窄），默认 `gemini-3.8-flash` 排第一；有一样不对整份不给。实测过的行为（它会改写认得的型号名、只认环境变量）写在文件开头
+- `antigravity-windows-environment.ts` — Windows 上把那四个变量写进当前用户的环境变量（`HKCU\Environment`，一律 REG_SZ，不提权）并通知系统；值经子进程环境交给 PowerShell（I1），四个都没变就不写也不通知，别的 `AGY_*` 不碰；受限语言模式走注册表命令和 setx。本进程的环境不跟着改，只管这一次运行：客户下次从开始菜单打开的星芒和别的程序一样从资源管理器继承到这几个变量，所以星芒打开 Antigravity 时总把这次的设置另外交给它，不靠自己的环境
+- `antigravity-macos-environment.ts` — Mac 上的对应：四个值放进产品目录 `Antigravity/` 下只有本人能读的 `gateway.sh` / `gateway.fish`（0600，内容没变不重写），登录 shell 的启动文件末尾只追加一段读它的标记（和「终端里敲 claude」那段分开标，选哪个文件、fish 的 conf.d 照 `macos-shell-profile.ts`），密钥不进 `~/.zprofile`；同一段还把 agy 的位置 `$HOME/.local/bin` 加在 PATH 最后（已有就不加）。文件都走 safe-local-data（I8），dotfiles 链接过来的启动文件拒绝不跟：打开命令行时整步报错（「终端」要从那里读设置），打开、安装桌面端时只记一笔照常往下走（`startupFileOptional`）。从程序坞打开的桌面端不读这些，由星芒打开时交给它
+- `antigravity-cli-release.ts` — agy 官方版本清单的读法：按平台和架构挑清单（Windows x64/arm64、Mac x64/arm64），只收 16 KB 以内、版本号和构建号形状对、下载地址与按版本拼出来的谷歌存储地址一字不差、SHA-512 是 128 位十六进制的清单。只是纯函数，下载、核签名、放进去在 `antigravity-cli-installer.ts`。`scripts/sync-antigravity-cli-cos.cjs` 定时把同一批谷歌签名的原件放进存储桶，读清单的规矩照抄这里（两处一起改）
+- `antigravity-cli-bucket.ts` — 读存储桶里的 agy 清单（`windows.json` / `macos.json`，同步脚本写的那份）：只看最新那一版里这台电脑那一个文件，对象地址、来源地址（必须是按版本和构建号拼出的谷歌原址）、大小、SHA-256/512 有一处对不上、或清单 24 小时没和谷歌核过，就悄悄换回谷歌那一路
+- `antigravity-cli-macos.ts` — Mac 上的 agy：在 Node 里读谷歌的 tar.gz，只写出唯一一个 `antigravity`（链接、文件夹、第二个文件、超大、结尾后还有东西一律整包拒绝；Mac 自带 tar 加的 `._` 元数据和 pax 头认得），再看 Mach-O 头是不是这台 Mac 的芯片（不用 lipo，没装命令行工具的 Mac 上它是个占位），最后按退出码问 codesign 是不是谷歌的 Developer ID（团队 EQHXZ8M8AV、标识 `cli`）
+- `antigravity-cli-installer.ts` — 一键装 agy：先从存储桶下、没走通再按谷歌清单从谷歌下（只有这一路借加速线路），下回来先对摘要，再核谷歌签名（Windows 是 `trusted-native-cli.ts` 里钉住的 Google LLC + DigiCert，Mac 见上一条），核过的才复制到 `%LOCALAPPDATA%\agy\bin\agy.exe` / `~/.local/bin/agy` 旁边、对一遍 SHA-256、改名替换（I8；那里原来是链接或文件夹就不动）。Windows 把目录加在用户 PATH 最后；管理员身份打开的星芒不往用户文件夹里装。不跑 `agy install`
+- `antigravity-desktop-release.ts` — Antigravity 桌面端自己更新时读的版本信息（`<更新站>/manifest/latest-<x64|arm64>-<win|mac>.yml`，electron-updater 的格式）的读法：逐行读那一小段固定形状，不交给 YAML 库；只列一个文件、地址与按版本和构建号拼出的谷歌存储地址一字不差（Windows 是谷歌签名的 NSIS 安装包，Mac 是装着 Antigravity.app 的 zip），大小在 16 MiB 到 1 GiB 之间，SHA-512 换成十六进制。纯函数
+- `antigravity-service.ts` — Antigravity 这一簇（门面上是 `SystemService.antigravity`）：检测两样装没装、设置是不是当前账号这条线路的（只看本机，密钥要是当前账号缓存里 Gemini 那把）；一键装（排安装队列，装好在队列外按需签密钥写设置，写不成不算装失败，交回那句话）；打开桌面端（Windows 写好设置交给资源管理器、按 yoyo 11-23「Antigravity 免核签名」不核程序签名；Mac 核谷歌 Developer ID 后直接起主程序，设置只放在环境里、不进参数；开着的那一份拿不到这次的设置时回 `closeFirst`，Mac 上靠星芒自己起的那个进程号认）；打开命令行（核谷歌签名后在选的文件夹开终端，Windows 把设置交给终端，Mac 靠登录 shell 读启动文件那一段）。两个打开都排安装队列（I11），带点的时候那个账号（scoped-queued）。Windows 上管理员身份打开的星芒只检测、别的都不做。通道在 `ipc/handlers/antigravity.ts`（`antigravity:inspect` / `install` / `open-desktop` / `open-cli`，进度 `antigravity:install-progress`），密钥在那里按需签（`resolveAntigravityManagedKey`），远程开关是 `install:` / `launch:` 加 `antigravityCli`、`antigravityDesktop`。设置写在用户环境变量（Mac 是终端启动文件读的那份）里，客户别处打开也用它，所以 `follow` 在换了人（`main.ts` 的 `onChanged`）、换了线路（`bootstrap/network-routes.ts`：星芒账号跟工具线路、历史账号跟应用线路）时回头看：只跟地址认得出是中转的那份，当前账号那把只换地址，不是当前账号的按自动签发那一档重签重写（`bindFollowKey`，IPC 那一层交来），Mac 上同打开桌面端不强求启动文件那一段，跟不上只记日志；跟上了另发 `antigravity:settings-followed`，界面只重读那两张卡（不借线路那一声）。Windows 上哪一步写成设置都记下那一刻，点「打开」时开着的进程里有起得比它早的（看进程启动时间）才回 `closeFirst`
+- `antigravity-desktop-windows.ts` — Windows 上一键装 Antigravity 桌面端：先从星芒存储桶（`desktop-package-bucket.ts`，`scripts/sync-antigravity-desktop-cos.cjs` 同步）下同一个谷歌安装包，桶不通、对不上、清单超过一天没核对时按上一条读谷歌的版本信息、下安装包（不跟跳转；谷歌也不通时才用超期的桶），对大小和 SHA-512，再按 `trusted-native-cli.ts` 里 agy 那条核谷歌签名，运行前再对一遍 SHA-256，静默装（`/S`，一键式按用户装到 `%LOCALAPPDATA%\Programs\antigravity`，不要管理员；开着时它会先关掉再装）。管理员身份打开的星芒不装。Mac 上的桌面端在 `macos-desktop-app-installer.ts` 的来源表里（`antigravityDesktop`）
 
 ## 托管密钥的分组与换新
 - `managed-cli-groups.ts` — 给每个工具和画图挑账号里用哪个分组：xm 站分组只按名字认（没有编号），服务状态文件里的分组对照让站上改名时不用等发版；订阅分组、历史账号那套后端的平台字段也在这里判。签 Key、对话凭据、账号页都用它
@@ -158,7 +176,7 @@
 - `macos-git-install.ts` — 「安装 Git」在 Mac 上就是跑一次 `xcode-select --install`，下载与授权全交给苹果的窗口；之后定时看 Git 能不能用、安装程序还在不在，推断装好、取消还是超时
 - `macos-shell-profile.ts` — 让客户自己开的终端也能直接敲 claude / codex / grok：往 `~/.zprofile`（或 bash 登录文件、fish 的 conf.d）末尾追加标记段，只追加不前置，客户自己装的照旧优先；客户删了那几行，开机不再补
 - `shell-startup-exports.ts` — 认 `~/.zshrc` 这类终端设置文件导出了哪些变量（zsh、bash、fish 的写法），只解析、不执行、不跟 `source`；检查页在 Mac 上用它找会让工具绕开当前账号的那几个（已知45）
-- `macos-desktop-app-installer.ts` / `macos-desktop-install-failure.ts` — Mac 上一键装桌面端（OpenCode、Claude Desktop，以及 Codex 桌面端的官方包 ChatGPT）：先从星芒存储桶（`desktop-package-bucket.ts`）下同一个官方包，没走通才问官方 feed（逐跳限定的重定向，feed 只能指向本模块自己会拼出的那个地址）；codesign 钉 Team ID 与 bundle id、spctl 核对公证，全过才放进「应用程序」（不是管理员就放 `~/Applications`）；失败的那几句话主进程与渲染层共用（I6）
+- `macos-desktop-app-installer.ts` / `macos-desktop-install-failure.ts` — Mac 上一键装桌面端（OpenCode、Claude Desktop、Antigravity，以及 Codex 桌面端的官方包 ChatGPT）：先从星芒存储桶（`desktop-package-bucket.ts`）下同一个官方包，没走通才问官方 feed（逐跳限定的重定向，feed 只能指向本模块自己会拼出的那个地址）；codesign 钉 Team ID 与 bundle id、spctl 核对公证，全过才放进「应用程序」（不是管理员就放 `~/Applications`）；失败的那几句话主进程与渲染层共用（I6）
 - `macos-launch-guard.ts` — 拒绝以 root 运行（D18；Mac 上本软件从不提权，没有「管理员模式」可退），字和 Linux 那句一样；零 import，`platform/entry.ts` 里跟 `linux-launch-guard.ts` 一起最先判。打开桌面客户端那处的 root 检查只剩兜底
 - `macos-install-location.ts` — 认出是不是直接从磁盘映像或系统的随机隔离副本（App Translocation）里运行：那样加速内核一推出就被杀，提示搬进「应用程序」；纯路径判断，不用挂盘就能单测
 - `macos-uninstall.ts` — 设置里「卸载星芒」的 Mac 版：先收回工具配置里指向 .app 的钩子与状态行，删开机项、托管工具和更新缓存，再把自己移进废纸篓并退出；安装队列有活时不卸（I11），Key 和工具设置照 Windows 的口径保留

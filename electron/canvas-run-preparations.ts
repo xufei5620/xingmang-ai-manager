@@ -68,8 +68,8 @@ export function parseCanvasRunPreparationCompletion(value: unknown): CanvasRunPr
   if (value.pngs !== undefined) throw new Error('画布运行准备回执格式错误')
   const { png, decodedTimestampSeconds } = value
   if (!(png instanceof Uint8Array)) throw new Error('视频帧图片内容格式错误')
-  if (png.byteLength === 0) throw new Error('视频帧图片内容为空，没有保存')
-  if (png.byteLength > maximumCanvasFramePngBytes) throw new Error('视频帧图片超过 20 MB，没有保存')
+  if (png.byteLength === 0) throw new Error('视频帧图片内容为空，未保存')
+  if (png.byteLength > maximumCanvasFramePngBytes) throw new Error('视频帧图片超过 20 MB，未保存')
   if (decodedTimestampSeconds !== undefined && (typeof decodedTimestampSeconds !== 'number' || !Number.isFinite(decodedTimestampSeconds) || decodedTimestampSeconds < 0 || decodedTimestampSeconds > 86_400)) {
     throw new Error('视频帧时间格式错误')
   }
@@ -89,10 +89,10 @@ function parseImageToolPngs(value: unknown): Buffer[] {
   let total = 0
   return value.map((png) => {
     if (!(png instanceof Uint8Array)) throw new Error('图片处理结果内容格式错误')
-    if (png.byteLength === 0) throw new Error('图片处理结果内容为空，没有保存')
-    if (png.byteLength > maximumCanvasImageTransformBytes) throw new Error('图片处理结果超过 20 MB，没有保存')
+    if (png.byteLength === 0) throw new Error('图片处理结果内容为空，未保存')
+    if (png.byteLength > maximumCanvasImageTransformBytes) throw new Error('图片处理结果超过 20 MB，未保存')
     total += png.byteLength
-    if (total > maximumCanvasImageTransformBatchBytes) throw new Error('图片处理结果合计超过 64 MB，没有保存')
+    if (total > maximumCanvasImageTransformBatchBytes) throw new Error('图片处理结果合计超过 64 MB，未保存')
     return Buffer.from(png)
   })
 }
@@ -105,18 +105,18 @@ function parseImageToolPngs(value: unknown): Buffer[] {
  * either).
  */
 export function assertCanvasImageToolPngs(pngs: readonly Buffer[], expectation: CanvasImageTransformExpectation): void {
-  if (pngs.length !== expectation.count) throw new Error('图片处理结果的张数跟节点设置不一致，没有保存')
+  if (pngs.length !== expectation.count) throw new Error('图片处理结果的张数与节点设置不一致，未保存')
   let totalPixels = 0
   for (const png of pngs) {
     const inspection = inspectAiImage(png)
-    if (inspection.mimeType !== 'image/png') throw new Error('图片处理结果必须是 PNG 图片，没有保存')
+    if (inspection.mimeType !== 'image/png') throw new Error('图片处理结果须为 PNG 图片，未保存')
     const { width, height } = inspection
-    if (!width || !height) throw new Error('图片处理结果尺寸读不出来，没有保存')
+    if (!width || !height) throw new Error('无法读取图片处理结果的尺寸，未保存')
     if (width > maximumCanvasImageTransformEdge || height > maximumCanvasImageTransformEdge || width * height > maximumCanvasImageTransformPixels) {
-      throw new Error('图片处理结果尺寸超过 4096，没有保存')
+      throw new Error('图片处理结果尺寸超过 4096，未保存')
     }
     if (expectation.size && (width !== expectation.size.width || height !== expectation.size.height)) {
-      throw new Error('图片处理结果的尺寸跟节点设置不一致，没有保存')
+      throw new Error('图片处理结果的尺寸与节点设置不一致，未保存')
     }
     totalPixels += width * height
   }
@@ -126,11 +126,11 @@ export function assertCanvasImageToolPngs(pngs: readonly Buffer[], expectation: 
 /** PNG only, read from the header like every other picture the asset store takes, within the web host's limits. */
 export function assertCanvasFramePng(bytes: Buffer): { width: number; height: number } {
   const inspection = inspectAiImage(bytes)
-  if (inspection.mimeType !== 'image/png') throw new Error('视频帧必须是 PNG 图片，没有保存')
+  if (inspection.mimeType !== 'image/png') throw new Error('视频帧须为 PNG 图片，未保存')
   const { width, height } = inspection
-  if (!width || !height) throw new Error('视频帧尺寸读不出来，没有保存')
+  if (!width || !height) throw new Error('无法读取视频帧的尺寸，未保存')
   if (width > maximumCanvasFrameEdge || height > maximumCanvasFrameEdge || width * height > maximumCanvasFramePixels) {
-    throw new Error('视频帧尺寸超过 4096，没有保存')
+    throw new Error('视频帧尺寸超过 4096，未保存')
   }
   return { width, height }
 }
@@ -159,20 +159,20 @@ type CanvasRunPreparationKind = CanvasRunPreparationCompletion['kind']
 // The words for each kind: the node shows these, never the page's.
 const preparationWords: Record<CanvasRunPreparationKind, { duplicate: string; missing: string; claimed: string; failed: string; timeout: string; unsaved: string }> = {
   frame: {
-    duplicate: '这一帧已经在等待中',
-    missing: '这一帧不在等待中，可能已经超时或运行已停止',
-    claimed: '这一帧已经交过了',
-    failed: '视频帧没有抽出来：视频读不出来，或者时间点不在视频里',
-    timeout: '视频帧没有交回来（画布关了或处理超时），请重新运行这个节点',
-    unsaved: '视频帧没有保存',
+    duplicate: '该帧已在等待中',
+    missing: '该帧不在等待中，可能已超时或运行已停止',
+    claimed: '该帧已提交',
+    failed: '视频帧提取失败：视频无法读取，或时间点超出视频范围',
+    timeout: '未收到视频帧（画布已关闭或处理超时），请重新运行该节点',
+    unsaved: '视频帧未保存',
   },
   image: {
-    duplicate: '这次图片处理已经在等待中',
-    missing: '这次图片处理不在等待中，可能已经超时或运行已停止',
-    claimed: '这次图片处理的结果已经交过了',
-    failed: '图片处理没有完成：来源图片读不出来，或者这组参数处理不了',
-    timeout: '图片处理结果没有交回来（画布关了或处理超时），请重新运行这个节点',
-    unsaved: '图片处理结果没有保存',
+    duplicate: '本次图片处理已在等待中',
+    missing: '本次图片处理不在等待中，可能已超时或运行已停止',
+    claimed: '本次图片处理的结果已提交',
+    failed: '图片处理未完成：来源图片无法读取，或当前参数无法处理',
+    timeout: '未收到图片处理结果（画布已关闭或处理超时），请重新运行该节点',
+    unsaved: '图片处理结果未保存',
   },
 }
 
@@ -331,7 +331,7 @@ export function createCanvasFrameExtraction(options: {
     async assertDecodableVideo(userId, assetId) {
       const { totalBytes } = await options.assets.readOwnedVideoRange(userId, assetId, () => null)
       // Said here, before the node waits two minutes on a page that cannot read it.
-      if (totalBytes > maximumCanvasFrameVideoBytes) throw new Error('视频超过 32 MB，画布抽不了这一帧')
+      if (totalBytes > maximumCanvasFrameVideoBytes) throw new Error('视频超过 32 MB，画布无法提取该帧')
     },
     waitForFrame({ runId, userId, projectId, preparation, signal }) {
       if (!projectId) return Promise.reject(new Error('画布项目尚未选择，无法保存视频帧'))
@@ -402,7 +402,7 @@ export function createCanvasImageToolProcessing(options: {
       let total = 0
       for (const assetId of assetIds) {
         const { bytes } = await options.assets.readImageOwned(userId, assetId, projectId)
-        if (bytes.byteLength > maximumCanvasImageTransformBytes) throw new Error('图片处理的来源图片超过 20 MB，请换一张小一点的图')
+        if (bytes.byteLength > maximumCanvasImageTransformBytes) throw new Error('图片处理的来源图片超过 20 MB，请更换较小的图片')
         total += bytes.byteLength
         if (total > maximumCanvasImageTransformBatchBytes) throw new Error('图片处理的来源图片合计超过 64 MB，请减少图片')
       }

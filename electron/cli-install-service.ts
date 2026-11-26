@@ -103,11 +103,11 @@ const maximumNpmPackageLockBytes = 16 * 1024 * 1024
 
 // 安装走到「把新版本换进全局目录」这一步就不能再中断了：半个目录被替换掉的
 // CLI 既跑不起来也回不去。这两条是拒绝取消时给用户看的原因。
-const managedPrefixSwapSealReason = '正在把新版本写入工具目录，这一步中断会让工具用不了，请等它结束。'
-const grokBinarySwapSealReason = '正在替换 Grok CLI 可执行文件，这一步中断会让工具用不了，请等它结束。'
+const managedPrefixSwapSealReason = '正在将新版本写入工具目录，中断此步骤将导致工具无法使用，请等待完成。'
+const grokBinarySwapSealReason = '正在替换 Grok CLI 可执行文件，中断此步骤将导致工具无法使用，请等待完成。'
 // Windows 上装完 Claude Code 接着顺带装 Git 的那一段接不上取消（第四十批 C），
 // 用界面上别处「停不下来」时的同一句。
-const gitAlongsideClaudeSealReason = '这一步已经不能取消了。'
+const gitAlongsideClaudeSealReason = '此步骤已无法取消。'
 
 /**
  * 本工具给 Claude Code / Codex / Gemini CLI 的安装、更新、回滚都走 npm。已经由官方
@@ -117,8 +117,8 @@ const gitAlongsideClaudeSealReason = '这一步已经不能取消了。'
 export function externalCliInstallRefusal(provider: ProviderId, installSource: CliInstallDisplaySource | undefined): string | null {
   if (provider === 'grok') return null
   const name = cliCatalog[provider].name
-  if (installSource === 'native') return `这台电脑上的 ${name} 由官方安装器管理，这里不会再另装一份，请用它自己的方式更新`
-  if (installSource === 'path') return `这台电脑上的 ${name} 不是通过本工具安装的，这里不会再另装一份，更新请用它原本的安装方式`
+  if (installSource === 'native') return `本机的 ${name} 由官方安装器管理，此处不会重复安装，请通过其自身方式更新`
+  if (installSource === 'path') return `本机的 ${name} 并非通过本工具安装，此处不会重复安装，请通过其原有安装方式更新`
   return null
 }
 
@@ -241,7 +241,7 @@ export const npmDownloadHeartbeatMs = 15_000
 export const grokDownloadStallHeartbeatMs = 15_000
 
 export function grokDownloadStallMessage(idleMs: number): string {
-  return `Grok CLI 下载已 ${Math.round(idleMs / 1000)} 秒没有新数据，仍在等待；若长时间不动，请检查网络，或换个网络（比如手机热点）后重试`
+  return `Grok CLI 下载已 ${Math.round(idleMs / 1000)} 秒未收到新数据，仍在等待；如长时间无进展，请检查网络，或更换网络（如手机热点）后重试`
 }
 
 export function formatElapsedDuration(elapsedMs: number): string {
@@ -693,7 +693,7 @@ export async function replaceManagedNpmPrefixAtomically(
       // 上屏只说结果和下一步，「回滚失败」四个字留着：渲染层靠它不盖安抚文案（operation-error.ts 的 undoFailed）。
       // 原话连同新版没装上的那个原因挂在 cause 上进运行日志（#1100 第1条）。
       throw new ManagedNpmRollbackError(
-        `这次更新没装上，旧版本回滚失败，工具现在可能打不开。到首页再装一次；还不行请找客服${errorCodeClause(rollbackError)}。`,
+        `本次更新未能完成，且旧版本回滚失败，工具当前可能无法打开。请在首页重新安装；如仍失败，请联系客服${errorCodeClause(rollbackError)}。`,
         { cause: new Error(`托管 npm 更新失败，且旧版本回滚失败：${detail}`, { cause: error }) },
       )
     }
@@ -855,9 +855,9 @@ export async function installGitAlongsideClaude(
 ): Promise<void> {
   try {
     const result = await install()
-    if (result.action === 'installed') note('Git 也顺带装好了')
+    if (result.action === 'installed') note('Git 已一并安装')
   } catch {
-    note('Git 这次没装上，不影响使用 Claude Code；以后可以在首页「运行环境」里点「安装 Git」再试')
+    note('Git 本次安装失败，不影响使用 Claude Code；可稍后在首页「运行环境」中点击「安装 Git」重试')
   }
 }
 
@@ -1065,7 +1065,7 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
       const npmPath = await findInstalledExecutable('npm')
       const npmGlobalRoot = await resolveServiceNpmGlobalRoot(npmPath)
       const { status } = await inspectCliTool(provider, npmPath, npmGlobalRoot)
-      // Mac 上认不出来路、星芒也不替它跑的那份（R1）：客户点的就是「用星芒装一份」，不拿「不会另装一份」拦。
+      // Mac 上认不出来路、星芒也不替它跑的那份（R1）：客户点的就是「使用星芒安装」，不拿「不会另装一份」拦。
       // 装好以后星芒先找到自己那份（darwinCommandPathCandidates 里星芒的目录排在前面），打开的也是它。
       if (status.unrecognizedInstall) return
       installSource = status.installSource
@@ -1540,9 +1540,9 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
         // 或者这个平台没有加速（Linux）时，叫人开加速没用，改说换个网络。
         if (reason.kind === 'network') {
           const nextStep = platformCapabilitiesFor(platform).acceleration && acceleratedDownloadCount() === 0
-            ? '到「设置 › 网络加速」开启加速后再试。'
-            : '换个网络（比如手机热点）后再试。'
-          throw new Error(`${definition.name} 安装失败：装之前要先到 npm 官方源核对安装清单，${officialRegistryUnreachableMarker}${npmErrorCodesClause([reason])}。${nextStep}`, { cause: error })
+            ? '请在「设置 › 网络加速」中开启加速后重试。'
+            : '请更换网络（如手机热点）后重试。'
+          throw new Error(`${definition.name} 安装失败：安装前需先在 npm 官方源核对安装清单，${officialRegistryUnreachableMarker}${npmErrorCodesClause([reason])}。${nextStep}`, { cause: error })
         }
         const message = npmFailureSentence(`${definition.name} 安装失败：`, [{ label: 'npm 官方源', reason }])
         throw new Error(await withToolCertificateHint(message, raw), { cause: error })
@@ -1607,7 +1607,7 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
           // 慢但一直在下的最多等 30 分钟（第三十七批 A）。
           const stallWatch = createNpmDownloadStallWatch(() => measureDirectoryBytes(attemptRoot))
           const downloadStartedAt = performance.now()
-          // 同解析那一步：带上已用时，界面进度那一行就换成现成的「还在下载，已经等了……」，
+          // 同解析那一步：带上已用时，界面进度那一行就换成现成的「仍在下载，已等待……」，
           // 这句原话进安装日志；运行日志不记这种每隔几秒一条的（第三十七批 D）。
           const downloadTicker = setInterval(() => {
             const elapsedMs = Math.round(performance.now() - downloadStartedAt)
@@ -2020,7 +2020,7 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
   }
 
   /**
-   * 「星芒占用的空间」里「装工具时下载的文件」那一行右边的数：和下面的手动清理同一套选法、同一个年龄，
+   * 「星芒占用空间」里「装工具时下载的文件」那一行右边的数：和下面的手动清理同一套选法、同一个年龄，
    * 写的就是点「清理」能腾出来的。只读，不排队：量的时候正在装也不碍事，最多少算正在下的那份。
    */
   function measureInstallLeftoversNow(): Promise<number> {

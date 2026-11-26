@@ -168,7 +168,7 @@ describe('CLI install cancellation routing', () => {
   })
 
   it('passes the main process refusal through untouched', async () => {
-    const refusal = { cancelled: false, reason: '正在把新版本写入工具目录，这一步中断会让工具用不了，请等它结束。' }
+    const refusal = { cancelled: false, reason: '正在将新版本写入工具目录，中断此步骤将导致工具无法使用，请等待完成。' }
     const cancelCliInstall = vi.fn(async () => refusal)
     const api = createToolsApi({ cancelCliInstall } as unknown as XingmangApi)
 
@@ -186,7 +186,7 @@ describe('CLI install cancellation routing', () => {
   })
 
   it('sends a desktop client cancel to its own channel', async () => {
-    const refusal = { cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。' }
+    const refusal = { cancelled: false, reason: '正在安装 Claude Desktop，此步骤中断将留下未安装完成的程序，请等待安装结束。' }
     const cancelCliInstall = vi.fn(async () => ({ cancelled: true, reason: null }))
     const cancelExternalClientInstall = vi.fn(async () => refusal)
     const api = createToolsApi({ cancelCliInstall, cancelExternalClientInstall } as unknown as XingmangApi)
@@ -197,7 +197,7 @@ describe('CLI install cancellation routing', () => {
   })
 
   it('passes the Codex Desktop refusal through once the MSIX install has begun', async () => {
-    const refusal = { cancelled: false, reason: '正在安装 Codex 桌面端，这一步中断会留下装了一半的程序，请等它结束。' }
+    const refusal = { cancelled: false, reason: '正在安装 Codex 桌面端，此步骤中断将留下未安装完成的程序，请等待安装结束。' }
     const cancelCodexDesktopInstall = vi.fn(async () => refusal)
     const api = createToolsApi({ cancelCodexDesktopInstall } as unknown as XingmangApi)
 
@@ -272,7 +272,7 @@ describe('toolbox read partial failures', () => {
       getConfig: async () => { throw 'boom' },
     })).read()
 
-    expect(result.failures).toEqual([{ partition: 'config', message: '工具配置没有读到，请重试。' }])
+    expect(result.failures).toEqual([{ partition: 'config', message: '工具配置获取失败，请重试。' }])
   })
 })
 
@@ -324,7 +324,7 @@ describe('config-only refresh after the account Key is written', () => {
   })
 
   it('keeps at most one config failure and drops it once the read succeeds', () => {
-    const system = { partition: 'system' as const, message: '工具检测没有完成，请重试。' }
+    const system = { partition: 'system' as const, message: '工具检测未完成，请重试。' }
     const first = { partition: 'config' as const, message: '第一次没读到' }
     const second = { partition: 'config' as const, message: '第二次也没读到' }
 

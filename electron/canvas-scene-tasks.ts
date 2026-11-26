@@ -547,7 +547,7 @@ export async function assertCanvasSceneSourceImages(
   signal?: AbortSignal,
 ): Promise<void> {
   if (checks.length === 0) return
-  if (!read) throw new Error(checks.includes('exterior') ? '室外参考图内容核对服务暂时不可用，当前没有提交生成请求' : '故事板输入图片内容核对服务暂时不可用，当前没有提交生成请求')
+  if (!read) throw new Error(checks.includes('exterior') ? '室外参考图内容核对服务暂时不可用，当前未提交生成请求' : '故事板输入图片内容核对服务暂时不可用，当前未提交生成请求')
   for (const check of checks) {
     if (check === 'exterior' && (assetIds.length !== 2 || new Set(assetIds).size !== 2)) throw new Error('室外双图任务需要两张内容不同的原图和参考图')
     if (check === 'storyboard' && (!assetIds.length || assetIds.length > 4 || new Set(assetIds).size !== assetIds.length)) throw new Error('故事板需要 1–4 张内容不同的有序图片')
@@ -560,10 +560,10 @@ export async function assertCanvasSceneSourceImages(
   signal?.throwIfAborted()
   const total = bytes.reduce((sum, value) => sum + value.byteLength, 0)
   for (const check of checks) {
-    if (total > maximumSceneSourceBytes) throw new Error(check === 'exterior' ? '室外参考图片总容量不能超过 24 MB，当前没有提交生成请求' : '故事板输入图片总容量不能超过 24 MB，当前没有提交生成请求')
+    if (total > maximumSceneSourceBytes) throw new Error(check === 'exterior' ? '室外参考图片总容量不能超过 24 MB，当前未提交生成请求' : '故事板输入图片总容量不能超过 24 MB，当前未提交生成请求')
     for (let index = 0; index < bytes.length; index += 1) {
       for (let previous = 0; previous < index; previous += 1) {
-        if (bytes[index].equals(bytes[previous])) throw new Error(check === 'exterior' ? '原图与参考图内容相同，请选择内容不同的两张图片；当前没有提交生成请求' : '故事板输入图片内容相同，请选择内容不同的图片；当前没有提交生成请求')
+        if (bytes[index].equals(bytes[previous])) throw new Error(check === 'exterior' ? '原图与参考图内容相同，请选择内容不同的两张图片；当前未提交生成请求' : '故事板输入图片内容相同，请选择内容不同的图片；当前未提交生成请求')
       }
     }
   }
@@ -571,7 +571,7 @@ export async function assertCanvasSceneSourceImages(
 
 function sizeRule(model: string): string {
   const capability = resolveAiModelCapability(model)
-  if (capability.kind !== 'image') return '这个型号不能出图'
+  if (capability.kind !== 'image') return '该型号不支持生成图片'
   return describeImageSizePolicy(capability.sizePolicy)
 }
 

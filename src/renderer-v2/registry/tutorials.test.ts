@@ -4,6 +4,7 @@ import { gitLinuxInstallCommand } from '../../../electron/git-runtime';
 import { accountTabs, feedbackTabs, macDesktopTutorialTopic, macRuntimeTutorialTopic, settingsGroups, settingsItemLabel, settingsItems, updateFailureLabels, updateLabels, updatesTutorialTopic } from './business';
 import { videoStudioAspectNames, videoStudioClipSoundNames, videoStudioTransitionNames } from '../features/video-studio/project';
 import { linuxUpdateDiskCleanupSteps, macKeychainTutorialTitle, tutorialTopics, tutorialTopicsFor, updateDiskCleanupDetail, updateDiskCleanupSteps, updateDiskCleanupStepsFor, updateDiskCleanupTitle, type TutorialStep } from './tutorials';
+import { pageRegistry } from './pages';
 
 function step(topicId: string, action: string): TutorialStep {
   const found = tutorialTopics.find((topic) => topic.id === topicId)?.steps.find((entry) => entry.action === action);
@@ -103,12 +104,12 @@ describe('tutorial wording that follows the current app', () => {
   it('describes automatic updates with the labels the settings and update page use', () => {
     const update = step('safety', '打开版本更新');
     const text = JSON.stringify(update);
-    expect(update.detail).toContain('自动装上');
+    expect(update.detail).toContain('自动安装');
     expect(text).toContain(`「${settingsGroups.find((group) => group.value === 'about')?.label}」`);
     expect(text).toContain(`「${settingsItemLabel('auto-update')}」`);
     expect(text).toContain(`「${updateFailureLabels.install.retry}」`);
     expect(update.expected).toContain(`「${updateLabels['not-available']}」`);
-    expect(text).toContain('「退回更新前的 v…」');
+    expect(text).toContain('「回退到更新前的 v…」');
     expect(text).not.toContain('区分两种更新入口');
   });
 
@@ -176,25 +177,26 @@ describe('tutorial wording that follows the current app', () => {
     expect(text).toContain('不会再自己往编辑器里装插件');
     expect(text).toContain('认准发布者是 Anthropic');
     // 第 4 步的按钮名照首页卡片「…」菜单和配置弹窗上的字写。
-    expect(step('editor', '回首页重新保存 Claude Code 配置').bullets).toContain('回星芒首页，在 Claude Code 卡片的「…」里点「配置…」，再点「保存配置」。');
+    expect(step('editor', '回首页重新保存 Claude Code 配置').bullets).toContain('返回星芒首页，在 Claude Code 卡片的「…」中点击「配置…」，再点击「保存配置」。');
     for (const entry of editor?.steps ?? []) expect(entry.page, entry.action).toBe('home');
   });
 
-  it('lands every phone remote step on the remote card in settings', () => {
+  it('lands every phone remote step on the remote page in the sidebar', () => {
     const remote = tutorialTopics.find((topic) => topic.id === 'phone-remote');
     expect(remote?.title).toBe('用手机遥控 Codex');
     for (const entry of remote?.steps ?? []) {
-      expect(entry, entry.action).toMatchObject({ page: 'settings', section: 'codex-remote' });
-      expect(entry.where, entry.action).toContain(`工具管理 › ${settingsItemLabel('codex-remote')}`);
+      expect(entry, entry.action).toMatchObject({ page: 'remote' });
+      expect(entry, entry.action).not.toHaveProperty('section');
+      expect(entry.where, entry.action).toContain(`左侧栏 › ${pageRegistry.find((page) => page.id === 'remote')?.label}`);
     }
-    expect(JSON.stringify(remote)).toContain('长期用建议选飞书');
+    expect(JSON.stringify(remote)).toContain('长期使用建议选择飞书');
   });
 
   it('teaches the Claude Code rewind and warns that terminal commands cannot be undone', () => {
     const undo = tutorialTopics.find((topic) => topic.id === 'undo');
     expect(undo?.category).toBe('trouble');
     const text = JSON.stringify(undo);
-    for (const words of ['连按两下 Esc', '/rewind', 'Restore code and conversation', '退不回来', '复制一份']) expect(text).toContain(words);
+    for (const words of ['连按两下 Esc', '/rewind', 'Restore code and conversation', '无法恢复', '复制到其他位置']) expect(text).toContain(words);
   });
 
   it('offers the editor, phone remote and undo chapters on every system', () => {
@@ -218,11 +220,11 @@ describe('tutorial wording that follows the current app', () => {
 
   // Codex 的中文开关每次启动时才拿，只有从星芒打开的那一下拿得到；先问从哪打开，再教「启用中文界面」。
   it('asks where Codex was opened from before sending an English desktop app to the locale check', () => {
-    const entry = step('trouble', '回首页检查 Codex 打开结果').extra?.find((item) => item.title === '能打开，但还是英文？');
-    expect(entry?.detail).toMatch(/^中文界面只在从星芒打开 Codex 时生效。/);
-    expect(entry?.detail).toContain('（Mac 上叫 ChatGPT）');
+    const entry = step('trouble', '回首页检查 Codex 打开结果').extra?.find((item) => item.title === '可以打开，但仍为英文界面？');
+    expect(entry?.detail).toMatch(/^中文界面仅在从星芒打开 Codex 时生效。/);
+    expect(entry?.detail).toContain('（Mac 上名为 ChatGPT）');
     expect(entry?.detail).toContain('的星芒图标 ›「已安装的工具」›「Codex 桌面端」');
-    expect(entry?.detail.indexOf('从星芒首页点「打开」')).toBeLessThan(entry?.detail.indexOf('「启用中文界面」') ?? -1);
+    expect(entry?.detail.indexOf('从星芒首页点击「打开」')).toBeLessThan(entry?.detail.indexOf('「启用中文界面」') ?? -1);
   });
 
   // 桌面端的「聊天」「工作」要 ChatGPT 账号，用密钥发会报这句英文；客户拿原话搜得到，并被引到「Codex」那一栏。
@@ -231,7 +233,7 @@ describe('tutorial wording that follows the current app', () => {
     expect(entry.detail).toContain('Work browser access requires an authenticated account');
     expect(entry.title).toContain('提交消息时出错');
     expect(entry.bullets?.[0]).toContain('切到「Codex」');
-    expect(entry.extra?.[0].detail).toContain('「…」›「配置…」里选「ChatGPT 账号」');
+    expect(entry.extra?.[0].detail).toContain('「…」›「配置…」中选择「ChatGPT 账号」');
     expect(step('start', '回首页打开 Codex').bullets?.[0]).toContain('切到「Codex」');
     expect(step('launch', '返回首页打开桌面端').bullets?.[0]).toContain('切到「Codex」');
   });
@@ -260,7 +262,7 @@ describe('linux tutorials', () => {
     const original = tutorialTopics.find((topic) => topic.id === 'switch-account');
     expect(switching?.steps.map((entry) => entry.where)).toEqual(['星芒首页 › 工具卡片左下角', '星芒首页 › 卡片左下角的小标签，或右下角 … › 改用当前账号 / 切回官方账号', 'Claude Code / Codex 窗口', 'Claude Code / Codex 窗口']);
     expect(switching?.steps.map((entry) => entry.bullets?.length)).toEqual(original?.steps.map((entry) => (entry.bullets?.length ?? 0) - (entry.bullets?.filter((bullet) => bullet.startsWith('Claude Desktop')).length ?? 0)));
-    expect(switching?.steps[2].detail).toBe('已经打开的工具还记着旧账号，要关掉重开才会换过来。');
+    expect(switching?.steps[2].detail).toBe('已打开的工具仍使用旧账号，需关闭后重新打开才会切换。');
   });
 
   it('drops the Codex desktop and Mac-only chapters and keeps everything else in order', () => {
@@ -279,10 +281,10 @@ describe('linux tutorials', () => {
   it('walks a Linux beginner through Codex CLI in the same four steps', () => {
     const start = linux[0];
     expect(start.title).toBe(tutorialTopics[0].title);
-    expect(start.steps.map((entry) => entry.title)).toEqual(['登录星芒账号', '装好 Codex CLI', '看到「当前账号」就继续', '打开 Codex，发出第一条消息']);
+    expect(start.steps.map((entry) => entry.title)).toEqual(['登录星芒账号', '安装 Codex CLI', '确认显示「当前账号」', '打开 Codex 并发送第一条消息']);
     expect(start.steps[0]).toBe(tutorialTopics[0].steps[0]);
     expect(start.reminders).toEqual(tutorialTopics[0].reminders);
-    expect(JSON.stringify(start)).toContain('不用输开机密码');
+    expect(JSON.stringify(start)).toContain('无需输入开机密码');
   });
 
   it('describes the Linux self-update the way the update page and quit prompt do', () => {
@@ -293,7 +295,7 @@ describe('linux tutorials', () => {
     expect(text).toContain('输入开机密码');
     expect(text).toContain('从应用菜单重新打开');
     expect(text).toContain(linuxUpdateDiskCleanupSteps);
-    expect(text).toContain('「退回更新前的 v…」');
+    expect(text).toContain('「回退到更新前的 v…」');
     expect(updates?.steps.length).toBe(tutorialTopics.find((topic) => topic.id === updatesTutorialTopic)?.steps.length);
     expect(updateDiskCleanupStepsFor('linux')).toBe(linuxUpdateDiskCleanupSteps);
   });
@@ -301,7 +303,7 @@ describe('linux tutorials', () => {
   it('gives the Git command instead of the Windows button in the command-line chapter', () => {
     const cli = JSON.stringify(linux.find((topic) => topic.id === 'cli'));
     expect(cli).toContain(gitLinuxInstallCommand);
-    expect(cli).toContain('已经装过这个工具？');
+    expect(cli).toContain('已安装该工具？');
   });
 });
 

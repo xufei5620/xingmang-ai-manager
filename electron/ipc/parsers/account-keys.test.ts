@@ -42,7 +42,7 @@ describe('parseAccountKeyCreateInput', () => {
     }
   })
 
-  const tooLong = '密钥名称太长了，中文最多 16 个字，英文和数字最多 50 个。'
+  const tooLong = '密钥名称过长，中文最多 16 个字，英文和数字最多 50 个。'
 
   it('applies the xm site name limit unless the key is for the legacy account site', () => {
     const name = 'n'.repeat(51)
@@ -95,7 +95,7 @@ describe('parseManagedCliConfigurationInput', () => {
       .toThrow('CLI 配置意图无效')
   })
 
-  // 首页「修好它」交 repair（0.2.24 深查 X-1）；别的照旧报错。
+  // 首页「立即修复」交 repair（0.2.24 深查 X-1）；别的照旧报错。
   it('accepts the repair mode next to merge and reset', () => {
     for (const mode of ['merge', 'reset', 'repair'] as const) {
       expect(parseManagedCliConfigurationInput({ providers: ['codex'], mode })).toEqual({ providers: ['codex'], preferredModels: {}, mode })

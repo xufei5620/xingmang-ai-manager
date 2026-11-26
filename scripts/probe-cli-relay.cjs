@@ -167,7 +167,8 @@ function displayOutput(output) {
  * 请求。能让 `-p` 发出同一种请求的是提示钩子(type: "prompt"):同一个型号、同一个
  * beta、同一种 output_config.format。所以这一项在临时 HOME 里放一个
  * UserPromptSubmit 提示钩子,看 CLI 自己的调试日志:钩子拿到回答会记一行
- * 「Hooks: Model response:」,请求失败会记「Hooks: prompt-hook evaluator API error: …」。
+ * 「Hooks: Model response:」(2.1.326 之后改记「Hooks: Prompt hook condition was met」这类判定),
+ * 请求失败会记「Hooks: prompt-hook evaluator API error: …」。
  *
  * 它不让作业变红:收不收是中转的能力,不是这个版本的回归,不该挡住抬版本。
  */
@@ -190,7 +191,10 @@ function structuredOutputProbeArgv(model, debugFile) {
 /** 读调试日志下结论。分组、凭据、5xx 这类失败说明不了收不收,一律算没测出。 */
 function classifyStructuredOutputProbe(debugLog) {
   const text = String(debugLog)
-  if (/Hooks: Model response:/.test(text)) return { verdict: 'accepted', detail: '结构化输出请求正常返回' }
+  // 2.1.326 之后的版本(2.1.330 上核过)调试日志不再写钩子回答的原文,只写判定结果或「解析失败(N chars)」;这几行出现同样说明请求拿到了回答。
+  if (/Hooks: Model response:|Hooks: Prompt hook condition (?:was met|was not met|judged impossible)|Hooks: error parsing response as JSON/.test(text)) {
+    return { verdict: 'accepted', detail: '结构化输出请求正常返回' }
+  }
   const failure = /prompt-hook evaluator API error:\s*(.*)/.exec(text)
   if (failure) {
     const message = failure[1].trim().slice(0, 300)

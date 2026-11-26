@@ -36,11 +36,11 @@ describe('RequiredUpdateGate', () => {
   it('offers only updating and support, with no way to close it', () => {
     const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot()} windows actions={actions} />)
     expect(html).toContain('data-testid="required-update-gate"')
-    expect(html).toContain('这个版本需要更新后才能继续用')
+    expect(html).toContain('当前版本需更新后才能继续使用')
     expect(html).toContain('现在是 0.2.12，将更新到 0.2.13')
     expect(html).toContain('是否允许更改')
     expect(html).toContain('data-testid="required-update-start"')
-    expect(html).toMatch(/data-testid="required-update-support"[^>]*><span>找客服<\/span><\/button>/)
+    expect(html).toMatch(/data-testid="required-update-support"[^>]*><span>联系客服<\/span><\/button>/)
     expect(html).not.toContain('data-modal-close')
     expect(html).not.toContain('required-update-download-page')
   })
@@ -57,7 +57,7 @@ describe('RequiredUpdateGate', () => {
   it('asks for an administrator instead of a click on yes when the Windows account is not one', () => {
     const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ installNeedsAdminPassword: true })} windows actions={actions} />)
     // yoyo 2026-10-06 批的原话（句末补了句号）。
-    expect(html).toContain('data-testid="required-update-admin-password">要输入管理员密码；让有管理员账号的人来点，或联系客服。</p>')
+    expect(html).toContain('data-testid="required-update-admin-password">需要管理员密码，请由管理员操作或联系客服。</p>')
     expect(html).not.toContain('是否允许更改')
     expect(html).toContain('data-testid="required-update-start"')
     expect(html).toContain('data-testid="required-update-support"')
@@ -67,7 +67,7 @@ describe('RequiredUpdateGate', () => {
   it('tells Mac users how to answer the keychain prompt after the restart, and only them', () => {
     const mac = renderToStaticMarkup(<RequiredUpdateGate update={snapshot()} windows={false} mac actions={actions} />)
     expect(mac).toContain('data-testid="required-update-mac-keychain"')
-    expect(mac).toContain('重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。')
+    expect(mac).toContain('重启后 Mac 可能弹出钥匙串密码框，请输入本机开机密码并点击「始终允许」。')
     expect(mac).not.toContain('是否允许更改')
     for (const html of [
       renderToStaticMarkup(<RequiredUpdateGate update={snapshot()} windows actions={actions} />),
@@ -79,22 +79,22 @@ describe('RequiredUpdateGate', () => {
     const progress = { percent: 50, bytesPerSecond: 1, transferred: 50 * 1024 ** 2, total: 100 * 1024 ** 2, averageBytesPerSecond: 2 * 1024 ** 2, secondsRemaining: 150 }
     const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ phase: 'downloading', progress })} windows actions={actions} />)
     expect(html).toContain('data-testid="required-update-progress"')
-    expect(html).toContain('已下载 50 MB / 共 100 MB · 每秒 2 MB · 大约还要 3 分钟')
+    expect(html).toContain('已下载 50 MB / 共 100 MB · 每秒 2 MB · 预计还需 3 分钟')
     expect(renderToStaticMarkup(<RequiredUpdateGate update={snapshot()} windows actions={actions} />)).not.toContain('required-update-progress-detail')
   })
 
   it('adds the download page only after a failure, and skips the Windows prompt hint on a Mac', () => {
     const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ phase: 'error', error: { code: 'X', message: '网络断了' } })} windows={false} actions={actions} />)
-    expect(html).toContain('更新没有完成。</strong>网络断了')
-    expect(html).not.toContain('更新没有完成：')
+    expect(html).toContain('更新未完成。</strong>网络断了')
+    expect(html).not.toContain('更新未完成：')
     expect(html).toContain('data-testid="required-update-download-page"')
     expect(html).not.toContain('是否允许更改')
   })
 
   it('names only the buttons the gate actually has when an install did not start', () => {
-    const message = '新版本没装上：安装程序没起来，可能是 Windows 的授权窗口被关掉了。点「重新安装」再试一次，授权窗口弹出来时点「是」。'
+    const message = '新版本安装失败：安装程序未能启动，可能是 Windows 授权窗口被关闭。请点击「重新安装」重试，授权窗口弹出时请点击「是」。'
     const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT', message } })} windows actions={actions} />)
-    expect(html).toContain('安装更新失败。</strong>新版本没装上')
+    expect(html).toContain('安装更新失败。</strong>新版本安装失败')
     // 原因句说「点「重新安装」」，门的主按钮就叫「重新安装」。
     expect(html).toMatch(/data-testid="required-update-start"[^>]*>(?:<[^>]+>)*重新安装/)
     // 门里没有「查看日志」，也到不了更新页。
@@ -103,7 +103,7 @@ describe('RequiredUpdateGate', () => {
   })
 
   it('leaves only the download page when a Mac rejected the update signature', () => {
-    const message = '新版本已经下载好了，但这台 Mac 校验它的时候没通过，自动安装装不上，再点也一样。请点「打开下载页」下载新版本的安装包，装好后打开就行。'
+    const message = '新版本已下载，但未通过本机系统校验，无法自动安装，重试也无法解决。请点击「打开下载页」下载新版本安装包，安装后打开即可。'
     const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_SIGNATURE_REJECTED', message } })} windows={false} actions={actions} />)
     expect(html).toContain(`安装更新失败。</strong>${message}`)
     expect(html).toContain('data-testid="required-update-download-page"')
@@ -116,15 +116,15 @@ describe('RequiredUpdateGate', () => {
   it('tells the user the disk is full, how much to free, and offers a retry and a download-anyway', () => {
     const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ diskShortfall: { neededBytes: 1800 * 1024 ** 2, freeBytes: 1200 * 1024 ** 2 } })} windows actions={actions} />)
     expect(html).toContain('data-testid="required-update-disk"')
-    expect(html).toContain('磁盘空间不够，新版本还没开始下载。')
-    expect(html).toContain('电脑磁盘只剩 1.2 GB，装更新大约要 1.8 GB，还要再清出 600 MB')
+    expect(html).toContain('磁盘空间不足，新版本未开始下载。')
+    expect(html).toContain('磁盘仅剩 1.2 GB，安装更新约需 1.8 GB，还需清理出 600 MB')
     expect(html).toContain('data-testid="required-update-disk-help"')
     expect(html).toContain('怎么清理')
     expect(html).toContain('data-testid="required-update-download-anyway"')
-    expect(html).toContain('空间够了，再试一次')
-    // 门里进不了更新页，不许叫他「回到更新页」，也不许说「会自动下载」让他干等。
+    expect(html).toContain('重新检查空间')
+    // 门里进不了更新页，不许叫他「回到更新页」，也不许说「空间充足后将自动下载」让他干等（门自己那句「点击「立即更新」后将自动下载并安装」不算）。
     expect(html).not.toContain('回到更新页')
-    expect(html).not.toContain('会自动下载')
+    expect(html).not.toContain('空间充足后将自动下载')
     expect(html).not.toContain('required-update-download-page')
   })
 

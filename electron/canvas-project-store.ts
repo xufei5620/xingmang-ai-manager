@@ -59,6 +59,34 @@ export interface CanvasProjectAssetReference {
   archived: boolean
 }
 
+/**
+ * One project as 「迁移到新电脑」 takes it (data-transfer-canvas.ts): its record and workflow, never the
+ * folder it sits in on this computer, which is the customer's own place and means nothing on another one.
+ */
+export interface CanvasProjectTransferRecord {
+  id: string
+  createdAt: string
+  updatedAt: string
+  lastOpenedAt: string
+  archivedAt?: string
+  workflow: Record<string, unknown>
+  /** ready: its own folder, reachable now. missing: its own folder, not reachable. legacy: no folder, its media sit in the account library. */
+  workspaceStatus: CanvasProjectWorkspaceStatus
+}
+
+/** What the migration hands back to register on the new computer: the workflow as text, checked like save(). */
+export interface CanvasProjectTransferInput {
+  id: string
+  createdAt: string
+  updatedAt: string
+  lastOpenedAt: string
+  archivedAt?: string
+  workflow: string
+}
+
+/** existing: this account already has a project with this id. full: no room for one more, archived or not as it was. */
+export type CanvasProjectTransferAdmission = 'ok' | 'existing' | 'full'
+
 function safeUserId(userId: number): void {
   if (!Number.isSafeInteger(userId) || userId <= 0) throw new Error('画布项目账号标识无效')
 }
@@ -73,10 +101,49 @@ function normalizedProjectName(value: string): string {
   return name
 }
 
+/**
+ * A project name as the main window shows it (融合第 1 步、第 5 步): one line of text, no control characters,
+ * capped. The canvas page wrote the name; saving already refuses control characters and long names
+ * (normalizedProjectName), this is the second look before it leaves the canvas side.
+ */
+export function displayCanvasProjectName(name: string): string {
+  return name.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 128).trim() || '未命名项目'
+}
+
+/**
+ * What the main window's library needs to know about one unarchived project (融合第 5 步): where its media
+ * live and which assets its nodes hold. Main process only, never sent to the canvas page.
+ */
+export interface CanvasProjectLibrarySource {
+  id: string
+  name: string
+  /** ready: its own folder, reachable. missing: its own folder, not reachable now. legacy: no folder, its media sit in the account library. */
+  workspaceStatus: CanvasProjectWorkspaceStatus
+  /** The assets its nodes currently hold as results. */
+  assetIds: string[]
+}
+
+function hasRoomForProject(existing: readonly CanvasStoredProjectSummary[], archived: boolean): boolean {
+  if (existing.length >= maximumStoredProjects) return false
+  return archived || existing.filter((project) => !project.archivedAt).length < maximumActiveProjects
+}
+
+function admission(existing: readonly CanvasStoredProjectSummary[], projectId: string, archived: boolean): CanvasProjectTransferAdmission {
+  if (existing.some((project) => project.id === projectId)) return 'existing'
+  return hasRoomForProject(existing, archived) ? 'ok' : 'full'
+}
+
+const transferTimePattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/
+
+function transferTime(value: string): string {
+  if (!transferTimePattern.test(value) || !Number.isFinite(Date.parse(value))) throw new Error('画布项目时间格式错误')
+  return value
+}
+
 function assertRoomForNewProject(existing: readonly CanvasStoredProjectSummary[]): void {
-  if (existing.length >= maximumStoredProjects) throw new Error(`画布项目连同已归档的最多 ${maximumStoredProjects} 个，请先在「已归档」里删掉一些`)
+  if (existing.length >= maximumStoredProjects) throw new Error(`画布项目（含已归档）最多 ${maximumStoredProjects} 个，请先在「已归档」中删除部分项目`)
   if (existing.filter((project) => !project.archivedAt).length >= maximumActiveProjects) {
-    throw new Error(`画布项目最多 ${maximumActiveProjects} 个（已归档的不算），请先归档一些不用的项目`)
+    throw new Error(`画布项目最多 ${maximumActiveProjects} 个（不含已归档），请先归档部分不再使用的项目`)
   }
 }
 
@@ -321,7 +388,8 @@ export class CanvasProjectStore {
     }
   }
 
-  async list(userId: number): Promise<CanvasStoredProjectSummary[]> {
+  /** Every readable project of the account, each turned into what the caller lists; an unreadable one is skipped. */
+  private async readEach<T>(userId: number, project: (stored: StoredCanvasProject) => T): Promise<T[]> {
     const root = this.accountRoot(userId)
     let names: string[]
     try {
@@ -335,11 +403,121 @@ export class CanvasProjectStore {
       .slice(0, maximumStoredProjects)
       .map(async (name) => {
         try {
-          return this.summary(await this.readProject(userId, path.basename(name, '.json')))
+          return { listed: project(await this.readProject(userId, path.basename(name, '.json'))) }
         } catch { return null }
       }))
-    return projects.filter((entry): entry is CanvasStoredProjectSummary => Boolean(entry))
+    return projects.flatMap((entry) => entry ? [entry.listed] : [])
+  }
+
+  async list(userId: number): Promise<CanvasStoredProjectSummary[]> {
+    return (await this.readEach(userId, (stored) => this.summary(stored)))
       .sort((left, right) => right.lastOpenedAt.localeCompare(left.lastOpenedAt) || right.updatedAt.localeCompare(left.updatedAt))
+  }
+
+  /**
+   * The unarchived projects as the main window's library reads them (融合第 5 步), most recently opened
+   * first. Archived projects are left out, as on the project centre's first page and in the main window's list.
+   */
+  async listLibrarySources(userId: number): Promise<CanvasProjectLibrarySource[]> {
+    return (await this.readEach(userId, (stored) => ({
+      archived: Boolean(stored.archivedAt),
+      lastOpenedAt: stored.lastOpenedAt,
+      updatedAt: stored.updatedAt,
+      source: {
+        id: stored.id,
+        name: displayCanvasProjectName(String(stored.workflow.name)),
+        workspaceStatus: workspaceStatus(stored.workspaceDirectory),
+        assetIds: [...workflowAssetProjection(stored.workflow).assetIds],
+      },
+    })))
+      .filter((entry) => !entry.archived)
+      .sort((left, right) => right.lastOpenedAt.localeCompare(left.lastOpenedAt) || right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, maximumActiveProjects)
+      .map((entry) => entry.source)
+  }
+
+  /**
+   * Every readable project of the account, archived ones too, for 「迁移到新电脑」. An unreadable one is
+   * left out, as list() leaves it out.
+   */
+  async listTransferable(userId: number): Promise<CanvasProjectTransferRecord[]> {
+    return this.readEach(userId, (stored) => ({
+      id: stored.id,
+      createdAt: stored.createdAt,
+      updatedAt: stored.updatedAt,
+      lastOpenedAt: stored.lastOpenedAt,
+      ...(stored.archivedAt ? { archivedAt: stored.archivedAt } : {}),
+      workflow: stored.workflow,
+      workspaceStatus: workspaceStatus(stored.workspaceDirectory),
+    }))
+  }
+
+  /**
+   * Whether a migrated project could be registered now. Asked before its files are copied, so a project that
+   * is already here or has no room is never copied at all; restoreTransferred() asks again.
+   */
+  async admitTransferred(userId: number, projectId: string, archived: boolean): Promise<CanvasProjectTransferAdmission> {
+    safeProjectId(projectId)
+    if (await this.projectFileExists(userId, projectId)) return 'existing'
+    return admission(await this.list(userId), projectId, archived)
+  }
+
+  /**
+   * Registers a project 「迁移到新电脑」 brought, keeping its id, times and archived state, so importing the
+   * same export twice adds nothing. The workflow goes through the same validator as save(). A project that
+   * had a folder of its own gets the new, empty folder the import claimed and filled, checked like create();
+   * one that had none stays without, its media in the account library as before. A project file already
+   * under this id, readable or not, is never replaced.
+   */
+  async restoreTransferred(
+    userId: number,
+    input: CanvasProjectTransferInput,
+    workspaceInput?: string,
+  ): Promise<Exclude<CanvasProjectTransferAdmission, 'ok'> | 'added'> {
+    return this.enqueue(userId, async () => {
+      safeProjectId(input.id)
+      const parsed = parseCanvasProjectWorkflow(input.workflow)
+      const workflow = { ...parsed.workflow, name: displayCanvasProjectName(String(parsed.workflow.name)) }
+      const createdAt = transferTime(input.createdAt)
+      const updatedAt = transferTime(input.updatedAt)
+      const lastOpenedAt = transferTime(input.lastOpenedAt)
+      const archivedAt = input.archivedAt === undefined ? undefined : transferTime(input.archivedAt)
+      if (await this.projectFileExists(userId, input.id)) return 'existing'
+      const existing = await this.list(userId)
+      const admitted = admission(existing, input.id, archivedAt !== undefined)
+      if (admitted !== 'ok') return admitted
+      let workspaceDirectory: string | undefined
+      if (workspaceInput !== undefined) {
+        workspaceDirectory = normalizedWorkspaceDirectory(workspaceInput, true)
+        for (const project of existing) {
+          const bound = await this.getWorkspaceDirectory(userId, project.id)
+          if (bound && sameLocalPathIdentity(bound, workspaceDirectory)) {
+            throw new Error(`该工作文件夹已绑定项目「${project.name}」，请为新项目选择单独的文件夹`)
+          }
+        }
+        ensureSafeDataDirectory(path.join(workspaceDirectory, 'assets'), '画布项目素材')
+      }
+      await this.write(userId, {
+        id: input.id,
+        createdAt,
+        updatedAt,
+        lastOpenedAt,
+        ...(archivedAt ? { archivedAt } : {}),
+        ...(workspaceDirectory ? { workspaceDirectory } : {}),
+        workflow,
+      })
+      return 'added'
+    })
+  }
+
+  private async projectFileExists(userId: number, projectId: string): Promise<boolean> {
+    try {
+      await fs.promises.lstat(this.projectPath(userId, projectId))
+      return true
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+      throw error
+    }
   }
 
   async create(userId: number, nameInput: string, workspaceInput: string): Promise<{ project: CanvasStoredProjectSummary; content: string }> {
@@ -385,11 +563,11 @@ export class CanvasProjectStore {
       const workflow = { ...parsed.workflow, name }
       const source = sourceProjectId === undefined ? undefined : await this.readProject(userId, sourceProjectId)
       if (source?.archivedAt) throw new Error('请先恢复已归档项目再复制')
-      if (source && !source.workspaceDirectory) throw new Error('旧项目没有独立工作文件夹，暂时不能复制')
+      if (source && !source.workspaceDirectory) throw new Error('旧版项目没有独立的工作文件夹，暂不支持复制')
       // Without a source there is nowhere to copy the files from, and a new
       // project whose images all show as missing is worse than a clear refusal.
       if (!source && (parsed.assetIds.length > 0 || workflowAssetProjection(workflow).assetIds.size > 0)) {
-        throw new Error('新项目的内容用到了素材，请从原项目另存副本')
+        throw new Error('新项目的内容引用了素材，请从原项目另存副本')
       }
       const targetWorkspace = normalizedWorkspaceDirectory(workspaceInput, true)
       const sourceWorkspace = source?.workspaceDirectory ? normalizedWorkspaceDirectory(source.workspaceDirectory, true) : undefined
@@ -487,7 +665,7 @@ export class CanvasProjectStore {
     return this.enqueue(userId, async () => {
       const source = await this.readProject(userId, projectId)
       if (source.archivedAt) throw new Error('请先恢复已归档项目再复制')
-      if (!source.workspaceDirectory) throw new Error('旧项目没有独立工作文件夹，暂时不能复制')
+      if (!source.workspaceDirectory) throw new Error('旧版项目没有独立的工作文件夹，暂不支持复制')
       const name = normalizedProjectName(nameInput)
       const workflow = structuredClone(source.workflow)
       workflow.name = name
@@ -526,18 +704,18 @@ export class CanvasProjectStore {
     return this.enqueue(userId, async () => {
       const current = await this.readProject(userId, projectId)
       if (current.archivedAt) throw new Error('请先恢复已归档项目')
-      if (!current.workspaceDirectory) throw new Error('旧项目没有独立工作文件夹')
-      if (workspaceStatus(current.workspaceDirectory) !== 'missing') throw new Error('项目的工作文件夹还在，不用重新选择')
+      if (!current.workspaceDirectory) throw new Error('旧版项目没有独立的工作文件夹')
+      if (workspaceStatus(current.workspaceDirectory) !== 'missing') throw new Error('项目的工作文件夹仍然存在，无需重新选择')
       const workspaceDirectory = normalizedWorkspaceDirectory(workspaceInput, true)
       for (const project of await this.list(userId)) {
         if (project.id === projectId) continue
         const bound = await this.getWorkspaceDirectory(userId, project.id)
         if (bound && sameLocalPathIdentity(bound, workspaceDirectory)) {
-          throw new Error(`该工作文件夹已绑定项目「${project.name}」，请选这个项目自己的文件夹`)
+          throw new Error(`该工作文件夹已绑定项目「${project.name}」，请选择此项目自身的文件夹`)
         }
       }
       if (workflowAssetProjection(current.workflow).assetIds.size > 0 && !fs.existsSync(path.join(workspaceDirectory, 'assets'))) {
-        throw new Error('所选文件夹里没有这个项目的素材，请选原来的项目文件夹（里面有 assets 文件夹）')
+        throw new Error('所选文件夹中没有此项目的素材，请选择原项目文件夹（其中包含 assets 文件夹）')
       }
       ensureSafeDataDirectory(path.join(workspaceDirectory, 'assets'), '画布项目素材')
       const relinked = { ...current, updatedAt: new Date().toISOString(), workspaceDirectory }
@@ -572,7 +750,7 @@ export class CanvasProjectStore {
   async remove(userId: number, projectId: string): Promise<{ project: CanvasStoredProjectSummary; workspaceDirectory?: string }> {
     return this.enqueue(userId, async () => {
       const stored = await this.readProject(userId, projectId)
-      if (!stored.archivedAt) throw new Error('请先归档这个项目再删除')
+      if (!stored.archivedAt) throw new Error('请先归档此项目，再进行删除')
       ensureSafeDataDirectory(this.accountRoot(userId), '画布项目')
       await fs.promises.unlink(this.projectPath(userId, projectId))
       return { project: this.summary(stored), ...(stored.workspaceDirectory ? { workspaceDirectory: stored.workspaceDirectory } : {}) }

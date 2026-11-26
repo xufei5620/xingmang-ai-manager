@@ -54,6 +54,8 @@ const macPackagingFiles = new Set([
   'scripts/patch-builder-fetch-compat.cjs',
   'scripts/builder-fetch-compat.cjs',
   'e2e/macos-launch-smoke.mjs',
+  // 两个作业真开打好的包之前先把正式环境的域名指回本机（2026-11-21），改了它要在这两个作业上再跑一遍。
+  'scripts/ci-block-production-hosts.cjs',
   'scripts/update-release-utils.cjs',
   'scripts/release-copyright.cjs',
   'scripts/extract-release-notes.cjs',
@@ -121,6 +123,8 @@ const upgradeSmokeFiles = new Set([
   'electron/auto-update-install.ts',
   'electron/installed-release.ts',
   'electron/bootstrap/updates.ts',
+  'electron/windows-update-handoff.ts',
+  'build/update-handoff/verified-install.ps1',
   'electron/app-settings.ts',
   'electron-builder.config.cjs',
   'build/installer.nsh',

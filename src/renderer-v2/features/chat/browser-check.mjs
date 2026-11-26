@@ -170,7 +170,7 @@ test('legacy read failures cannot establish an empty history via autosave or unm
   const page = await open('strict=1', { [legacyChatKey]: raw })
   try {
     // 原因只进日志，红条一律说同一句（W24）。
-    await page.getByRole('alert').filter({ hasText: '以前的聊天记录暂时读不出来，原文件没动。现在聊的内容不会保存，关掉软件就没了。' }).waitFor()
+    await page.getByRole('alert').filter({ hasText: '历史聊天记录暂时无法读取，原文件未作修改。当前对话内容不会保存，关闭软件后将丢失。' }).waitFor()
     await page.getByTestId('chat-composer-input').fill('not persisted')
     await page.waitForTimeout(400)
     assert.equal(await saved(page), null)
@@ -190,13 +190,13 @@ test('a failed save keeps the result in the window, reports it and leaves the sa
     await page.evaluate(() => window.chatHarness.failHistoryWrites(true))
     await emit(page, { type: 'content', requestId: request.requestId, content: 'VISIBLE-UNSAVED-RESULT' })
     await emit(page, { type: 'complete', requestId: request.requestId })
-    await page.getByRole('alert').filter({ hasText: '聊天记录没有保存到本机' }).waitFor()
+    await page.getByRole('alert').filter({ hasText: '聊天记录未能保存到本机' }).waitFor()
     assert.equal(await page.getByText('VISIBLE-UNSAVED-RESULT', { exact: true }).count(), 1)
     assert.deepEqual(await saved(page), previous)
     await page.evaluate(() => window.chatHarness.failHistoryWrites(false))
     await page.getByTestId('chat-composer-input').fill('saved again')
     await waitSaved(page, (workspace) => workspace.conversations[0].messages.at(-1).content === 'VISIBLE-UNSAVED-RESULT')
-    await page.getByRole('alert').filter({ hasText: '聊天记录没有保存到本机' }).waitFor({ state: 'detached' })
+    await page.getByRole('alert').filter({ hasText: '聊天记录未能保存到本机' }).waitFor({ state: 'detached' })
   } finally { await page.close() }
 })
 
@@ -264,6 +264,7 @@ test('one menu lists the models of every group by vendor, each naming the group 
     // 计费提示只留输入框下面那一句，右上角那个「自动 · 费用不可预测」去掉了。
     assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费，回复越长花得越多。')
     assert.equal(await page.getByText('回答由模型生成，可能有误，重要内容请核对。', { exact: false }).count(), 1)
+    assert.equal(await page.getByTestId('chat-compose-note').textContent(), '回答由模型生成，可能有误，重要内容请核对。按实际用量计费，回复越长花得越多。')
     assert.equal(await page.getByText('自动 · 费用不可预测', { exact: true }).count(), 0)
   } finally { await page.close() }
 })
@@ -295,14 +296,31 @@ test('web links in model output copy their address instead of opening, and other
     assert.equal(await page.locator('.chat-bubble a').count(), 0)
     assert.equal(await link.evaluate((element) => element.tagName), 'BUTTON')
     assert.equal((await link.textContent())?.trim(), 'the docs（example.com）')
-    assert.equal(await link.getAttribute('title'), '点一下复制网址')
+    assert.equal(await link.getAttribute('title'), '点击复制网址')
     assert.equal((await page.getByTestId('chat-link').nth(1).textContent())?.trim(), 'https://example.org/x')
     const mail = page.getByText('mail', { exact: true })
     assert.equal(await mail.evaluate((element) => element.tagName), 'SPAN')
     assert.equal(await mail.getAttribute('title'), '链接不可直接打开：mailto:a@example.com')
     await link.click()
-    await waitForToast(page, '网址已复制，粘贴到浏览器地址栏就能打开')
+    await waitForToast(page, '网址已复制，粘贴到浏览器地址栏即可打开')
     assert.equal(await page.evaluate(() => window.__copied), 'https://example.com/guide')
+  } finally { await page.close() }
+})
+
+test('an answer cut off at the output cap keeps its text and says so under it', async () => {
+  const page = await open()
+  try {
+    const request = await send(page, 'Write a long essay')
+    await emit(page, { type: 'content', requestId: request.requestId, content: 'HALF-WRITTEN-ANSWER' })
+    await emit(page, { type: 'complete', requestId: request.requestId, cutOff: 'length' })
+    const note = page.locator('[data-testid^=chat-message-cut-off-]')
+    await note.waitFor()
+    assert.equal((await note.textContent())?.trim(), '回答已达到单次输出长度上限，内容不完整。如需查看后续内容，请发送「继续」。')
+    assert.equal(await page.getByText('HALF-WRITTEN-ANSWER').count(), 1)
+    const reply = page.locator('.chat-message[data-role=assistant]').last()
+    assert.equal(await reply.getAttribute('data-status'), 'complete')
+    assert.equal(await reply.getByRole('button', { name: '复制回答' }).count(), 1)
+    assert.equal(await reply.getByRole('button', { name: '重新生成' }).isEnabled(), true)
   } finally { await page.close() }
 })
 
@@ -404,11 +422,21 @@ test('image controls use real model capabilities and asset actions use opaque id
     await pickChoice(page, 'chat-image-resolution', '分辨率', '2K')
     assert.equal(await page.getByTestId('chat-image-resolution').textContent(), '分辨率：2K')
     assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费。')
+    // 0.2.25 C3：出图没有「回答」可核对，「生成图片」这一档换成说图片的那一句；文本对话那句照旧（见上面模型菜单那条）。
+    assert.equal(await page.getByTestId('chat-compose-note').textContent(), '图片由模型生成，按实际用量计费。')
+    assert.equal(await page.getByText('回答由模型生成', { exact: false }).count(), 0)
     const request = await send(page, 'A test scene')
     assert.equal(request.quality, 'high')
     assert.equal(request.imageResolution, '2K')
     await page.evaluate((id) => window.chatHarness.completeImage(id), request.requestId)
     await page.getByRole('button', { name: '查看生成图片' }).waitFor()
+    // 0.2.25 C2：「重新生成」「删除」接在图片那排按钮后面（细竖线隔开），尺寸仍在最右；没有文字说明的出图回复不再另起一排。
+    const reply = page.locator('.chat-message[data-role="assistant"]').last()
+    const row = reply.locator('.chat-asset-actions')
+    assert.equal(await row.getByRole('button', { name: '重新生成' }).count(), 1)
+    assert.equal(await row.getByRole('button', { name: '删除消息' }).count(), 1)
+    assert.deepEqual(await row.evaluate((element) => Array.from(element.children).slice(-4).map((child) => child.getAttribute('aria-label') || child.className || child.tagName.toLowerCase())), ['chat-asset-divider', '重新生成', '删除消息', 'small'])
+    assert.equal(await reply.locator('.chat-message-tools').count(), 0)
     await page.getByTestId('chat-asset-copy').click()
     await page.getByTestId('chat-asset-save').click()
     await page.getByTestId('chat-asset-menu').click()
@@ -417,6 +445,69 @@ test('image controls use real model capabilities and asset actions use opaque id
     assert.equal((await calls(page, 'menu-asset'))[0].input, 'a'.repeat(43))
     assert.equal(await page.getByText('图片已保存', { exact: true }).count(), 0)
     await page.screenshot({ path: path.join(output, 'image-result-light.png') })
+  } finally { await page.close() }
+})
+
+// 融合第 4 步：出图的型号、尺寸、画质、分辨率按账号记一份，对话里「生成图片」那一档和视频工作台的出图框共用。
+// 在一段对话里改了，另一段的「生成图片」跟着变；别处（出图框）改了，开着的这一段也跟着变；文本对话和别的账号不受影响。
+test('image settings are remembered once per account and follow into other conversations and changes made elsewhere', async () => {
+  const page = await open()
+  try {
+    await ready(page)
+    await allPrepared(page)
+    const shared = (id = 7) => page.evaluate((key) => JSON.parse(localStorage.getItem(key) ?? 'null'), `xingmang-ui-v2:image-settings:xm-account:${id}`)
+    const controls = async () => ({ ...(await picked(page)), size: await page.getByTestId('chat-image-size').getAttribute('data-value'), quality: await page.getByTestId('chat-image-quality').getAttribute('data-value'), resolution: await page.getByTestId('chat-image-resolution').getAttribute('data-value') })
+    // 只是切到「生成图片」不算改过，还没有可记的。
+    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    assert.equal(await shared(), null)
+    await pickChoice(page, 'chat-image-quality', '画质', '高')
+    await pickChoice(page, 'chat-image-size', '尺寸', '1536 × 1024')
+    assert.deepEqual(await shared(), { model: 'gpt-image-2', group: 'group-a', size: '1536x1024', quality: 'high', imageResolution: '1K' })
+    // 手填到一半、还不合规矩的尺寸不记。
+    await pickChoice(page, 'chat-image-size', '尺寸', '自定义尺寸')
+    await page.getByTestId('chat-image-width').fill('1000')
+    assert.equal((await shared()).size, '1536x1024')
+    await page.getByTestId('chat-image-width').fill('1008')
+    assert.equal((await shared()).size, '1008x1024')
+    await pickChoice(page, 'chat-image-size', '尺寸', '1536 × 1024')
+    const first = await send(page, 'A test scene')
+    assert.deepEqual([first.size, first.quality], ['1536x1024', 'high'])
+    await page.evaluate((id) => window.chatHarness.completeImage(id), first.requestId)
+    await page.getByRole('button', { name: '查看生成图片' }).waitFor()
+
+    // 新开一段对话切到「生成图片」：就是刚才那一份，不回默认。
+    await page.getByTestId('chat-conversation-new').click()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    assert.deepEqual(await controls(), { group: 'group-a', model: 'gpt-image-2', label: 'gpt-image-2', size: '1536x1024', quality: 'high', resolution: '1K' })
+    // 文本对话那一档不跟着动，切回来还在。
+    await page.getByTestId('chat-mode').getByRole('button', { name: '文本对话' }).click()
+    assert.equal(await page.getByTestId('chat-image-size').count(), 0)
+    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    assert.equal((await controls()).quality, 'high')
+
+    // 别处改了这一份（视频工作台的出图框点了「生成图片」）：开着的这一段马上跟着变。
+    await page.evaluate(() => window.chatHarness.shareImageSettings({ model: 'gemini-3.1-flash-image', group: 'group-a', size: '1280x720', quality: 'auto', imageResolution: '2K' }))
+    await page.locator('[data-testid="chat-model"][data-model="gemini-3.1-flash-image"]').waitFor()
+    assert.equal(await page.getByTestId('chat-image-size').getAttribute('data-value'), '1280x720')
+    assert.equal(await page.getByTestId('chat-image-resolution').getAttribute('data-value'), '2K')
+    // 记的型号这会儿不在模型表里：型号留着自己的，尺寸、分辨率照样跟过来。
+    await page.evaluate(() => window.chatHarness.shareImageSettings({ model: 'gone-image-model', group: 'group-a', size: '1024x1536', quality: 'auto', imageResolution: '4K' }))
+    await page.locator('[data-testid="chat-image-size"][data-value="1024x1536"]').waitFor()
+    assert.equal((await picked(page)).model, 'gemini-3.1-flash-image')
+    assert.equal(await page.getByTestId('chat-image-resolution').getAttribute('data-value'), '4K')
+
+    // 重开页面还在；换一个账号是另一份，从默认开始。
+    await page.reload()
+    await ready(page)
+    await allPrepared(page)
+    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    assert.equal(await page.getByTestId('chat-image-size').getAttribute('data-value'), '1024x1536')
+    await page.evaluate(() => window.chatHarness.switchScope(8))
+    await ready(page)
+    await allPrepared(page)
+    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    assert.deepEqual(await controls(), { group: 'group-a', model: 'gpt-image-2', label: 'gpt-image-2', size: '1024x1024', quality: 'low', resolution: '1K' })
+    assert.equal(await shared(8), null)
   } finally { await page.close() }
 })
 
@@ -435,7 +526,7 @@ test('a custom image size the model cannot draw is held back with its rule under
     await width.fill('1000')
     assert.equal(await rule.count(), 0)
     await page.getByTestId('chat-composer-input').fill('A test scene')
-    assert.equal(await rule.textContent(), '这个型号的宽和高都要是 16 的倍数，并在 256 到 4096 之间')
+    assert.equal(await rule.textContent(), '该型号的宽和高均须为 16 的倍数，且在 256 到 4096 之间')
     assert.equal(await width.getAttribute('aria-describedby'), 'chatImageSizeRule')
     // Enter 和发送按钮都不发。
     await page.getByTestId('chat-composer-input').press('Enter')
@@ -460,7 +551,7 @@ test('a custom image size the model cannot draw is held back with its rule under
 
 // 图片文件在外面被删了（D37）：预览、复制、另存都照实说图不在电脑上了，不再叫客户重试——怎么重试都不会成。
 test('says the picture is gone from the computer, instead of asking to retry, when its file was removed outside the app', async () => {
-  const gone = '这张图已经不在电脑上了，可能被移走或删掉了。'
+  const gone = '该图片已不在本机，可能已被移动或删除。'
   const page = await open('assetGone=1')
   try {
     await ready(page)
@@ -471,6 +562,13 @@ test('says the picture is gone from the computer, instead of asking to retry, wh
     const preview = page.locator('.chat-asset-preview img[data-failed="true"]')
     await preview.waitFor()
     assert.equal(await preview.getAttribute('alt'), gone)
+    // 格子里放的是缩好的那张（总单 78 R-2），原图没了格子可能还显示得出来；点开大图读的是原图，得照实说不在了。
+    await page.locator('.chat-asset-preview').click()
+    const enlarged = page.getByTestId('chat-image-preview').locator('.chat-preview-image')
+    await page.waitForFunction(() => document.querySelector('.chat-preview-image')?.getAttribute('alt') === '该图片已不在本机，可能已被移动或删除。')
+    assert.equal(await enlarged.getAttribute('alt'), gone)
+    await page.keyboard.press('Escape')
+    await page.getByTestId('chat-image-preview').waitFor({ state: 'detached' })
     const shown = page.locator('.chat-banner[data-tone="bad"] > span')
     await page.getByTestId('chat-asset-copy').click()
     await shown.waitFor()
@@ -480,7 +578,7 @@ test('says the picture is gone from the computer, instead of asking to retry, wh
     await page.getByTestId('chat-asset-save').click()
     await shown.waitFor()
     assert.equal(await shown.innerText(), gone)
-    assert.equal(await page.getByText(/可以重试|请稍后重试/).count(), 0)
+    assert.equal(await page.getByText(/请重试|请稍后重试/).count(), 0)
   } finally { await page.close() }
 })
 
@@ -565,7 +663,7 @@ test('formulas in replies render as math while money, code and the user message 
     assert.match((await assistant.locator('.chat-bubble').textContent()) ?? '', /余额只剩 \$5，充 \$10/)
     const broken = assistant.locator('.chat-math-raw')
     assert.equal((await broken.textContent())?.trim(), '$\\frac{a$')
-    assert.equal(await broken.getAttribute('title'), '这个公式没能显示，保留原文')
+    assert.equal(await broken.getAttribute('title'), '公式无法显示，已保留原文')
     const size = await assistant.locator('.chat-math-block').evaluate((element) => element.getBoundingClientRect().height)
     assert.ok(size > 20, `display formula should be laid out as math, got ${size}px`)
     await assistant.getByTestId('chat-code-copy').click()
@@ -613,6 +711,41 @@ test('new conversations preserve unsent drafts and local history can be restored
     await page.getByTestId('chat-conversation-clear').click()
     await page.getByTestId('chat-confirm').getByRole('button', { name: '确认删除' }).click()
     assert.equal(await page.locator('.chat-message').count(), 0)
+  } finally { await page.close() }
+})
+
+// 融合第 1 步：「新建」也是做视频、开画布的入口，点得多。以前每点一次左边就多一条空的「新对话」。
+test('the new button returns to the blank page without listing an empty conversation, and the first message is what lists it', async () => {
+  const page = await open()
+  try {
+    const first = await send(page, 'first topic')
+    await emit(page, { type: 'content', requestId: first.requestId, content: 'first answer' })
+    await emit(page, { type: 'complete', requestId: first.requestId })
+    const rows = page.locator('.chat-conversation-select')
+    const title = page.locator('.chat-bar strong')
+    assert.equal(await rows.count(), 1)
+    assert.equal(await title.textContent(), 'first topic')
+    const model = await page.getByTestId('chat-model').getAttribute('data-model')
+    for (let click = 0; click < 3; click += 1) await page.getByTestId('chat-conversation-new').click()
+    await page.getByTestId('chat-empty').waitFor()
+    assert.equal(await rows.count(), 1)
+    assert.equal(await page.locator('.chat-conversation-select[aria-current=page]').count(), 0)
+    assert.equal(await title.textContent(), '新建')
+    // 空白页跟着刚才那段对话的模型走。
+    assert.equal(await page.getByTestId('chat-model').getAttribute('data-model'), model)
+    // 回到那段对话再点「新建」，还是同一页空白，不多一条。
+    await rows.first().click()
+    await page.locator('.chat-message').first().waitFor()
+    await page.getByTestId('chat-conversation-new').click()
+    await page.getByTestId('chat-empty').waitFor()
+    assert.equal(await rows.count(), 1)
+    // 发了第一句才算一段对话。
+    await page.getByTestId('chat-composer-input').fill('second topic')
+    await page.getByTestId('chat-send').click()
+    await page.waitForFunction(() => window.chatHarness.calls.filter((item) => item.method === 'start').length === 2)
+    assert.equal(await rows.count(), 2)
+    assert.equal(await title.textContent(), 'second topic')
+    assert.equal(await page.locator('.chat-conversation-select[aria-current=page]').textContent().then((text) => text.startsWith('second topic')), true)
   } finally { await page.close() }
 })
 
@@ -688,7 +821,7 @@ test('when the group of the current model goes away the model stays named and se
     const prepared = (await calls(page, 'prepare')).length
     await page.evaluate(() => { window.chatHarness.setGroups(['group-b']); window.dispatchEvent(new Event('focus')) })
     await page.getByTestId('chat-group-unavailable').waitFor()
-    assert.equal(await page.getByTestId('chat-group-unavailable').textContent(), '当前模型已不可用，请换一个模型。已保存的消息和草稿继续保留。')
+    assert.equal(await page.getByTestId('chat-group-unavailable').textContent(), '当前模型已不可用，请更换模型。已保存的消息和草稿将继续保留。')
     // 后台刷新不悄悄换模型：按钮上照旧写着 gpt-test，菜单里只剩还在的分组的模型。
     assert.deepEqual(await picked(page), { group: 'group-a', model: 'gpt-test', label: 'gpt-test' })
     assert.deepEqual(await menuSections(page), [{ vendor: '其他', models: [{ label: 'other-model', hint: 'group-b分组', checked: false }] }])
@@ -717,7 +850,7 @@ test('a remembered group the site has since removed falls back to the recommende
   try {
     await ready(page)
     assert.equal((await picked(page)).group, 'group-a')
-    assert.equal(await page.locator('.chat-banner[data-tone="neutral"] > span').innerText(), '原来的分组「retired-group」已不可用，已换成「group-a」，之后按「group-a」分组计费。')
+    assert.equal(await page.locator('.chat-banner[data-tone="neutral"] > span').innerText(), '原分组「retired-group」已不可用，已切换为「group-a」，此后按「group-a」分组计费。')
     assert.equal(await page.getByTestId('chat-group-unavailable').count(), 0)
     await page.getByTestId('chat-composer-input').fill('asked in the new group')
     await page.getByTestId('chat-send').click()
@@ -738,7 +871,7 @@ test('regenerating before the group has its models says they are still being pre
     await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'prepare'))
     await page.getByRole('button', { name: '重新生成', exact: true }).click()
     await page.getByTestId('chat-confirm').getByRole('button', { name: '重新生成', exact: true }).click()
-    assert.equal(await page.locator('.chat-banner > span').innerText(), '正在准备模型，准备好再发送')
+    assert.equal(await page.locator('.chat-banner > span').innerText(), '模型准备中，请稍后发送')
     assert.equal((await calls(page, 'start')).length, 0)
   } finally { await page.close() }
 })
@@ -833,7 +966,7 @@ test('a group whose models were not read is mentioned under the composer, and �
   try {
     await ready(page)
     await allPrepared(page)
-    assert.equal(await page.getByTestId('chat-groups-partly-failed').textContent(), '有几个分组的模型没读到，可以点模型菜单里的「刷新模型」再试。')
+    assert.equal(await page.getByTestId('chat-groups-partly-failed').textContent(), '部分分组的模型未能获取，请点击模型菜单中的「刷新模型」。')
     const menu = await modelMenu(page)
     assert.deepEqual((await vendorSections(menu)).map((section) => section.vendor), ['OpenAI', 'Claude'])
     await page.evaluate(() => window.chatHarness.failPreparation(null))
@@ -853,7 +986,7 @@ test('when no group has its models read the menu says to refresh and nothing can
     await allPrepared(page)
     assert.equal((await picked(page)).label, '暂无可用模型')
     const menu = await modelMenu(page)
-    assert.equal(await menu.locator('.xm-menu-empty').textContent(), '没读到模型，点「刷新模型」再试')
+    assert.equal(await menu.locator('.xm-menu-empty').textContent(), '未获取到模型，请点击「刷新模型」')
     await closeMenu(page, menu)
     assert.equal(await page.locator('.chat-composer .chat-message-error').count(), 1)
     await page.getByTestId('chat-composer-input').fill('cannot go out yet')
@@ -953,10 +1086,11 @@ test('generating an image takes reference pictures and a generated one to keep e
     await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
     assert.equal((await picked(page)).model, 'gpt-image-2')
     const attach = page.getByTestId('chat-attach-image')
-    assert.equal(await attach.getAttribute('title'), '加参考图（也可以直接粘贴截图）')
+    assert.equal(await attach.getAttribute('title'), '添加参考图（也可直接粘贴截图）')
     await attach.click()
     await page.locator('.chat-draft-image').first().waitFor()
     assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费，带参考图的会更贵一些。')
+    assert.equal(await page.getByTestId('chat-compose-note').textContent(), '图片由模型生成，按实际用量计费，带参考图的会更贵一些。')
     // 光有参考图不够，要写上怎么改。
     assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
     await page.getByTestId('chat-composer-input').fill('把背景换成海边')
@@ -970,7 +1104,7 @@ test('generating an image takes reference pictures and a generated one to keep e
     assert.equal(await page.locator('[data-role="user"] .chat-asset-preview').count(), 1)
     await page.evaluate((id) => window.chatHarness.completeImage(id), request.requestId)
     await page.getByRole('button', { name: '查看生成图片' }).waitFor()
-    // 用户自己发的参考图上没有「拿这张接着改」，生成的图上有。
+    // 用户自己发的参考图上没有「基于此图继续编辑」，生成的图上有。
     assert.equal(await page.locator('[data-role="user"]').getByTestId('chat-asset-reuse').count(), 0)
     // 切回文本对话再点它：回到「生成图片」，这张图放进输入框当参考图。
     await page.getByTestId('chat-mode').getByRole('button', { name: '文本对话' }).click()
@@ -987,8 +1121,8 @@ test('generating an image takes reference pictures and a generated one to keep e
     await page.locator('[data-role="assistant"]').getByTestId('chat-asset-reuse').first().click()
     await page.locator('.chat-draft-image').first().waitFor()
     await pickModel(page, 'gemini-3.1-flash-image')
-    assert.equal(await page.getByTestId('chat-images-unsupported').textContent(), '这个模型不能照着图片改，请换一个能改图的模型，或者先把图片去掉')
-    assert.equal(await attach.getAttribute('title'), '这个模型不能照着图片改，换一个能改图的模型才能加图片')
+    assert.equal(await page.getByTestId('chat-images-unsupported').textContent(), '当前模型不支持图片编辑，请更换支持图片编辑的模型，或先移除图片')
+    assert.equal(await attach.getAttribute('title'), '当前模型不支持图片编辑，请更换支持图片编辑的模型后再添加图片')
     await page.getByTestId('chat-composer-input').fill('还是那张图')
     assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
     await page.getByTestId('chat-draft-image-remove').click()
@@ -1030,7 +1164,7 @@ test('a model that reads images takes picked and pasted screenshots and sends th
       data.items.add(new File([new Uint8Array([1])], 'shot.png', { type: 'image/png' }))
       element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }))
     })
-    await page.getByText('当前模型看不了图片').first().waitFor()
+    await page.getByText('当前模型不支持识别图片').first().waitFor()
     assert.equal((await calls(page, 'paste-image')).length, 1, 'a model that cannot read images never reads the clipboard')
   } finally { await page.close() }
 })
@@ -1045,14 +1179,14 @@ test('a paste the main process finds no picture in points at the image button in
       data.items.add(new File([new Uint8Array([1, 2, 3])], '截图.png', { type: 'image/png' }))
       element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }))
     })
-    await page.getByRole('alert').filter({ hasText: '图片没贴上，点输入框右下角那颗带加号的图片按钮，选它就行' }).waitFor()
+    await page.getByRole('alert').filter({ hasText: '图片粘贴失败，请点击输入框右下角带加号的图片按钮选择图片' }).waitFor()
     assert.deepEqual((await calls(page, 'paste-image')).map((call) => call.input), [4])
     assert.equal(await page.locator('.chat-draft-image').count(), 0)
     assert.equal(await page.getByTestId('chat-composer-input').inputValue(), '', 'the file is not pasted as text either')
 
     await page.getByTestId('chat-attach-image').click()
     await page.locator('.chat-draft-image').first().waitFor()
-    assert.equal(await page.getByRole('alert').filter({ hasText: '图片没贴上' }).count(), 0, 'adding the image with the button clears the hint')
+    assert.equal(await page.getByRole('alert').filter({ hasText: '图片粘贴失败' }).count(), 0, 'adding the image with the button clears the hint')
   } finally { await page.close() }
 })
 
@@ -1068,9 +1202,9 @@ test('text files picked in a text conversation go out with the message and stay 
     await page.getByText('「big.log」太长，只读了前 12,000 个字。').waitFor()
     // Removing the long one and picking again asks only for what is left.
     await page.getByTestId('chat-draft-file-remove').nth(1).click()
-    await page.evaluate(() => window.chatHarness.queueTextFiles('Error: 这个文件读不出来，可能正被别的软件占着，关掉它再试。'))
+    await page.evaluate(() => window.chatHarness.queueTextFiles('Error: 该文件无法读取，可能已被其他软件打开，请关闭相关软件后重试。'))
     await page.getByTestId('chat-attach-file').click()
-    await page.getByText('这个文件读不出来，可能正被别的软件占着，关掉它再试。').waitFor()
+    await page.getByText('该文件无法读取，可能已被其他软件打开，请关闭相关软件后重试。').waitFor()
     assert.deepEqual((await calls(page, 'pick-text-files')).at(-1).input, { remainingFiles: 2, remainingChars: 30_000 - 'Error: boom'.length })
     assert.equal(await page.locator('[data-testid=chat-draft-files] .chat-file').count(), 1)
 
@@ -1114,7 +1248,7 @@ test('a paste past 40000 characters keeps its tail, says how long it is under th
     await input.fill(typed)
     const together = `<file name="a.txt">\n${attached.text}\n</file>\n\n${typed}`.length
     assert.ok(together > 40000 && typed.length < 40000)
-    assert.equal(await page.getByTestId('chat-draft-too-long').textContent(), `最多 40000 字，现在 ${together} 字，删掉一些再发。`)
+    assert.equal(await page.getByTestId('chat-draft-too-long').textContent(), `最多 40000 字，当前 ${together} 字，请删减后发送。`)
     assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
     await page.getByTestId('chat-draft-file-remove').click()
     assert.equal(await page.getByTestId('chat-draft-too-long').count(), 0)
@@ -1126,7 +1260,7 @@ test('a paste past 40000 characters keeps its tail, says how long it is under th
     await page.keyboard.insertText(log)
     assert.equal(await input.inputValue(), log, 'nothing is cut off the end')
     const notice = page.getByTestId('chat-draft-too-long')
-    assert.equal(await notice.textContent(), `最多 40000 字，现在 ${log.length} 字，删掉一些再发。`)
+    assert.equal(await notice.textContent(), `最多 40000 字，当前 ${log.length} 字，请删减后发送。`)
     assert.equal(await input.getAttribute('aria-describedby'), await notice.getAttribute('id'))
     assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
     await input.press('Enter')
@@ -1148,7 +1282,7 @@ test('a paste past 40000 characters keeps its tail, says how long it is under th
     await edit.fill('')
     await page.keyboard.insertText(log)
     assert.equal(await edit.inputValue(), log)
-    assert.equal(await page.getByTestId('chat-edit-dialog').getByRole('alert').textContent(), `最多 40000 字，现在 ${log.length} 字，删掉一些再发。`)
+    assert.equal(await page.getByTestId('chat-edit-dialog').getByRole('alert').textContent(), `最多 40000 字，当前 ${log.length} 字，请删减后发送。`)
     assert.equal(await page.getByTestId('chat-edit-send').isDisabled(), true)
     await edit.fill('shorter question')
     assert.equal(await page.getByTestId('chat-edit-dialog').getByRole('alert').count(), 0)
@@ -1171,7 +1305,7 @@ test('pasting spreadsheet cells keeps the text instead of reading a screenshot',
     }
     // A synthetic paste never inserts text, so "not cancelled" is what shows the browser keeps its own paste.
     assert.equal(await page.getByTestId('chat-composer-input').evaluate(pasteCells), true, 'a model that cannot read images still gets the text')
-    assert.equal(await page.getByText('当前模型看不了图片').count(), 0)
+    assert.equal(await page.getByText('当前模型不支持识别图片').count(), 0)
     await pickModel(page, 'claude-test')
     assert.equal(await page.getByTestId('chat-composer-input').evaluate(pasteCells), true, 'a model that reads images still gets the text, not a picture of it')
     assert.equal((await calls(page, 'paste-image')).length, 0)
@@ -1217,11 +1351,11 @@ test('an empty chat says where conversations go, and its examples only fill the 
   const page = await open()
   try {
     await ready(page)
-    assert.equal(await page.getByTestId('chat-conversation-empty').textContent(), '聊过的对话会存在这里')
+    assert.equal(await page.getByTestId('chat-conversation-empty').textContent(), '暂无内容。请在右侧输入框中输入您的需求。')
     assert.equal(await page.getByText('还没有对话', { exact: true }).count(), 0)
     const empty = page.getByTestId('chat-empty')
-    await empty.getByRole('heading', { name: '有什么想问的？', exact: true }).waitFor()
-    await empty.getByText('不开终端，直接和模型对话。额度与工具共用同一个账号。', { exact: true }).waitFor()
+    await empty.getByRole('heading', { name: '今天想创作什么？', exact: true }).waitFor()
+    await empty.getByText('提问、写作、绘图均可在下方输入框中完成，额度与工具共用同一账号。', { exact: true }).waitFor()
     assert.deepEqual(await empty.getByRole('button').allTextContents(), ['帮我把这段话改得更通顺', '把下面的内容翻译成英文', '帮我写一条朋友圈文案，卖的是……', '这个 Excel 公式怎么写：我想……', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思'])
     await page.getByTestId('chat-example-3').click()
     const input = page.getByTestId('chat-composer-input')
@@ -1234,7 +1368,7 @@ test('an empty chat says where conversations go, and its examples only fill the 
     assert.equal(await empty.getByRole('button').count(), 0)
     await input.fill('')
     await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片', exact: true }).click()
-    await empty.getByText('不开终端，直接和模型对话。额度与工具共用同一个账号。', { exact: true }).waitFor()
+    await empty.getByText('提问、写作、绘图均可在下方输入框中完成，额度与工具共用同一账号。', { exact: true }).waitFor()
     assert.equal(await empty.getByRole('button').count(), 0, 'the examples are questions, not pictures')
   } finally { await page.close() }
 })
@@ -1248,7 +1382,7 @@ test('saved phrases fill the composer without sending, survive a reload and can 
     await page.getByTestId('chat-phrases-open').click()
     const dialog = page.getByTestId('chat-phrases-dialog')
     await dialog.getByTestId('chat-phrases-empty').waitFor()
-    assert.equal(await dialog.getByTestId('chat-phrases-empty').textContent(), '还没有存过常用的话。把经常要说的话存在这里，下次一点就填好。')
+    assert.equal(await dialog.getByTestId('chat-phrases-empty').textContent(), '暂无常用语。保存常用语后，点击即可填入。')
     // 打开时把输入框里写好的字带进来，点「存下来」就存。
     const phraseInput = dialog.getByTestId('chat-phrase-input')
     assert.equal(await phraseInput.inputValue(), '帮我看看这段话')
@@ -1289,26 +1423,26 @@ test('history that cannot be read is left alone, and reading it again brings it 
     const before = await saved(page)
     await page.goto(`${base}/src/renderer-v2/features/chat/browser-fixture.html?historyReadFail=1`)
     await page.getByTestId('chat-composer-input').waitFor()
-    const banner = page.getByRole('alert').filter({ hasText: '以前的聊天记录暂时读不出来，原文件没动。现在聊的内容不会保存，关掉软件就没了。' })
+    const banner = page.getByRole('alert').filter({ hasText: '历史聊天记录暂时无法读取，原文件未作修改。当前对话内容不会保存，关闭软件后将丢失。' })
     await banner.waitFor()
-    assert.equal(await page.getByTestId('chat-conversation-empty').textContent(), '以前的对话暂时读不出来')
+    assert.equal(await page.getByTestId('chat-conversation-empty').textContent(), '历史对话读取失败')
     const meanwhile = await send(page, 'said meanwhile')
     await emit(page, { type: 'content', requestId: meanwhile.requestId, content: 'answer meanwhile' })
     await emit(page, { type: 'complete', requestId: meanwhile.requestId })
     await page.waitForTimeout(400)
     assert.deepEqual(await saved(page), before, 'nothing is written over a record that could not be read')
     // 还是读不出来：红条和按钮都留着，记录照旧不碰；读不出来的原因再提示一次，看得出确实读过了。
-    await assertNoToast(page, '以前的聊天记录暂时读不出来，原文件没动')
+    await assertNoToast(page, '历史聊天记录暂时无法读取，原文件未作修改')
     await page.getByTestId('chat-history-reload').click()
     await page.waitForFunction(() => window.chatHarness.calls.filter((item) => item.method === 'read-history').length === 2)
-    await waitForToast(page, '以前的聊天记录暂时读不出来，原文件没动')
+    await waitForToast(page, '历史聊天记录暂时无法读取，原文件未作修改')
     await page.getByTestId('chat-history-reload').waitFor()
     await banner.waitFor()
     await page.evaluate(() => window.chatHarness.failHistoryReads(false))
     await page.getByTestId('chat-history-reload').click()
     await banner.waitFor({ state: 'detached' })
     assert.equal(await page.getByTestId('chat-history-reload').count(), 0)
-    await assertNoToast(page, '以前的聊天记录暂时读不出来，原文件没动')
+    await assertNoToast(page, '历史聊天记录暂时无法读取，原文件未作修改')
     assert.equal(await page.locator('.chat-conversation-select').count(), 2)
     await page.getByText('answer meanwhile', { exact: true }).waitFor()
     await waitSaved(page, (workspace) => workspace.conversations.length === 2)
@@ -1336,7 +1470,7 @@ test('one broken conversation file is set aside on its own while the rest keep l
 
     await page.reload()
     await page.getByTestId('chat-composer-input').waitFor()
-    await page.getByRole('status').filter({ hasText: '有 1 段对话读不出来，已经单独留着，其余照常。' }).waitFor()
+    await page.getByRole('status').filter({ hasText: '有 1 段对话无法读取，已单独保留，其余对话不受影响。' }).waitFor()
     assert.equal(await page.getByRole('alert').count(), 0, 'the rest still saves, so there is no red bar')
     assert.equal(await page.getByTestId('chat-history-reload').count(), 0)
     assert.equal(await page.locator('.chat-conversation-select').count(), 2)
@@ -1354,7 +1488,7 @@ test('one broken conversation file is set aside on its own while the rest keep l
     await page.getByTestId('chat-composer-input').waitFor()
     await page.locator('.chat-conversation-select').nth(1).waitFor()
     assert.equal(await page.locator('.chat-conversation-select').count(), 2)
-    assert.equal(await page.getByText('读不出来', { exact: false }).count(), 0, 'once set aside it is not reported again')
+    assert.equal(await page.getByText('无法读取', { exact: false }).count(), 0, 'once set aside it is not reported again')
   } finally { await page.close() }
 })
 
@@ -1420,7 +1554,7 @@ test('the conversation list groups by day, finds by title and clears everything 
   state.draftConversation.draft = '还没发出去的话'
   const page = await open('', { [storedChatKey]: JSON.stringify(state) })
   try {
-    const list = page.getByRole('navigation', { name: '已保存的对话' })
+    const list = page.getByRole('navigation', { name: '做过的东西列表' })
     await list.getByTestId('chat-conversation-older').waitFor()
     assert.deepEqual(await list.locator('.chat-conversation-day').allTextContents(), ['今天', '昨天', '更早'])
     assert.equal(await page.getByTestId('chat-conversation-today').textContent(), '今天聊的2 条消息')
@@ -1429,27 +1563,27 @@ test('the conversation list groups by day, finds by title and clears everything 
     await page.getByTestId('chat-conversation-search').fill('昨天')
     assert.deepEqual(await list.locator('.chat-conversation-select strong').allTextContents(), ['昨天聊的'])
     await page.getByTestId('chat-conversation-search').fill('没有这个')
-    assert.equal(await page.getByTestId('chat-conversation-search-empty').textContent(), '没有找到「没有这个」相关的对话')
+    assert.equal(await page.getByTestId('chat-conversation-search-empty').textContent(), '未找到「没有这个」相关的内容')
     await page.getByTestId('chat-conversation-search').fill('')
     await page.getByRole('button', { name: '「今天聊的」更多操作', exact: true }).click()
     const menu = page.getByRole('menu', { name: '对话操作', exact: true })
-    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['改名', '置顶', '导出这段对话', '删除这段对话…'])
-    await menu.getByRole('menuitem', { name: '导出这段对话', exact: true }).click()
+    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['重命名', '置顶', '导出此对话', '删除此对话…'])
+    await menu.getByRole('menuitem', { name: '导出此对话', exact: true }).click()
     await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'export-text'))
     assert.equal((await calls(page, 'export-text'))[0].input.title, '今天聊的')
     await page.getByRole('button', { name: '「昨天聊的」更多操作', exact: true }).click()
-    await menu.getByRole('menuitem', { name: '删除这段对话…', exact: true }).click()
+    await menu.getByRole('menuitem', { name: '删除此对话…', exact: true }).click()
     const confirm = page.getByTestId('chat-confirm')
     await confirm.getByRole('heading', { name: '删除「昨天聊的」？', exact: true }).waitFor()
-    await confirm.getByText('这段对话会从这台电脑上删掉，找不回来。已产生的用量不会改变。', { exact: true }).waitFor()
+    await confirm.getByText('该对话将从本机删除且无法恢复，已产生的用量不受影响。', { exact: true }).waitFor()
     await confirm.getByRole('button', { name: '删除', exact: true }).click()
     await page.getByTestId('chat-conversation-yesterday').waitFor({ state: 'detached' })
-    // 页头的「导出这段对话」导出正在看的这一段。
+    // 页头的「导出此对话」导出正在看的这一段。
     await page.getByTestId('chat-conversation-export').click()
     await page.waitForFunction(() => window.chatHarness.calls.filter((item) => item.method === 'export-text').length === 2)
     await page.getByTestId('chat-conversations-clear').click()
     await confirm.getByRole('heading', { name: '清空全部对话？', exact: true }).waitFor()
-    await confirm.getByText('聊天记录会从这台电脑上全部删掉，找不回来。用量账单不受影响。', { exact: true }).waitFor()
+    await confirm.getByText('聊天记录将从本机全部删除且无法恢复，用量账单不受影响。', { exact: true }).waitFor()
     await confirm.getByRole('button', { name: '全部清空', exact: true }).click()
     await waitForToast(page, '对话已清空')
     assert.equal(await list.locator('.chat-conversation-select').count(), 0)
@@ -1471,13 +1605,13 @@ test('a conversation can be renamed and pinned to the top, and both survive a re
   state.activeId = 'today'
   const page = await open('', { [storedChatKey]: JSON.stringify(state) })
   try {
-    const list = page.getByRole('navigation', { name: '已保存的对话' })
+    const list = page.getByRole('navigation', { name: '做过的东西列表' })
     await list.getByTestId('chat-conversation-older').waitFor()
     const menu = page.getByRole('menu', { name: '对话操作', exact: true })
     await page.getByRole('button', { name: '「很久以前聊的」更多操作', exact: true }).click()
-    await menu.getByRole('menuitem', { name: '改名', exact: true }).click()
+    await menu.getByRole('menuitem', { name: '重命名', exact: true }).click()
     const dialog = page.getByTestId('chat-rename-dialog')
-    await dialog.getByRole('heading', { name: '给这段对话改个名', exact: true }).waitFor()
+    await dialog.getByRole('heading', { name: '重命名对话', exact: true }).waitFor()
     const input = page.getByTestId('chat-rename-input')
     assert.equal(await input.inputValue(), '很久以前聊的')
     assert.equal(await input.evaluate((element) => element === document.activeElement), true)
@@ -1500,12 +1634,12 @@ test('a conversation can be renamed and pinned to the top, and both survive a re
     await list.getByTestId('chat-conversation-older').waitFor()
     assert.deepEqual(await list.locator('.chat-conversation-day').allTextContents(), ['置顶', '今天'])
     await page.getByRole('button', { name: '「年终总结」更多操作', exact: true }).click()
-    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['改名', '取消置顶', '导出这段对话', '删除这段对话…'])
+    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['重命名', '取消置顶', '导出此对话', '删除此对话…'])
     await menu.getByRole('menuitem', { name: '取消置顶', exact: true }).click()
     await page.waitForFunction(() => [...document.querySelectorAll('.chat-conversation-day')].map((item) => item.textContent).join() === '今天,更早')
     // 取消也能退出改名框，不改名字。
     await page.getByRole('button', { name: '「今天聊的」更多操作', exact: true }).click()
-    await menu.getByRole('menuitem', { name: '改名', exact: true }).click()
+    await menu.getByRole('menuitem', { name: '重命名', exact: true }).click()
     await input.fill('不要了')
     await dialog.getByRole('button', { name: '取消', exact: true }).click()
     await dialog.waitFor({ state: 'detached' })
@@ -1517,9 +1651,9 @@ test('a conversation can be renamed and pinned to the top, and both survive a re
 test('a conversation that could not be saved says whether to pick another folder or free up the disk', async () => {
   // D16：没权限、盘满了跟设置页导出同一套说法；认不出原因的照旧说可以重试。
   const expected = {
-    denied: '这个位置不让星芒存文件，换个文件夹（比如「下载」）再导出。',
-    full: '这块盘满了，清出一些空间，或者换一块盘再导出。',
-    other: '这段对话没有导出成功，可以重试',
+    denied: '该位置不允许保存文件，请选择其他文件夹（如「下载」）后重新导出。',
+    full: '该磁盘空间已满，请清理部分空间或选择其他磁盘后重新导出。',
+    other: '对话导出失败，请重试',
   }
   const state = storedWorkspace()
   state.conversations[0].messages = [{ id: 'm1', role: 'user', content: '你好', status: 'complete', createdAt: 1 }, { id: 'm2', role: 'assistant', content: '你好呀', reasoning: '', status: 'complete', createdAt: 2 }]
@@ -1543,7 +1677,7 @@ test('a message typed while offline stays in the composer and goes out from the 
     await page.context().setOffline(true)
     await page.getByTestId('chat-composer-input').fill('sent after reconnecting')
     await page.getByTestId('chat-send').click()
-    await page.getByRole('alert').filter({ hasText: '没发出去：现在连不上网。网络恢复后点「重试」。' }).waitFor()
+    await page.getByRole('alert').filter({ hasText: '发送失败：网络未连接。请在网络恢复后点击「重试」。' }).waitFor()
     assert.equal((await calls(page, 'start')).length, 0)
     assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'sent after reconnecting')
     await page.context().setOffline(false)
@@ -1564,7 +1698,7 @@ test('a reply still coming in when the network drops says so under it and can be
     assert.equal(await notice.count(), 0)
     await page.context().setOffline(true)
     await notice.waitFor()
-    assert.equal(await notice.innerText(), '网络断了，这条回复可能接不上，可以先停止。')
+    assert.equal(await notice.innerText(), '网络已断开，本条回复可能无法继续，可先停止。')
     // 3 分钟的时限照旧，界面不替它先停：字还留着、停止按钮还在，只是告诉人可以先停。
     assert.equal(await page.getByTestId('chat-stop').count(), 1)
     assert.equal((await calls(page, 'cancel')).length, 0)
@@ -1588,7 +1722,7 @@ test('the parameters dialog starts every slider at the model default, explains b
     await dialog.waitFor()
     assert.equal(await dialog.getByRole('heading', { name: '参数设置', exact: true }).count(), 1)
     assert.deepEqual(await dialog.locator('.xm-slider b').allTextContents(), ['默认', '默认', '默认', '默认'])
-    assert.deepEqual(await dialog.locator('.xm-slider small').allTextContents(), ['越高越有创意，越低越稳定', '一般不用改', '调高可以减少重复用词', '调高会更愿意换话题'])
+    assert.deepEqual(await dialog.locator('.xm-slider small').allTextContents(), ['越高越有创意，越低越稳定', '通常无需修改', '调高可以减少重复用词', '调高会更愿意换话题'])
     assert.equal(await page.getByTestId('chat-parameter-maxTokens').getAttribute('placeholder'), '不限')
     assert.equal(await page.getByTestId('chat-parameter-seed').getAttribute('placeholder'), '不填则每次随机')
     assert.equal(await page.getByTestId('chat-system-prompt').getAttribute('placeholder'), '比如：你是一位耐心的编程老师，回答尽量简短')
@@ -1614,5 +1748,342 @@ test('the parameters dialog starts every slider at the model default, explains b
     await dialog.waitFor({ state: 'detached' })
     const request = await send(page, 'seeded')
     assert.deepEqual(request.parameters, { seed: 42 })
+  } finally { await page.close() }
+})
+
+// —— 输入框的第三档「生成视频」（融合第 2 步）——
+// 夹具带 ?video 时对话页拿到「创作」页给的那一份（价目、余额、做过的视频），视频那几条通道由测试放行（browser-fixture.tsx）。
+const videoGoneText = '该视频已不在本机，可能已被移动或删除。'
+const videoBilledText = '该片段已提交至服务端并完成扣费，无法中止；将继续等待生成完成，完成后保留在此处。'
+const videoUnconfirmedText = '视频提交结果不明确，服务端可能已创建任务，请勿立即重复提交'
+async function enterVideoMode(page) {
+  await ready(page)
+  await allPrepared(page)
+  await page.getByTestId('chat-mode').getByRole('button', { name: '生成视频' }).click()
+  await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.model === 'grok-imagine-video-1.5')
+}
+async function askVideo(page, prompt) {
+  await page.getByTestId('chat-composer-input').fill(prompt)
+  await page.getByTestId('chat-send').click()
+  const dialog = page.getByTestId('chat-confirm')
+  await dialog.waitFor()
+  return dialog
+}
+async function nextCall(page, method, from) {
+  await page.waitForFunction(({ method, from }) => window.chatHarness.calls.filter((item) => item.method === method).length > from, { method, from })
+  return (await calls(page, method)).at(-1).input
+}
+async function startVideo(page, prompt = '一只橘猫在雨里慢慢走') {
+  const from = (await calls(page, 'video')).length
+  const dialog = await askVideo(page, prompt)
+  await dialog.getByRole('button', { name: '开始生成', exact: true }).click()
+  return nextCall(page, 'video', from)
+}
+async function lastSavedMessage(page) { return page.evaluate(async () => (await window.chatHarness.savedWorkspace()).conversations[0].messages.at(-1)) }
+
+test('a video is priced before it is sent, shows how far it is and ends as a clip that can be saved, opened and handed to a film', async () => {
+  const page = await open('video=1')
+  try {
+    await enterVideoMode(page)
+    // 这一档只列出视频的模型；切过来就把价目读好，确认框打开时已经在手上。
+    assert.deepEqual((await menuSections(page)).flatMap((section) => section.models.map((model) => model.label)).sort(), ['grok-imagine-video-1.5', 'minimax-h3-base'])
+    assert.ok((await calls(page, 'video-prices')).length >= 1)
+    assert.equal(await page.getByTestId('chat-composer-input').getAttribute('placeholder'), '描述您想要的视频，例如：海边日落，镜头慢慢拉远')
+    assert.equal(await page.getByTestId('chat-video-aspect').textContent(), '横屏 16:9')
+    assert.equal(await page.getByTestId('chat-video-seconds').textContent(), '5 秒')
+    assert.equal(await page.getByTestId('chat-cost-note').textContent(), '生成一段视频需要几分钟，按段计费，发送前将显示预计费用。')
+    // 这一档多了两个小菜单，窗口默认那么宽时一行放不下：右边那一组（常用、添加开头图、发送）整组换到下一行、还靠右，
+    // 发送按钮不会一个人掉到左下角。
+    const wide = page.viewportSize()
+    await page.setViewportSize({ width: 820, height: wide.height })
+    assert.deepEqual(await page.evaluate(() => {
+      const bar = document.querySelector('.chat-compose-bar').getBoundingClientRect()
+      const [phrases, send, mode] = ['chat-phrases-open', 'chat-send', 'chat-mode'].map((id) => document.querySelector(`[data-testid="${id}"]`).getBoundingClientRect())
+      return { wrapped: send.top >= mode.bottom, sameRow: Math.abs(phrases.top - send.top) < send.height, gap: Math.round(bar.right - send.right) }
+    }), { wrapped: true, sameRow: true, gap: 0 })
+    await page.setViewportSize(wide)
+
+    // 发送前先问一句：型号、秒数、价钱、余额都是当时的数。取消就什么都不发，打的字还在。
+    const prompt = '一只橘猫在雨里慢慢走'
+    const dialog = await askVideo(page, prompt)
+    assert.equal(await dialog.getByRole('heading').textContent(), '生成 1 段视频？')
+    assert.deepEqual(await dialog.locator('p').allTextContents(), [
+      '用「grok-imagine-video-1.5」生成 1 段、5 秒，单独计费，预计约 $0.25（估算）。当前余额 $12.40。',
+      '生成一段需要几分钟。中途停止时，已提交至服务端的片段仍会继续生成并扣费。',
+    ])
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
+    assert.equal((await calls(page, 'video')).length, 0)
+    assert.equal(await page.getByTestId('chat-composer-input').inputValue(), prompt)
+
+    const request = await startVideo(page, prompt)
+    assert.deepEqual({ ...request, requestId: typeof request.requestId }, { requestId: 'string', group: 'group-a', model: 'grok-imagine-video-1.5', prompt, seconds: '5', width: 1280, height: 720 })
+    // 交给主进程之前，请求号已经存进这条回复里了：交完就断电，重开也拿得回这一段。
+    assert.deepEqual((await lastSavedMessage(page)).video, { requestId: request.requestId })
+
+    const waiting = page.getByTestId('chat-video-pending')
+    await waiting.getByText('正在生成视频', { exact: true }).waitFor()
+    await waiting.getByText('生成需要几分钟，可先进行其他操作，完成后将保留在此处', { exact: true }).waitFor()
+    await page.getByText('正在生成视频…', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('chat-video-progress').count(), 0)
+    const progress = (event) => page.evaluate((event) => window.chatHarness.videoProgress(event), { requestId: request.requestId, ...event })
+    await progress({ stage: 'processing', value: 42 })
+    await waiting.getByText('正在生成视频 42%', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('chat-video-progress').getByRole('progressbar').getAttribute('aria-valuenow'), '42')
+    // 同一步里没带数字的那一下留着上一次的；换了一步从头算。
+    await progress({ stage: 'processing' })
+    await waiting.getByText('正在生成视频 42%', { exact: true }).waitFor()
+    await progress({ stage: 'downloading' })
+    await waiting.getByText('正在下载', { exact: true }).waitFor()
+    await progress({ stage: 'downloading', value: 80 })
+    await waiting.getByText('正在下载 80%', { exact: true }).waitFor()
+    await progress({ stage: 'saving' })
+    await waiting.getByText('正在保存', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('chat-video-progress').count(), 0)
+    // 别的请求的进度不串到这一段上。
+    await page.evaluate(() => window.chatHarness.videoProgress({ requestId: 'someone-else', stage: 'processing', value: 7 }))
+    await waiting.getByText('正在保存', { exact: true }).waitFor()
+
+    await page.evaluate((id) => window.chatHarness.completeVideo(id), request.requestId)
+    const clip = page.locator('[data-testid=chat-video][data-state=done]')
+    await clip.waitFor()
+    assert.equal(await waiting.count(), 0)
+    assert.equal(await clip.locator('.chat-asset-actions small').textContent(), '1280 × 720 · 5 秒')
+    assert.equal(await page.getByTestId('chat-video-play').locator('b').textContent(), '0:05')
+    const saved = await lastSavedMessage(page)
+    assert.equal(saved.status, 'complete')
+    assert.equal(saved.video.requestId, undefined)
+    const assetId = saved.video.clip.assetId
+    await page.screenshot({ path: path.join(output, 'video-result-light.png') })
+
+    await page.getByTestId('chat-video-save').click()
+    await page.locator('.chat-banner').getByText('视频已保存', { exact: true }).waitFor()
+    assert.deepEqual((await calls(page, 'video-save'))[0].input, { assetId, suggestedName: prompt })
+    await page.getByTestId('chat-video-menu').click()
+    await page.getByTestId('chat-video-open').click()
+    assert.equal((await nextCall(page, 'video-open', 0)), assetId)
+
+    // 「添加到视频」：已有的视频一行一条，镜头放满的点不了；选了就接到那一条最后，不用再生成。
+    await page.getByTestId('chat-video-compose').click()
+    const menu = page.getByRole('menu', { name: '选择要添加到的视频', exact: true })
+    await menu.waitFor()
+    assert.equal((await page.getByTestId('chat-video-compose-new').textContent()).trim(), '新建视频')
+    assert.match(await page.getByTestId('chat-video-compose-film-cat').textContent(), /橘猫回家.*4 个镜头/)
+    assert.equal(await page.getByTestId('chat-video-compose-film-full').isDisabled(), true)
+    await page.getByTestId('chat-video-compose-film-cat').click()
+    const composed = await nextCall(page, 'video-compose', 0)
+    assert.equal(composed.filmId, 'film-cat')
+    assert.deepEqual(composed.source, { prompt, clip: saved.video.clip })
+    assert.deepEqual(composed.made, { aspect: '16:9', model: 'grok-imagine-video-1.5', group: 'group-a', seconds: 5 })
+    // 带按钮的提示不会自己消失，直接看页面上那一条就行；点「查看」打开那条视频，提示跟着收起。
+    const added = page.getByTestId('chat-toasts').getByRole('status')
+    await added.getByText('已添加为「橘猫回家」的最后一个镜头', { exact: true }).waitFor()
+    await added.getByRole('button', { name: '查看', exact: true }).click()
+    assert.equal(await nextCall(page, 'video-open-film', 0), 'film-cat')
+    await added.waitFor({ state: 'detached' })
+    await page.getByTestId('chat-video-compose').click()
+    await page.getByTestId('chat-video-compose-new').click()
+    assert.equal((await nextCall(page, 'video-compose', 1)).filmId, null)
+    await added.getByText(`已添加为「${prompt}」的最后一个镜头`, { exact: true }).waitFor()
+    assert.equal((await calls(page, 'video')).length, 1, 'handing a clip to a film generates nothing')
+
+    // 重开以后片段还在，不再去问主进程、更不会再交一单。
+    await page.reload()
+    await page.getByTestId('chat-composer-input').waitFor()
+    await clip.waitFor()
+    assert.equal((await calls(page, 'video')).length + (await calls(page, 'video-resume')).length, 0)
+
+    // 点了才放：这时才去读视频文件，地址是作品库里这一段的。夹具里读不到，照「文件不在了」说。
+    assert.equal(await page.locator('video').count(), 0)
+    await page.evaluate(() => {
+      window.__videoSources = []
+      new MutationObserver((records) => { for (const record of records) for (const node of record.addedNodes) if (node instanceof HTMLVideoElement) window.__videoSources.push(node.getAttribute('src')) }).observe(document.body, { childList: true, subtree: true })
+    })
+    await page.getByTestId('chat-video-play').click()
+    await clip.getByRole('alert').getByText(videoGoneText, { exact: true }).waitFor()
+    assert.deepEqual(await page.evaluate(() => window.__videoSources), [`xingmang-asset://video/${assetId}`])
+  } finally { await page.close() }
+})
+
+test('stopping a video before it reaches the server costs nothing, and after that it says the money is spent and keeps waiting', async () => {
+  const page = await open('video=1')
+  try {
+    await enterVideoMode(page)
+    const unsent = await startVideo(page, '第一段')
+    await page.evaluate((id) => window.chatHarness.holdVideoUnsent(id), unsent.requestId)
+    await page.getByTestId('chat-video-stop').click()
+    await page.locator('.chat-message[data-role=assistant][data-status=canceled]').waitFor()
+    assert.equal((await calls(page, 'video-cancel'))[0].input, unsent.requestId)
+    assert.equal(await page.getByText(videoBilledText, { exact: true }).count(), 0)
+    // 没花钱的那一单什么都不留：重开不会去接它。
+    assert.deepEqual((await lastSavedMessage(page)).video, {})
+    assert.equal((await calls(page, 'video-resume')).length, 0)
+
+    // 已经交给服务端的：停不下来，说清钱已经扣了，接着拿请求号等它回来。
+    const sent = await startVideo(page, '第二段')
+    await page.getByTestId('chat-video-stop').click()
+    await page.locator('.chat-banner').getByText(videoBilledText, { exact: true }).waitFor()
+    assert.equal(await nextCall(page, 'video-resume', 0), sent.requestId)
+    await page.getByTestId('chat-video-pending').waitFor()
+    assert.deepEqual((await lastSavedMessage(page)).video, { requestId: sent.requestId })
+    // 接回的那一单再点停止：只说一遍那句话，不去取消、也不再交一单。
+    await page.getByTestId('chat-video-stop').click()
+    assert.equal((await calls(page, 'video-cancel')).length, 2)
+    await page.evaluate((id) => window.chatHarness.finishVideoResume(id, 'clip'), sent.requestId)
+    await page.locator('[data-testid=chat-video][data-state=done]').waitFor()
+    assert.equal((await calls(page, 'video')).length, 2)
+
+    // 停下以后主进程说没有这一单（提交到一半就停了）：照没成功留着，不悄悄变回「已停止」。
+    const lost = await startVideo(page, '第三段')
+    await page.getByTestId('chat-stop').click()
+    assert.equal(await nextCall(page, 'video-resume', 1), lost.requestId)
+    await page.evaluate((id) => window.chatHarness.finishVideoResume(id, 'missing'), lost.requestId)
+    const failed = page.locator('.chat-message[data-role=assistant][data-status=error]')
+    await failed.waitFor()
+    assert.match(await failed.locator('.chat-message-error').textContent(), /已停止等待；服务端可能仍在生成视频/)
+  } finally { await page.close() }
+})
+
+test('a video still being made when the app closed is picked back up by its request id instead of being paid for twice', async () => {
+  const page = await open('video=1')
+  try {
+    await enterVideoMode(page)
+    const request = await startVideo(page)
+    await page.reload()
+    await page.getByTestId('chat-composer-input').waitFor()
+    assert.equal(await nextCall(page, 'video-resume', 0), request.requestId)
+    await page.getByTestId('chat-video-pending').waitFor()
+    assert.equal((await calls(page, 'video')).length, 0, 'reopening only asks, it never submits again')
+    await page.evaluate((id) => window.chatHarness.finishVideoResume(id, 'clip'), request.requestId)
+    await page.locator('[data-testid=chat-video][data-state=done]').waitFor()
+    assert.equal((await lastSavedMessage(page)).video.requestId, undefined)
+
+    // 主进程说没有这一单：照没生成出来说，重新生成是新的一单（还是先问价）。
+    const second = await startVideo(page, '再来一段')
+    await page.reload()
+    await page.getByTestId('chat-composer-input').waitFor()
+    assert.equal(await nextCall(page, 'video-resume', 0), second.requestId)
+    await page.evaluate((id) => window.chatHarness.finishVideoResume(id, 'missing'), second.requestId)
+    const failed = page.locator('.chat-message[data-role=assistant][data-status=error]')
+    await failed.waitFor()
+    assert.equal(await failed.locator('.chat-message-error').textContent(), '此片段生成失败，请稍后重新生成')
+    await failed.getByRole('button', { name: '重新生成', exact: true }).click()
+    const dialog = page.getByTestId('chat-confirm')
+    await dialog.waitFor()
+    assert.deepEqual(await dialog.locator('p').allTextContents(), [
+      '重新生成会发起新的付费请求，并替换此条及之后的回复。',
+      '用「grok-imagine-video-1.5」生成 1 段、5 秒，单独计费，预计约 $0.25（估算）。当前余额 $12.40。',
+      '生成一段需要几分钟。中途停止时，已提交至服务端的片段仍会继续生成并扣费。',
+    ])
+    await dialog.getByRole('button', { name: '重新生成', exact: true }).click()
+    const again = await nextCall(page, 'video', 0)
+    assert.notEqual(again.requestId, second.requestId)
+    assert.equal(again.prompt, '再来一段')
+    assert.equal((await calls(page, 'video-resume')).length, 1)
+  } finally { await page.close() }
+})
+
+test('regenerating a video whose submission got no answer reuses its request id and warns about paying twice', async () => {
+  const page = await open('video=1')
+  try {
+    await enterVideoMode(page)
+    const request = await startVideo(page)
+    await page.evaluate(({ id, message }) => window.chatHarness.failVideo(id, message), { id: request.requestId, message: videoUnconfirmedText })
+    const failed = page.locator('.chat-message[data-role=assistant][data-status=error]')
+    await failed.waitFor()
+    assert.equal(await failed.locator('.chat-message-error').textContent(), videoUnconfirmedText)
+    assert.deepEqual((await lastSavedMessage(page)).video, { requestId: request.requestId, unconfirmed: true })
+    // 结果不明的那一单重开以后不当它还在出：不去接、也不自己重交，等客户点重新生成。
+    await page.reload()
+    await page.getByTestId('chat-composer-input').waitFor()
+    await failed.waitFor()
+    assert.equal((await calls(page, 'video')).length + (await calls(page, 'video-resume')).length, 0)
+
+    await failed.getByRole('button', { name: '重新生成', exact: true }).click()
+    const dialog = page.getByTestId('chat-confirm')
+    await dialog.waitFor()
+    assert.equal(await page.getByTestId('chat-confirm-unconfirmed').textContent(), '这一段上次提交时未收到星芒的响应：费用可能已扣除，但片段无法取回。重新生成将再次计费，可能产生重复扣费。')
+    const confirm = dialog.getByRole('button', { name: '重新生成', exact: true })
+    assert.equal(await confirm.isDisabled(), true)
+    await dialog.getByRole('checkbox').check()
+    await confirm.click()
+    // 沿用原来的请求号重新交：服务端其实收下过的话，凭它不会再出一份。
+    const again = await nextCall(page, 'video', 0)
+    assert.equal(again.requestId, request.requestId)
+    assert.deepEqual((await lastSavedMessage(page)).video, { requestId: request.requestId, unconfirmed: true })
+    await page.evaluate((id) => window.chatHarness.completeVideo(id), request.requestId)
+    await page.locator('[data-testid=chat-video][data-state=done]').waitFor()
+
+    // 上一单没等到结果就失败了（请求号还在）：重新生成先拿它问主进程，接得回来就不用再付一次。
+    const slow = await startVideo(page, '第二段')
+    await page.evaluate((id) => window.chatHarness.failVideo(id, '暂时查不到进度，请稍后再看'), slow.requestId)
+    await failed.waitFor()
+    assert.equal(await failed.locator('.chat-message-error').textContent(), '暂时查不到进度，请稍后再看')
+    await failed.getByRole('button', { name: '重新生成', exact: true }).click()
+    await dialog.waitFor()
+    assert.equal(await page.getByTestId('chat-confirm-unconfirmed').count(), 0)
+    await dialog.getByRole('button', { name: '重新生成', exact: true }).click()
+    assert.equal(await nextCall(page, 'video-resume', 0), slow.requestId)
+    assert.equal((await calls(page, 'video')).length, 2, 'asks for the old job first')
+    await page.evaluate((id) => window.chatHarness.finishVideoResume(id, 'clip'), slow.requestId)
+    await page.waitForFunction(() => document.querySelectorAll('[data-testid=chat-video][data-state=done]').length === 2)
+    assert.equal((await calls(page, 'video')).length, 2, 'the clip came back, so nothing was submitted again')
+  } finally { await page.close() }
+})
+
+test('用此图生成视频 on a generated image switches to the video mode with that image as the start frame', async () => {
+  const page = await open('video=1')
+  try {
+    await ready(page)
+    await allPrepared(page)
+    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    const image = await send(page, '一只橘猫坐在窗台上')
+    await page.evaluate((id) => window.chatHarness.completeImage(id), image.requestId)
+    await page.getByRole('button', { name: '查看生成图片' }).waitFor()
+    const animate = page.getByTestId('chat-asset-animate')
+    assert.equal((await animate.textContent()).trim(), '用此图生成视频')
+    assert.equal(await animate.getAttribute('title'), '以此图为开头生成视频，将切换至「生成视频」')
+    await animate.click()
+    await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.model === 'grok-imagine-video-1.5')
+    assert.equal(await page.getByTestId('chat-draft-images').locator('.chat-draft-image').count(), 1)
+    assert.equal(await page.getByTestId('chat-composer-input').inputValue(), '一只橘猫坐在窗台上')
+    const request = await startVideo(page, '它慢慢回头看镜头')
+    assert.deepEqual(request.imageAssetIds, ['a'.repeat(43)])
+    assert.equal(request.prompt, '它慢慢回头看镜头')
+  } finally { await page.close() }
+})
+
+test('the video mode is greyed out with the reason when the account cannot use it, and absent where nothing offers it', async () => {
+  for (const [access, reason] of [['unsupported', '当前账号不支持生成视频'], ['suspended', '生成视频暂时停用']]) {
+    const page = await open(`video=1&videoAccess=${access}`)
+    try {
+      await ready(page)
+      const option = page.getByTestId('chat-mode').getByRole('button', { name: '生成视频' })
+      assert.equal(await option.isDisabled(), true)
+      assert.equal(await option.getAttribute('title'), reason)
+      assert.equal(await page.getByTestId('chat-empty').getByText('做视频').count(), 0)
+    } finally { await page.close() }
+  }
+  const plain = await open()
+  try {
+    await ready(plain)
+    assert.deepEqual(await plain.getByTestId('chat-mode').getByRole('button').allTextContents(), ['文本对话', '生成图片'])
+  } finally { await plain.close() }
+})
+
+test('no more than three videos are made at once', async () => {
+  const page = await open('video=1')
+  try {
+    await enterVideoMode(page)
+    for (const prompt of ['第一段', '第二段', '第三段']) {
+      await startVideo(page, prompt)
+      await page.getByTestId('chat-conversation-new').click()
+      await page.getByTestId('chat-empty').waitFor()
+    }
+    const dialog = await askVideo(page, '第四段')
+    await dialog.getByRole('button', { name: '开始生成', exact: true }).click()
+    await page.locator('.chat-banner').getByText('已有 3 段视频正在生成，请等待其中一段完成后再发送', { exact: true }).waitFor()
+    assert.equal((await calls(page, 'video')).length, 3)
+    assert.equal(await page.getByTestId('chat-composer-input').inputValue(), '第四段')
   } finally { await page.close() }
 })

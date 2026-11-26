@@ -352,8 +352,18 @@ function officialDarwinGrokUninstallResult(
     spec.argv.length === 1
     && spec.argv[0] === '--version'
   ) {
+    // The version belongs to the binary, not to the name its private copy was
+    // staged under. Since D19 the probe in front of an uninstall moves `agent`
+    // onto grok's 0.2.118 file, and that copy (still named "agent") must then
+    // answer 0.2.118.
     const executableName = path.basename(spec.executable)
-    const version = executableName === 'agent' || executableName.includes('0.2.111')
+    let contents = ''
+    try {
+      contents = fs.readFileSync(spec.executable, 'utf8')
+    } catch {
+      contents = ''
+    }
+    const version = contents === 'agent binary' || executableName.includes('0.2.111')
       ? '0.2.111'
       : '0.2.118'
     return { stdout: `grok ${version}\n`, stderr: '' }
@@ -395,6 +405,31 @@ describe('createSystemService', () => {
     const touched = service.getConfig(false)
     expect(touched.rememberedWorkspace).toBe(workspace)
     expect(touched.rememberedWorkspaceFresh).toBeUndefined()
+  })
+
+  // 0.2.25 总单 Q1：设置页换的那一刻只跟着记得住的那个文件夹走，首页据此先进它。
+  it('tells the renderer when the remembered folder was chosen on the settings page', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-chosen-summary-')))
+    temporaryDirectories.push(root)
+    const userHome = path.join(root, 'home')
+    const workspace = path.join(userHome, 'Projects', 'shop')
+    fs.mkdirSync(workspace, { recursive: true })
+    const store = new AppSettingsStore(path.join(root, 'settings.json'), root)
+    await store.write({ ...defaultAppSettings(root), workspace, workspaceChosenAt: 1_700_000_000_000 })
+    const inspect = vi.fn((provider: ProviderId) => ({
+      baseUrl: providerBaseUrls[provider], actualBaseUrl: providerBaseUrls[provider], exists: false, apiKey: '', hasApiKey: false,
+      matchesRelay: false, model: '', dataDirectory: path.join(userHome, provider), dataDirectoryExists: false, files: [], updatedAt: null,
+    }))
+    const service = createSystemService(store, { providerRoots: { userHome, codexHome: path.join(userHome, '.codex') }, inspectProviderConfig: inspect })
+
+    expect(service.getConfig(false)).toMatchObject({ rememberedWorkspace: workspace, rememberedWorkspaceChosenAt: 1_700_000_000_000 })
+    await store.write({ ...defaultAppSettings(root), workspace })
+    expect(service.getConfig(false)).not.toHaveProperty('rememberedWorkspaceChosenAt')
+    // A time with no folder the home page may open (the home directory itself) is not passed on.
+    await store.write({ ...defaultAppSettings(root), workspace: userHome, workspaceChosenAt: 1_700_000_000_000 })
+    const home = service.getConfig(false)
+    expect(home).not.toHaveProperty('rememberedWorkspace')
+    expect(home).not.toHaveProperty('rememberedWorkspaceChosenAt')
   })
 
   it('uses provider roots for config surfaces and codexEnv only for Codex CLI work', () => {
@@ -1753,7 +1788,7 @@ describe('createSystemService', () => {
     fs.writeFileSync(f.rootConfigPath, '{ not json', 'utf8')
     await f.store.setOfficialProvider('claude', true)
 
-    await expect(f.service.saveConfig(f.payload, false)).rejects.toThrow(/^Claude Code 原来登录留下的官方密钥没能挪开，配置没有改动。关掉 Claude Code 后再试；还不行请找客服/)
+    await expect(f.service.saveConfig(f.payload, false)).rejects.toThrow(/^Claude Code 原登录留下的官方密钥未能移开，配置未改动。请关闭 Claude Code 后重试；如仍失败，请联系客服/)
 
     expect(fs.existsSync(f.settingsPath)).toBe(false)
     expect(fs.readFileSync(f.rootConfigPath, 'utf8')).toBe('{ not json')
@@ -1780,8 +1815,8 @@ describe('createSystemService', () => {
     await f.service.saveConfig(f.payload, false)
     fs.writeFileSync(f.rootConfigPath, '{ not json', 'utf8')
 
-    await expect(f.service.restoreOfficialCredentials?.('claude')).rejects.toThrow(/^Claude Code 原来的官方密钥没能放回原处。关掉 Claude Code 后再点一次「切回官方账号」/)
-    await expect(f.service.switchToOfficialAccount('claude')).rejects.toThrow(/官方密钥没能放回原处/)
+    await expect(f.service.restoreOfficialCredentials?.('claude')).rejects.toThrow(/^Claude Code 原有的官方密钥未能放回原处。请关闭 Claude Code 后再次点击「切回官方账号」/)
+    await expect(f.service.switchToOfficialAccount('claude')).rejects.toThrow(/官方密钥未能放回原处/)
 
     expect(inspectProviderConfig('claude', f.roots, providerBaseUrls).apiKey).toBe('sk-relay')
     expect(f.store.read().officialProviders ?? []).not.toContain('claude')
@@ -1849,7 +1884,7 @@ describe('createSystemService', () => {
     await f.store.setOfficialProvider('claude', true)
     saveProviderConfig('claude', 'sk-relay', 'claude-sonnet-5', 'merge', f.roots, {}, providerBaseUrls)
 
-    await expect(f.service.alignRestoredAccountSource('claude')).rejects.toThrow(/^Claude Code 原来登录留下的官方密钥没能挪开，现在打开会报无效令牌。关掉 Claude Code 后再点一次「改用当前账号」/)
+    await expect(f.service.alignRestoredAccountSource('claude')).rejects.toThrow(/^Claude Code 原登录留下的官方密钥未能移开，现在打开将提示无效令牌。请关闭 Claude Code 后再次点击「改用当前账号」/)
 
     expect(f.store.read().officialProviders ?? []).not.toContain('claude')
     expect(fs.readFileSync(f.rootConfigPath, 'utf8')).toBe('{ not json')
@@ -2062,7 +2097,7 @@ describe('createSystemService', () => {
   })
 
   // Mac 验收 R1：命令行里找到的 Codex / Grok 既不是 npm 装的、又核不出是官方安装器那一份，首页要能改给
-  // 「用星芒装一份」；一时没核成（起进程失败这类）的不算，照旧按原来的来源显示。
+  // 「使用星芒安装」；一时没核成（起进程失败这类）的不算，照旧按原来的来源显示。
   it('marks a Mac Codex and Grok that cannot be recognised as unrecognised installs found on the path', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-unrecognized-install-scan-'))
     temporaryDirectories.push(directory)
@@ -2967,7 +3002,9 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
     })
     expect(targetReplaced).toBe(true)
     expect(fs.readlinkSync(grokLink)).toBe(fixture.grokTarget)
-    expect(fs.readlinkSync(agentLink)).toBe(fixture.agentTarget)
+    // D19: the probe uninstallCli runs first already moved agent off the stale
+    // 0.2.111 file onto grok's; the rollback puts back exactly what was planned.
+    expect(fs.readlinkSync(agentLink)).toBe(fixture.grokTarget)
   })
 
   it('returns manual-required instead of uninstalled while verified program paths remain', async () => {
@@ -3047,7 +3084,10 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
 
     expect(fs.readdirSync(fixture.bin).filter((name) => name.endsWith('.removing'))).toEqual([])
     expect(fs.existsSync(fixture.grokBinary)).toBe(false)
-    expect(fs.existsSync(fixture.agentBinary)).toBe(false)
+    // D19: the probe in front of the uninstall moved agent onto grok's file, so
+    // 0.2.111 was no longer a program either link kept. It is now an old download
+    // like any other: mentioned, never deleted automatically (internal #18).
+    expect(fs.existsSync(fixture.agentBinary)).toBe(true)
     expect(fs.readFileSync(path.join(fixture.bin, 'keep.txt'), 'utf8')).toBe('keep')
     expect(fs.readFileSync(fixture.configFile, 'utf8')).toBe('config')
     expect(fs.readFileSync(fixture.sessionFile, 'utf8')).toBe('session')
@@ -3253,6 +3293,29 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok readiness self-heal (
     expect(status.installed).toBe(true)
     expect(status.version).toBe('0.2.118')
     expect(fs.readlinkSync(path.join(fixture.bin, 'agent'))).toBe(fixture.grokTarget)
+  })
+
+  // 11-18 复核 D19：以前用星芒更新过、agent 还停在旧版的 Mac，下一次扫描就对上，不用等下一次更新。
+  it('moves an agent link left on an older version onto grok the next time anything probes', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    expect(fs.readlinkSync(path.join(fixture.bin, 'agent'))).toBe(fixture.agentTarget)
+    vi.stubEnv('HOME', fs.realpathSync(fixture.home))
+    vi.stubEnv('PATH', fixture.bin)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('no network in tests') }))
+    const store = new AppSettingsStore(path.join(fixture.home, 'settings.json'), fixture.home)
+    const service = createSystemService(store, {
+      platform: 'darwin',
+      runCommand: async (spec) => {
+        throw new Error(`Unexpected command during a readiness probe: ${spec.executable} ${spec.argv.join(' ')}`)
+      },
+    })
+
+    const status = await service.inspectCliUpdate('grok', false)
+
+    expect(status.installed).toBe(true)
+    expect(status.version).toBe('0.2.118')
+    expect(fs.readlinkSync(path.join(fixture.bin, 'agent'))).toBe(fixture.grokTarget)
+    expect(fs.readFileSync(fixture.agentBinary, 'utf8')).toBe('agent binary')
   })
 
   it('repairs the same gap through a full system scan, not just the single-CLI update check', async () => {
@@ -3626,7 +3689,7 @@ describe('managed npm transaction', () => {
     ).catch((error: unknown) => error)
     expect(failure).toBeInstanceOf(ManagedNpmRollbackError)
     // 上屏只说结果和下一步，「回滚失败」留着；英文原话和新版没装上的原因都在 cause 里（#1100 第1条）。
-    expect((failure as Error).message).toBe('这次更新没装上，旧版本回滚失败，工具现在可能打不开。到首页再装一次；还不行请找客服（错误码 EPERM）。')
+    expect((failure as Error).message).toBe('本次更新未能完成，且旧版本回滚失败，工具当前可能无法打开。请在首页重新安装；如仍失败，请联系客服（错误码 EPERM）。')
     const cause = (failure as Error).cause as Error
     expect(cause.message).toBe('托管 npm 更新失败，且旧版本回滚失败：EPERM: rollback destination is locked')
     expect((cause.cause as Error).message).toBe('verification failed')
@@ -4080,7 +4143,7 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
 
     expect(failure).toBeInstanceOf(Error)
     expect(failure).toMatchObject({
-      message: 'Codex CLI 卸载失败：工具的文件删不掉（拒绝访问）（错误码 EPERM）。',
+      message: 'Codex CLI 卸载失败：工具文件无法删除（拒绝访问）（错误码 EPERM）。',
       cause: expect.any(CommandRunnerError),
     })
     // EPERM by itself reads the same as a folder the user cannot write to, so it
@@ -4102,7 +4165,7 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
 
     const failure: unknown = await service.uninstallCli('codex').catch((error: unknown) => error)
 
-    const message = 'Codex CLI 卸载失败：文件被占用，检测到 Codex CLI 正在运行（1 个进程），请关掉它的窗口再试。'
+    const message = 'Codex CLI 卸载失败：文件被占用，检测到 Codex CLI 正在运行（1 个进程），请关闭其窗口后重试。'
       + `原始报错：${npmRenameDeniedDetail}`
     expect(failure).toMatchObject({ message })
     expect(probeRunningCliProcesses).toHaveBeenCalledTimes(1)
@@ -4125,7 +4188,7 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
 
     const failure: unknown = await service.uninstallCli('codex').catch((error: unknown) => error)
 
-    const message = 'Codex CLI 卸载失败：文件被占用，Codex CLI 可能正在运行，请关掉正在使用它的窗口再试。'
+    const message = 'Codex CLI 卸载失败：文件被占用，Codex CLI 可能正在运行，请关闭正在使用它的窗口后重试。'
       + "原始报错：命令执行失败（退出码 1）：npm（EBUSY；Error: EBUSY: resource busy or locked, rename '/npm/@openai/codex' -> '/npm/@openai/.codex-x'）"
     expect(failure).toMatchObject({ message })
     expect(classifyOperationError(message)).toBe('toolRunning')
@@ -4166,7 +4229,7 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
 
     const failure: unknown = await service.uninstallCli('codex').catch((error: unknown) => error)
 
-    const message = 'Codex CLI 卸载失败：工具的文件删不掉（拒绝访问）（错误码 EACCES）。'
+    const message = 'Codex CLI 卸载失败：工具文件无法删除（拒绝访问）（错误码 EACCES）。'
     expect(failure).toMatchObject({ message })
     expect(probeRunningCliProcesses).not.toHaveBeenCalled()
     expect(classifyOperationError(message)).toBe('permission')
@@ -4188,7 +4251,7 @@ describe.runIf(process.platform === 'linux')('Linux managed npm install', () => 
       fixture.homeDirectory, '.local', 'share', 'XingMangAI', 'Cli', 'npm', 'lib', 'node_modules', '@openai', 'codex',
     )
 
-    await expect(service.installCli('codex', target)).rejects.toThrow('Codex CLI 的主程序没有下载完整')
+    await expect(service.installCli('codex', target)).rejects.toThrow('Codex CLI 的主程序未能完整下载')
     expect(target.send).not.toHaveBeenCalledWith(
       'cli:install-progress',
       expect.objectContaining({ state: 'success' }),
@@ -4634,7 +4697,7 @@ describe('Git runtime installation', () => {
     expect(installGitRuntime).not.toHaveBeenCalled()
     expect(target.send).toHaveBeenCalledWith(
       'runtime:git-install-progress',
-      expect.objectContaining({ phase: 'complete', message: expect.stringContaining('不用重复安装') }),
+      expect.objectContaining({ phase: 'complete', message: expect.stringContaining('无需重复安装') }),
     )
   })
 
@@ -4642,7 +4705,7 @@ describe('Git runtime installation', () => {
     const notes: string[] = []
     await installGitAlongsideClaude(async () => ({ action: 'installed' }), (message) => notes.push(message))
     await installGitAlongsideClaude(async () => ({ action: 'unchanged' }), (message) => notes.push(message))
-    expect(notes).toEqual(['Git 也顺带装好了'])
+    expect(notes).toEqual(['Git 已一并安装'])
   })
 
   it('never lets a failed Git install fail the Claude Code install', async () => {
@@ -4718,7 +4781,7 @@ describe('Windows restart handoff', () => {
     expect(runCommand).toHaveBeenCalledWith(
       expect.objectContaining({
         executable: expect.stringMatching(/System32[\\/]shutdown\.exe$/i),
-        argv: ['/r', '/t', '15', '/d', 'p:0:0', '/c', 'XingMang AI requires a restart to finish Windows updates'],
+        argv: ['/r', '/t', '15', '/d', 'p:0:0', '/c', '星芒AI管理工具将重启电脑，请保存未保存的文件。'],
       }),
       expect.objectContaining({ trustedOnly: true, timeoutMs: 10_000 }),
     )
@@ -4759,7 +4822,7 @@ describe('Windows restart handoff', () => {
 
     const install = service.installPythonRuntime({ isDestroyed: () => false, send: vi.fn() })
     await started
-    await expect(service.restartWindows()).rejects.toThrow('等它做完再重启电脑')
+    await expect(service.restartWindows()).rejects.toThrow('请待其完成后再重启电脑')
     expect(runCommand).not.toHaveBeenCalled()
     finishInstall()
     await expect(install).resolves.toMatchObject({ action: 'installed' })
@@ -4970,7 +5033,7 @@ describe('npm install progress reporting', () => {
     if (process.arch !== 'arm64') {
       expect(target.send).toHaveBeenCalledWith(
         'runtime:node-install-progress',
-        expect.objectContaining({ message: expect.stringContaining('这台电脑是 ARM 芯片') }),
+        expect.objectContaining({ message: expect.stringContaining('本机为 ARM 芯片') }),
       )
     }
     await service.inspectWindowsProcessor()
@@ -5213,7 +5276,7 @@ describe('npm install progress reporting', () => {
       durationMs: npmDownloadTimeoutMs,
     })
 
-    expect(describeNpmCommandFailure(failure)).toBe('下载太久没有完成，超时中止')
+    expect(describeNpmCommandFailure(failure)).toBe('下载长时间未完成，已超时中止')
     expect(describeNpmCommandFailure(new Error('plain'))).toBe('plain')
   })
 
@@ -5296,7 +5359,7 @@ describe('npm install progress reporting', () => {
     expect(message).toContain('45 秒')
     // The percentage stays where it stopped, so the heartbeat has to carry the
     // one fact the progress line cannot: nothing arrived.
-    expect(message).toContain('没有新数据')
+    expect(message).toContain('未收到新数据')
     expect(message).not.toMatch(/%|预计|剩余/)
   })
 
@@ -5426,8 +5489,8 @@ describe('CLI launch queue key', () => {
 
 describe('externalCliInstallRefusal', () => {
   it('refuses the npm channel only for CLIs installed some other way', () => {
-    expect(externalCliInstallRefusal('claude', 'native')).toMatch(/官方安装器管理，这里不会再另装一份/)
-    expect(externalCliInstallRefusal('codex', 'path')).toMatch(/不是通过本工具安装的/)
+    expect(externalCliInstallRefusal('claude', 'native')).toMatch(/官方安装器管理，此处不会重复安装/)
+    expect(externalCliInstallRefusal('codex', 'path')).toMatch(/并非通过本工具安装/)
     expect(externalCliInstallRefusal('gemini', 'npm')).toBeNull()
     expect(externalCliInstallRefusal('claude', undefined)).toBeNull()
     expect(externalCliInstallRefusal('grok', 'native')).toBeNull()
@@ -6107,7 +6170,7 @@ describe('Darwin Codex Desktop integration', () => {
 
     await expect(service.installCodexDesktop(target))
       .resolves.toEqual({ action: 'unchanged', previousVersion: '26.727.51351', installedVersion: '26.727.51351' })
-    expect(target.send).toHaveBeenCalledWith('desktop:codex-install-progress', { phase: 'completed', percent: 100, message: 'Codex 桌面端已经装好了，不用重复安装' })
+    expect(target.send).toHaveBeenCalledWith('desktop:codex-install-progress', { phase: 'completed', percent: 100, message: 'Codex 桌面端已安装，无需重复安装' })
     expect(execute).not.toHaveBeenCalled()
   })
 
@@ -6129,33 +6192,34 @@ describe('Darwin Codex Desktop integration', () => {
   })
 
   it('lets a ChatGPT official account pass the desktop launch readiness check', async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-official-workspace-'))
-    temporaryDirectories.push(directory)
-    const missingWorkspace = path.join(directory, 'missing')
-    const { service, resolveCli, execute } = await createDarwinService({
-      workspace: missingWorkspace,
-      accountMode: 'official',
-    })
+    const { service, resolveCli, execute } = await createDarwinService({ accountMode: 'official' })
 
     await expect(service.launchCodexDesktop('open', {
       isDestroyed: () => false,
       send: vi.fn(),
-    })).rejects.toThrow('工作目录不存在，请重新选择')
+    })).resolves.toMatchObject({ restarted: false })
     expect(resolveCli).not.toHaveBeenCalled()
-    expect(execute).not.toHaveBeenCalled()
+    expect(execute).toHaveBeenCalledTimes(1)
   })
 
-  it('rejects a stored workspace that is not an existing directory', async () => {
+  it('opens the Darwin desktop app without a folder when the remembered one is gone, like Windows does', async () => {
+    // 0.2.24 Mac 上客户删掉了上次选的项目文件夹，点 Codex 桌面端的「打开」只弹「工作目录不存在，请重新选择」，
+    // 这张卡上没有地方选，「重试」还是同一句。Codex 自己管项目，不带文件夹打开它会回到自己上次的项目。
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-missing-workspace-'))
     temporaryDirectories.push(directory)
     const missingWorkspace = path.join(directory, 'missing')
-    const { service, execute, release } = await createDarwinService({ workspace: missingWorkspace })
+    const { service, codexEnv, execute, release } = await createDarwinService({ workspace: missingWorkspace })
 
     await expect(service.launchCodexDesktop('open', {
       isDestroyed: () => false,
       send: vi.fn(),
-    })).rejects.toThrow('工作目录不存在，请重新选择')
-    expect(execute).not.toHaveBeenCalled()
+    })).resolves.toMatchObject({ restarted: false })
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(execute.mock.calls[0]?.[0]).toEqual({
+      executable: '/usr/bin/open',
+      argv: ['-a', '/Applications/Codex.app', '--env', `CODEX_HOME=${codexEnv.CODEX_HOME}`],
+    })
+    expect(execute.mock.calls[0]?.[1]).not.toHaveProperty('cwd')
     expect(release).not.toHaveBeenCalled()
   })
 
@@ -6170,7 +6234,7 @@ describe('Darwin Codex Desktop integration', () => {
     await expect(service.launchCodexDesktop('open', {
       isDestroyed: () => false,
       send: vi.fn(),
-    })).rejects.toThrow('Mac 没允许星芒打开这个文件夹。打开「系统设置 › 隐私与安全性 › 文件和文件夹」，把「星芒AI管理工具」和「终端」两项都打开，再点一次「打开」。')
+    })).rejects.toThrow('Mac 未允许星芒访问该文件夹。请打开「系统设置 › 隐私与安全性 › 文件和文件夹」，开启「星芒AI管理工具」和「终端」两项，然后再次点击「打开」。')
     expect(execute).not.toHaveBeenCalled()
     expect(release).not.toHaveBeenCalled()
   })
@@ -7271,7 +7335,7 @@ describe('installing or uninstalling a CLI', () => {
     })
     const target = { isDestroyed: () => false, send: vi.fn() }
 
-    await expect(service.installCli('codex', target)).rejects.toThrow('不是通过本工具安装的')
+    await expect(service.installCli('codex', target)).rejects.toThrow('并非通过本工具安装')
 
     expect(resolveCliInstallation).toHaveBeenCalledWith('codex', expect.objectContaining({ npmExecutable: npmPath }))
     expect(runCommand).not.toHaveBeenCalledWith(
@@ -7508,7 +7572,7 @@ describe('trusting the workspace the user picked before opening a CLI', () => {
 
     const calledOff = accountWork.queue()
     accountWork.abortQueued()
-    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace, 'new', null, calledOff)).rejects.toThrow('账号刚切换过')
+    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace, 'new', null, calledOff)).rejects.toThrow('账号刚刚切换')
     expect(fs.existsSync(path.join(userHome, '.claude.json'))).toBe(false)
 
     const work = accountWork.queue()
@@ -7932,8 +7996,8 @@ describe('opening a CLI on macOS', () => {
 
     const failure: unknown = await launch().catch((error: unknown) => error)
     expect(failure instanceof Error && failure.message).toBe(
-      '未能打开 Claude Code：终端窗口打开了，但工具没有跟着起来。先看一眼终端窗口里是不是在问什么（比如要不要更新），'
-      + '处理完把这个窗口关掉，再点一次「打开」；还不行就点「找客服」，把这句话发给客服。',
+      '未能打开 Claude Code：终端窗口已打开，但工具未随之启动。请先查看终端窗口中是否有待确认的提示（例如是否更新），'
+      + '处理完成后关闭该窗口，再次点击「打开」；如仍失败，请点击「联系客服」并将此提示发送给客服。',
     )
     expect(failure instanceof Error && failure.cause).toBeInstanceOf(MacosTerminalNotStartedError)
     const entry = log.mock.calls.find((call) => call[2] === 'terminal.failed')
@@ -7993,7 +8057,7 @@ describe('opening a CLI on Windows', () => {
     fs.mkdirSync(workspace)
     const cause = `Cannot perform operation because the wildcard path ${path.join(workspace, '作业[1]')} did not resolve to a file.`
     const launchCliPowerShell = vi.fn<NonNullable<SystemServiceOptions['launchCliPowerShell']>>(async () => {
-      throw new WindowsCliLaunchError('Windows 没能启动 PowerShell，原因已经记进运行日志。', {
+      throw new WindowsCliLaunchError('Windows 未能启动 PowerShell，原因已记录到运行日志。', {
         stderr: cause,
         message: `Command failed: C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand [REDACTED]\n${cause}`,
         code: 1,
@@ -8005,7 +8069,7 @@ describe('opening a CLI on Windows', () => {
 
     const failure = windowsLaunchService(userHome, launchCliPowerShell, { log }).launchProvider('claude', workspace)
     // PowerShell 的英文原话只进下面那条日志，错误框里只说原因已经记下（#1100 第1条）。
-    await expect(failure).rejects.toThrow(/^未能打开 Claude Code：Windows 没能启动 PowerShell，原因已经记进运行日志。$/)
+    await expect(failure).rejects.toThrow(/^未能打开 Claude Code：Windows 未能启动 PowerShell，原因已记录到运行日志。$/)
 
     expect(launchCliPowerShell).toHaveBeenCalledTimes(1)
     expect(launchCliPowerShell.mock.calls[0]?.[0]).toMatchObject({ workspace, title: 'Claude Code · 星芒AI' })

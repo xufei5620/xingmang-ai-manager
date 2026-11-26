@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { classifyOperationError, exportFailureSentence, operationFallbackActions, operationLogSection, operationTargetOf, presentOperationError, presentOperationFailure, type OperationErrorKey, type OperationTarget } from './operation-error'
 import { networkFailureMessages, officialRegistryUnreachableMarker, toolCertificateMessages } from '../../electron/network-failure'
 import { errors } from './registry/errors'
-import { codexDesktopKnownIssueLaunchSentence } from '../../electron/codex-desktop-known-issues'
+import { codexDesktopActivationBrokenSentence, codexDesktopActivationOfflineSentence, codexDesktopKnownIssueLaunchSentence, codexDesktopWindowsUpdateBlockedSentence } from '../../electron/codex-desktop-known-issues'
 import { configLinkRefusalMessage } from '../../electron/config-link-refusal'
 import { brokenConfigLaunchMessages } from './features/tools/broken-config-launch'
 import { configWriteBlockerMessage } from '../../electron/config-write-blocker'
@@ -23,25 +23,31 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   sessionExpired: { sample: '账号接口返回 401 Unauthorized' },
   // 主进程 remote-features.ts 拼的那几句：状态文件关掉了这一样（G04）。
   featureSuspended: { sample: toolInstallOffMessage('Codex CLI') },
-  toolNotEnabled: { sample: 'Codex CLI 改用当前账号没有完成：分组不存在、不可用或名称重复。已恢复到切换前的配置。' },
-  switchUndoFailed: { sample: '改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到「设置 › 备份迁移」里恢复切换前那一份。' },
-  pluginCatalogStuck: { sample: 'Codex 插件目录里的旧备份清不掉，这次没有改动' },
+  toolNotEnabled: { sample: 'Codex CLI 改用当前账号未完成：分组不存在、不可用或名称重复。已恢复到切换前的配置。' },
+  switchUndoFailed: { sample: '改用当前账号未完成：写入失败 EPERM。自动恢复也未完成（EPERM），请在「设置 › 备份迁移」中恢复切换前的备份。' },
+  pluginCatalogStuck: { sample: 'Codex 插件目录中的旧备份无法清除，本次未作改动' },
   configBroken: { sample: brokenConfigLaunchMessages.codexConfig },
   // 主进程 extension-command-output.ts 的 withCommandOutput：原话后面接上命令自己说的那一行（Claude Code 2.1 的原话）。
   gitMissing: { sample: '命令执行失败（退出码 1）：claude（命令输出：Executable not found in $PATH: "git"）', target: 'config' },
   githubUnreachable: { sample: "命令执行失败（退出码 1）：claude（命令输出：fatal: unable to access 'https://github.com/anthropics/claude-code.git/': Failed to connect to github.com port 443 after 21045 ms: Couldn't connect to server）", target: 'config' },
   nameTaken: { sample: '命令执行失败（退出码 1）：claude（命令输出：MCP server demo already exists in local config）', target: 'config' },
   // 主进程 codex-desktop-service.ts 的 describeCodexDesktopLaunchFailure。
-  codexDesktopNotStarted: { sample: 'Codex 桌面端没有打开：等了将近一分钟，没有等到它的窗口。先关掉所有 Codex 窗口，再点「重试」；还是不行，就在开始菜单里搜「Codex」直接点开，也打不开的话请联系客服。' },
+  codexDesktopNotStarted: { sample: 'Codex 桌面端未能打开：等待近一分钟，窗口仍未出现。请关闭所有 Codex 窗口后点击「重试」；如仍无法打开，请在开始菜单中搜索「Codex」直接打开，如同样无法打开，请联系客服。' },
+  // 同一个函数在 Windows 激活接口说没装、包却装着时（codex-desktop-known-issues.ts）。
+  codexDesktopActivationBroken: { sample: `Codex 桌面端未能打开：${codexDesktopActivationBrokenSentence(38)}` },
+  // 同一个函数在 Windows 联网核对许可超时、进程没建出来时（codex-desktop-known-issues.ts）。
+  codexDesktopActivationOffline: { sample: `Codex 桌面端未能打开：${codexDesktopActivationOfflineSentence(58)}` },
+  // 同一个函数在 Windows 更新服务被关了、Codex 第一次启动验证不了时（codex-desktop-known-issues.ts）。
+  codexDesktopWindowsUpdateBlocked: { sample: `Codex 桌面端未能打开：${codexDesktopWindowsUpdateBlockedSentence(62)}` },
   // 同一个函数在装着已知打不开的那一版时（codex-desktop-known-issues.ts）。
-  codexDesktopKnownIssue: { sample: `Codex 桌面端没有打开：等了 51 秒，Codex 没有启动起来。${codexDesktopKnownIssueLaunchSentence('26.924.2738.0')}` },
+  codexDesktopKnownIssue: { sample: `Codex 桌面端未能打开：等待 51 秒，Codex 未成功启动。${codexDesktopKnownIssueLaunchSentence('26.924.2738.0')}` },
   // 主进程 codex-desktop-install-failure.ts 的 buildCodexDesktopInstallFailureMessage。
-  codexDesktopInstallFailed: { sample: 'Codex 桌面端没装上：微软商店这次没装上，国内下载线路这会儿连不上。' },
-  codexDesktopInstallNoStore: { sample: 'Codex 桌面端没装上：这台电脑没有微软商店，国内下载线路这会儿连不上。' },
-  codexDesktopTooOld: { sample: 'Codex 桌面端没装上：微软商店这次没装上，这台电脑的 Windows 版本太旧，装不了 Codex 桌面端。可以先用 Codex CLI，或者把 Windows 更新到最新。' },
-  codexDesktopFirewallOff: { sample: 'Codex 桌面端没装上：这台电脑的 Windows 防火墙服务被停掉了。新版 Codex 桌面端安装时要在防火墙里登记一下，服务停着 Windows 就不让装，重试和去微软商店装都绕不过去。' },
+  codexDesktopInstallFailed: { sample: 'Codex 桌面端未能安装：微软商店安装失败，国内下载线路暂时无法连接。' },
+  codexDesktopInstallNoStore: { sample: 'Codex 桌面端未能安装：本机没有微软商店，国内下载线路暂时无法连接。' },
+  codexDesktopTooOld: { sample: 'Codex 桌面端未能安装：微软商店安装失败，本机的 Windows 版本过旧，无法安装 Codex 桌面端。可先使用 Codex CLI，或将 Windows 更新至最新版本。' },
+  codexDesktopFirewallOff: { sample: 'Codex 桌面端未能安装：本机的 Windows 防火墙服务已停用。新版 Codex 桌面端安装时需在防火墙中注册，该服务停用时 Windows 将拒绝安装，重试或通过微软商店安装均无法解决。' },
   // 主进程 claude-desktop-install-failure.ts 的 buildClaudeDesktopInstallFailureMessage。
-  claudeDesktopInstallFailed: { sample: 'Claude Desktop 没装上：系统自带的安装组件和 Claude 官网的离线安装包这次都没装上，Claude 官网这会儿连不上。' },
+  claudeDesktopInstallFailed: { sample: 'Claude Desktop 未能安装：系统自带的安装组件和 Claude 官网的离线安装包均安装失败，Claude 官网暂时无法连接。' },
   // 主进程 macos-desktop-app-installer.ts 照 macos-desktop-install-failure.ts 拼的那几句。
   macDesktopInstallFailed: { sample: macosDesktopDownloadFailedMessage('OpenCode') },
   macDesktopTooOld: { sample: macosDesktopSystemTooOldMessage('OpenCode', '13.0') },
@@ -54,26 +60,26 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   timeout: { sample: '模型查询超时，请检查网络后重试' },
   // 更新替换正在跑的 CLI 时文件被锁，主进程（cli-process-probe.ts）把话说清楚；
   // npm 自己吐的 EBUSY 原文也走这条。
-  toolRunning: { sample: 'Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关掉它的窗口再试。' },
+  toolRunning: { sample: 'Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关闭其窗口后重试。' },
   installBlocked: { sample: 'Grok CLI 安装失败：安装文件已被隔离，请检查杀毒软件的隔离记录' },
   downloadTimeout: { sample: 'Codex CLI 安装失败：npm 官方源：request to registry 失败，reason: ETIMEDOUT' },
   // 主进程按 npm 的错误码写好的中文原因，错误码留在句尾（#1100 第1、3条）。
-  downloadUnreachable: { sample: 'Codex CLI 安装失败：国内 npm 镜像：解析不出下载源的地址（错误码 ENOTFOUND）' },
-  downloadSourceError: { sample: 'Claude Code 安装失败：国内 npm 镜像：下载源那边出错（错误码 E503）' },
+  downloadUnreachable: { sample: 'Codex CLI 安装失败：国内 npm 镜像：无法解析下载源地址（错误码 ENOTFOUND）' },
+  downloadSourceError: { sample: 'Claude Code 安装失败：国内 npm 镜像：下载源出错（错误码 E503）' },
   // 主进程装之前到官方源核对安装清单那一步没连上（#1057 第5b条）。
-  officialRegistryUnreachable: { sample: `Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，${officialRegistryUnreachableMarker}（错误码 ETIMEDOUT）。到「设置 › 网络加速」开启加速后再试。` },
+  officialRegistryUnreachable: { sample: `Claude Code 安装失败：安装前需先在 npm 官方源核对安装清单，${officialRegistryUnreachableMarker}（错误码 ETIMEDOUT）。请在「设置 › 网络加速」中开启加速后重试。` },
   // config-files 认出工具的配置文件本身是链接时那句（#1100 第2条）。
   configLink: { sample: configLinkRefusalMessage('用户文件夹里的 .claude/settings.json', 'file'), target: 'config' },
   // config-files 写 Key 前的校验（safe-local-data）原话。
   folderRelocated: { sample: 'Provider 配置根目录不能经过符号链接或目录联接' },
   // 授权窗口点了「否」（node-runtime.ts 的 describeNodeInstallFailure 接上 windows-elevation.ts 那句，#1096）。
-  elevationDeclined: { sample: 'Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。重新点击安装即可再次授权。' },
+  elevationDeclined: { sample: 'Node.js 自动安装失败：已取消管理员授权，Node.js 安装未开始。重新点击安装即可再次授权。' },
   permission: { sample: 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename' },
   // 同一句 EPERM，调用方说明写的是工具的配置文件时（已知29）。
   configPermission: { sample: "重新写入密钥 没有完成：EPERM: operation not permitted, rename '本机路径'", target: 'config' },
   // 主进程查出没权限是哪一种时那半句（config-files-context.ts 的 explainConfigWriteFailure，D15），经 account-source-switch 包一层。
-  configAdminOwned: { sample: `Claude Code 改用当前账号没有完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`, target: 'config' },
-  configReadOnly: { sample: `Codex CLI 改用当前账号没有完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。已恢复到切换前的配置。`, target: 'config' },
+  configAdminOwned: { sample: `Claude Code 改用当前账号未完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`, target: 'config' },
+  configReadOnly: { sample: `Codex CLI 改用当前账号未完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。已恢复到切换前的配置。`, target: 'config' },
   diskFull: { sample: 'Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write' },
   // 同一句磁盘满，写的是工具的配置文件时（#1100 第6条）。
   configDiskFull: { sample: "重新写入密钥 没有完成：ENOSPC: no space left on device, write '本机路径'", target: 'config' },
@@ -87,7 +93,7 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   toolCertElevated: { sample: `Claude Code 安装失败：npm 官方源：SELF_SIGNED_CERT_IN_CHAIN。${toolCertificateMessages.elevated}` },
   updateIntegrity: { sample: 'Claude Code 更新失败：SHA-512 完整性校验不一致' },
   backupIntegrity: { sample: '备份文件已损坏或被篡改' },
-  unsafeStorage: { sample: '这台电脑没法安全保存密码，已拒绝写入托管 API Key。' },
+  unsafeStorage: { sample: '本机不支持安全保存密码，已拒绝写入托管密钥。' },
   // 支付的两个终态不走这条路：pages-account.tsx 的 paymentTerminalPresentation
   // 已经按回跳结果给出更具体的说法，再用目录文案盖一层只会更含糊。
   paymentClosed: { unreachable: 'paymentTerminalPresentation 直接给终态文案' },
@@ -104,9 +110,9 @@ describe('renderer-v2 operation error classification', () => {
     }
     expect(presentOperationError(toolInstallOffMessage('Codex 桌面端'))).toEqual({
       key: 'featureSuspended',
-      title: '这个功能暂时停用了',
-      body: '我们已经知道这个问题，修好以后会自动恢复，不用重装软件。',
-      actions: [{ id: 'support', label: '找客服' }],
+      title: '该功能已暂时停用',
+      body: '我们已获知此问题，修复后将自动恢复，无需重新安装软件。',
+      actions: [{ id: 'support', label: '联系客服' }],
     })
     // 经 IPC 过来带着通道名和错误类名，剥掉以后照样认得出。
     expect(presentOperationFailure(operationFailureFrom(new Error(`Error invoking remote method 'cli:install': RemoteFeatureOffError: ${toolInstallOffMessage('Codex CLI')}`), '安装 Codex CLI'))?.key).toBe('featureSuspended')
@@ -120,14 +126,14 @@ describe('renderer-v2 operation error classification', () => {
 
   it('sends a locked file to the running tool, not to the antivirus settings', () => {
     // 候选 5：更新/回滚要替换正在运行的 CLI 的文件，Windows 上那是文件锁。
-    // 以前这几句都落在 installBlocked，标题是「安装被杀毒软件拦住了」。
+    // 以前这几句都落在 installBlocked，标题是「安装被杀毒软件拦截」。
     for (const locked of [
       'Claude Code 安装失败：npm 官方源：EBUSY: resource busy or locked, rename',
-      'Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关掉它的窗口再试。',
-      'Codex CLI 更新失败：文件被占用，Codex CLI 可能正在运行，请关掉正在使用它的窗口再试。',
+      'Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关闭其窗口后重试。',
+      'Codex CLI 更新失败：文件被占用，Codex CLI 可能正在运行，请关闭正在使用它的窗口后重试。',
       '会话操作失败，会话文件正被其他程序占用；请关闭占用它的程序（如杀毒或备份软件）后重启本工具',
     ]) expect([locked, classifyOperationError(locked)]).toEqual([locked, 'toolRunning'])
-    const hint = presentOperationError('Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关掉它的窗口再试。')
+    const hint = presentOperationError('Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关闭其窗口后重试。')
     expect(hint?.title).toBe('工具正在运行')
     expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }])
   })
@@ -151,11 +157,11 @@ describe('renderer-v2 operation error classification', () => {
 
   it('names the history account backend running out of balance instead of showing the English sentence alone', () => {
     // 客户装着 CC Switch、点「改用当前账号」时撞上的原话：历史账号余额用完，查模型那一步就被拒了。
-    const switchFailure = '改用当前账号没有完成：模型查询失败，服务返回 403：Insufficient account balance。已恢复到切换前的配置。'
+    const switchFailure = '改用当前账号未完成：模型查询失败，服务返回 403：Insufficient account balance。已恢复到切换前的配置。'
     expect(classifyOperationError(switchFailure, 'config')).toBe('noBalance')
     const hint = presentOperationError(switchFailure, 'config')
-    expect(hint?.title).toBe('余额已用完')
-    expect(hint?.actions).toEqual([{ id: 'recharge', label: '马上充值' }])
+    expect(hint?.title).toBe('余额已用尽')
+    expect(hint?.actions).toEqual([{ id: 'recharge', label: '立即充值' }])
     // 只带错误码的写法同样认得。
     expect(classifyOperationError('模型查询失败，服务返回 403：INSUFFICIENT_BALANCE')).toBe('noBalance')
   })
@@ -194,8 +200,8 @@ describe('renderer-v2 operation error classification', () => {
 
   it('leaves the import file sentences alone instead of sending the user to close a tool', () => {
     // X-7：导入文件被占着时主进程那句已经说清下一步；配上「工具正在运行」的标题会叫人去关命令行工具。
-    expect(presentOperationError('这个文件现在读不了，可能正被别的程序占着。关掉它，再点一次「导入」。')).toBeNull()
-    expect(presentOperationError('这个文件不是星芒导出的，或者已经损坏，没有导入任何内容。')).toBeNull()
+    expect(presentOperationError('该文件暂时无法读取，可能已被其他程序打开。请关闭相关程序后再次点击「导入」。')).toBeNull()
+    expect(presentOperationError('该文件并非由星芒导出或已损坏，未导入任何内容。')).toBeNull()
   })
 
   it('does not repeat wording the message already carries', () => {
@@ -217,7 +223,7 @@ describe('renderer-v2 operation error classification', () => {
   it('hands back only the buttons this app can honour', () => {
     const hint = presentOperationError('Codex CLI 安装失败：下载 ETIMEDOUT')
     expect(hint?.title).toBe('下载超时')
-    expect(hint?.body).toBe('下载没有完成，已安装的工具不受影响。')
+    expect(hint?.body).toBe('下载未完成，已安装的工具不受影响。')
     // 以前是「换官方源重试」，可有时连不上的正是官方源（#1100 第3条）。
     expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'network', label: '检查网络' }])
   })
@@ -226,22 +232,22 @@ describe('renderer-v2 operation error classification', () => {
   it('blames the download source, not the Xingmang servers, when an install cannot fetch', () => {
     for (const sourceError of [
       'Claude Code 安装失败：npm 官方源：命令执行失败（退出码 1）：npm-cli.js（E500；500 Internal Server Error - GET https://registry.npmjs.org/x）',
-      'Node.js 自动安装失败：下载安装包时下载源那边出错（错误码 HTTP 503）。过几分钟再点「重试」。',
-      'Grok CLI 更新失败：国内 npm 镜像：下载源那边出错（错误码 E502）',
+      'Node.js 自动安装失败：下载安装包时下载源出错（错误码 HTTP 503）。请几分钟后点击「重试」。',
+      'Grok CLI 更新失败：国内 npm 镜像：下载源出错（错误码 E502）',
     ]) expect([sourceError, classifyOperationError(sourceError)]).toEqual([sourceError, 'downloadSourceError'])
-    const source = presentOperationError('Grok CLI 更新失败：国内 npm 镜像：下载源那边出错（错误码 E502）')
-    expect(source).toMatchObject({ title: '下载源暂时出错', actions: [{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }] })
+    const source = presentOperationError('Grok CLI 更新失败：国内 npm 镜像：下载源出错（错误码 E502）')
+    expect(source).toMatchObject({ title: '下载源暂时异常', actions: [{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }] })
 
     for (const unreachable of [
-      'Codex CLI 安装失败：国内 npm 镜像：解析不出下载源的地址（错误码 ENOTFOUND）',
-      'Claude Code 安装失败：npm 官方源：和下载源的连接被切断（错误码 ECONNRESET）',
-      'Node.js 自动安装失败：下载安装包时网络不通（错误码 ECONNREFUSED）。检查网络后再点「重试」。',
+      'Codex CLI 安装失败：国内 npm 镜像：无法解析下载源地址（错误码 ENOTFOUND）',
+      'Claude Code 安装失败：npm 官方源：与下载源的连接已中断（错误码 ECONNRESET）',
+      'Node.js 自动安装失败：下载安装包时网络不通（错误码 ECONNREFUSED）。请检查网络后点击「重试」。',
     ]) expect([unreachable, classifyOperationError(unreachable)]).toEqual([unreachable, 'downloadUnreachable'])
-    expect(presentOperationError('Codex CLI 安装失败：国内 npm 镜像：解析不出下载源的地址（错误码 ENOTFOUND）')).toMatchObject({
-      title: '连不上下载源', actions: [{ id: 'retry', label: '重试' }, { id: 'network', label: '检查网络' }],
+    expect(presentOperationError('Codex CLI 安装失败：国内 npm 镜像：无法解析下载源地址（错误码 ENOTFOUND）')).toMatchObject({
+      title: '无法连接下载源', actions: [{ id: 'retry', label: '重试' }, { id: 'network', label: '检查网络' }],
     })
     // 真的超时照旧是「下载超时」，主进程新写的那句也认得出、标题不再被原话吞掉。
-    const timedOut = presentOperationError('Claude Code 安装失败：npm 官方源：下载太久没有完成，超时中止（错误码 ETIMEDOUT）')
+    const timedOut = presentOperationError('Claude Code 安装失败：npm 官方源：下载长时间未完成，已超时中止（错误码 ETIMEDOUT）')
     expect(timedOut?.title).toBe('下载超时')
 
     // 登录、账号这些场合照旧。
@@ -253,33 +259,33 @@ describe('renderer-v2 operation error classification', () => {
   it('tells an offline user to check the network and retry instead of promising the tools still work', () => {
     // 中转和账号是同一个站点：本机连不上网时装好的工具一样连不上中转，「照常能用」会把客户支去开一个也报错的工具。
     const hint = presentOperationError('账号接口请求失败：getaddrinfo ENOTFOUND xm.solov.cc')
-    expect(hint?.title).toBe('网络连不上')
-    expect(hint?.body).toBe('已装好的工具不受影响。检查网络后再点「重试」。')
+    expect(hint?.title).toBe('网络连接失败')
+    expect(hint?.body).toBe('已安装的工具不受影响。请检查网络后点击「重试」。')
     expect(hint?.actions).toContainEqual({ id: 'retry', label: '重试' })
   })
 
   it('points a full disk at the config file, not the install folder, when a config write fails', () => {
-    const hint = presentOperationError("改用当前账号没有完成：ENOSPC: no space left on device, write '本机路径'", 'config')
+    const hint = presentOperationError("改用当前账号未完成：ENOSPC: no space left on device, write '本机路径'", 'config')
     expect(hint).toMatchObject({
       key: 'configDiskFull',
-      title: '磁盘空间不够',
-      body: '配置文件所在的磁盘（一般是系统盘）没有空间了，原来的设置没有动。清理出一些空间后再点「重试」。',
+      title: '磁盘可用空间不足',
+      body: '配置文件所在磁盘（通常为系统盘）空间不足，原设置未作修改。请清理部分空间后点击「重试」。',
       actions: [{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }],
     })
     expect(classifyOperationError('Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write')).toBe('diskFull')
   })
 
   it('says the official npm registry is the only way through when the manifest check cannot connect', () => {
-    const message = `Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，${officialRegistryUnreachableMarker}（错误码 ETIMEDOUT）。到「设置 › 网络加速」开启加速后再试。`
+    const message = `Claude Code 安装失败：安装前需先在 npm 官方源核对安装清单，${officialRegistryUnreachableMarker}（错误码 ETIMEDOUT）。请在「设置 › 网络加速」中开启加速后重试。`
     expect(presentOperationError(message)).toMatchObject({
       key: 'officialRegistryUnreachable',
-      title: '连不上工具的官方下载站',
-      body: '这一步只能从官方下载站拿，换国内下载站也绕不过去。已安装的工具不受影响。照下面这句话做，再点「重试」。',
+      title: '无法连接工具的官方下载站',
+      body: '此步骤只能从官方下载站获取，国内下载站无法替代。已安装的工具不受影响。请按下方提示操作后点击「重试」。',
       actions: [{ id: 'retry', label: '重试' }, { id: 'network', label: '检查网络' }],
     })
   })
 
-  // 「Key 失效」的「一键修复」以前落到「找客服」：目录里写好了这颗按钮，表里没有
+  // 「Key 失效」的「一键修复」以前落到「联系客服」：目录里写好了这颗按钮，表里没有
   // 它，用户读完「需要换一把 Key」只剩加客服微信这一条路。
   it('honours the one-click repair on an invalid key', () => {
     const hint = presentOperationError('模型查询失败，服务返回 403：令牌已失效')
@@ -293,7 +299,7 @@ describe('renderer-v2 operation error classification', () => {
     for (const raw of [
       '模型查询失败，服务返回 401：无效的令牌',
       '模型查询失败，服务返回 401',
-      'Claude Code 改用当前账号没有完成：模型查询失败，服务返回 401：无效的令牌。已恢复到切换前的配置。',
+      'Claude Code 改用当前账号未完成：模型查询失败，服务返回 401：无效的令牌。已恢复到切换前的配置。',
       'Codex CLI 的 Key 没配上：模型查询失败，服务返回 401：无效的令牌 (request id: 2)',
       '模型查询失败，服务返回 403：API key 已过期',
     ]) {
@@ -337,26 +343,26 @@ describe('renderer-v2 operation error classification', () => {
 
   it('sends a permission failure to retry, the directory and support, never to an elevated retry', () => {
     // A2 余项：这一类以前只有「以管理员身份重试」这一颗按钮，没有提权通道
-    // 接得住它，于是整条落回「找客服」。现在几颗按钮都是这个应用真做得到的事；
-    // 「找客服」是 D14 补上的：这一类客户自己最难处理。
+    // 接得住它，于是整条落回「联系客服」。现在几颗按钮都是这个应用真做得到的事；
+    // 「联系客服」是 D14 补上的：这一类客户自己最难处理。
     const hint = presentOperationError('安装失败：EACCES permission denied')
-    expect(hint?.title).toBe('写不进安装目录')
-    expect(hint?.body).toBe('这个文件夹不让星芒写东西，常见是杀毒软件拦了。点「复制路径」看是哪个文件夹，把它加进杀毒软件的信任名单后再点「重试」；还不行点「找客服」。')
-    expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'copyPath', label: '复制路径' }, { id: 'support', label: '找客服' }])
+    expect(hint?.title).toBe('无法写入安装目录')
+    expect(hint?.body).toBe('该文件夹不允许星芒写入，通常是被杀毒软件拦截。请点击「复制路径」查看具体文件夹，将其加入杀毒软件信任列表后点击「重试」；如仍失败，请点击「联系客服」。')
+    expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'copyPath', label: '复制路径' }, { id: 'support', label: '联系客服' }])
   })
 
   it('says the config file could not be written when the caller writes one, never the install directory', () => {
     // 已知29：改用当前账号、重新写入密钥 这些写的是配置文件，以前也叫人去看安装目录、复制安装目录的路径。
-    const raw = "Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open '本机路径'"
+    const raw = "Claude Code 改用当前账号未完成：EPERM: operation not permitted, open '本机路径'"
     const hint = presentOperationError(raw, 'config')
     expect(hint?.key).toBe('configPermission')
-    expect(hint?.title).toBe('写不进配置文件')
-    expect(hint?.body).toBe('常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口，再点「重试」；还不行点「找客服」。')
-    expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }, { id: 'support', label: '找客服' }])
+    expect(hint?.title).toBe('无法写入配置文件')
+    expect(hint?.body).toBe('通常是被安全软件拦截，或该文件正被其他程序占用。请关闭正在使用该工具的窗口后点击「重试」；如仍失败，请点击「联系客服」。')
+    expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }, { id: 'support', label: '联系客服' }])
     // 原话认不出、要看 detail 的那一种也一样。
     expect(presentOperationFailure({ message: '重新写入密钥 没有完成', detail: 'EACCES: permission denied', target: 'config' })?.key).toBe('configPermission')
     // 不说写的是什么时照旧（装工具、更新工具）。
-    expect(presentOperationError(raw)?.title).toBe('写不进安装目录')
+    expect(presentOperationError(raw)?.title).toBe('无法写入安装目录')
     // 文件被占用、搬过的文件夹还是原来那几句；磁盘满换成说配置所在那块盘（#1100 第6条）。
     expect(classifyOperationError('写入失败：文件被占用', 'config')).toBe('toolRunning')
     expect(classifyOperationError('Provider 配置根目录不能经过符号链接或目录联接（EPERM）', 'config')).toBe('folderRelocated')
@@ -366,53 +372,53 @@ describe('renderer-v2 operation error classification', () => {
   })
 
   it('tells an export that could not be saved to pick another folder, never the install directory', () => {
-    // D16：导出到开了「受控文件夹访问」的桌面、写保护的 U 盘时，以前标题是「写不进安装目录」；
+    // D16：导出到开了「受控文件夹访问」的桌面、写保护的 U 盘时，以前标题是「无法写入安装目录」；
     // 盘满时正文讲安装用的临时文件夹。导出存的是客户自己选的位置。
     const denied = "EPERM: operation not permitted, open '本机路径'"
     const permission = presentOperationError(denied, 'export')
     expect(permission?.key).toBe('exportPermission')
     // 红条上标题和正文用「，」连起来，就是 yoyo 批的那一句。
-    expect(`${permission?.title}，${permission?.body}`).toBe('这个位置不让星芒存文件，换个文件夹（比如「下载」）再导出。')
+    expect(`${permission?.title}，${permission?.body}`).toBe('该位置不允许保存文件，请选择其他文件夹（如「下载」）后重新导出。')
     const full = presentOperationError('ENOSPC: no space left on device, write', 'export')
     expect(full?.key).toBe('exportDiskFull')
-    expect(`${full?.title}，${full?.body}`).toBe('这块盘满了，清出一些空间，或者换一块盘再导出。')
+    expect(`${full?.title}，${full?.body}`).toBe('该磁盘空间已满，请清理部分空间或选择其他磁盘后重新导出。')
     // 导出失败上屏的是兜底句、原话在 detail 里（useOperation → ResultNotice），照样认得出。
-    expect(presentOperationFailure({ message: '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。', detail: 'EACCES: permission denied', target: 'export' })?.key).toBe('exportPermission')
+    expect(presentOperationFailure({ message: '操作失败，请重试；如仍失败，请在「反馈与客服」页将报告发送给客服。', detail: 'EACCES: permission denied', target: 'export' })?.key).toBe('exportPermission')
     // 不说是导出时照旧（装工具、更新工具）。
-    expect(presentOperationError(denied)?.title).toBe('写不进安装目录')
-    expect(presentOperationError('ENOSPC: no space left on device, write')?.title).toBe('磁盘空间不够')
+    expect(presentOperationError(denied)?.title).toBe('无法写入安装目录')
+    expect(presentOperationError('ENOSPC: no space left on device, write')?.title).toBe('磁盘可用空间不足')
     // 文件被占用、搬过的文件夹不归这两句。
     expect(classifyOperationError('EBUSY: resource busy or locked', 'export')).toBe('toolRunning')
     expect(classifyOperationError('聊天对话导出文件不能经过符号链接或目录联接', 'export')).toBe('folderRelocated')
   })
 
   it('gives the chat page the same two export sentences and nothing for other failures', () => {
-    // 聊天页红条只有一行字，拿整句；认不出的交回 null，那边留「这段对话没有导出成功，可以重试」。
-    expect(exportFailureSentence({ message: '操作没有成功', detail: "EPERM: operation not permitted, open '本机路径'" })).toBe('这个位置不让星芒存文件，换个文件夹（比如「下载」）再导出。')
-    expect(exportFailureSentence({ message: '操作没有成功', detail: 'ENOSPC: no space left on device, write' })).toBe('这块盘满了，清出一些空间，或者换一块盘再导出。')
+    // 聊天页红条只有一行字，拿整句；认不出的交回 null，那边留「对话导出失败，请重试」。
+    expect(exportFailureSentence({ message: '操作没有成功', detail: "EPERM: operation not permitted, open '本机路径'" })).toBe('该位置不允许保存文件，请选择其他文件夹（如「下载」）后重新导出。')
+    expect(exportFailureSentence({ message: '操作没有成功', detail: 'ENOSPC: no space left on device, write' })).toBe('该磁盘空间已满，请清理部分空间或选择其他磁盘后重新导出。')
     expect(exportFailureSentence({ message: '聊天对话导出文件写入被系统占用，请稍后重试' })).toBeNull()
     expect(exportFailureSentence({ message: '操作没有成功', detail: 'EBUSY: resource busy or locked' })).toBeNull()
     expect(exportFailureSentence({ message: '' })).toBeNull()
     // 经 IPC 过来的原话（带通道名、本机路径）走 failureWithDetail 以后照样认得出。
     const viaIpc = new Error("Error invoking remote method 'chat-history:export-text': Error: EPERM: operation not permitted, open 'C:\\Users\\小王\\Desktop\\.周报.txt.3f401a29-0000-4000-8000-000000000000.tmp'")
-    expect(exportFailureSentence(failureWithDetail(viaIpc))).toBe('这个位置不让星芒存文件，换个文件夹（比如「下载」）再导出。')
+    expect(exportFailureSentence(failureWithDetail(viaIpc))).toBe('该位置不允许保存文件，请选择其他文件夹（如「下载」）后重新导出。')
   })
 
   it('says which of the two known config write refusals it is instead of blaming security software (D15)', () => {
     // 权限和写失败.md PW-3、PW-4：设置文件夹归管理员、文件被设成只读，重试多少次都一样，以前也叫人关窗口重试。
-    const adminOwned = `Claude Code 改用当前账号没有完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`
-    const readOnly = `Codex CLI 切回官方账号没有完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。已恢复到切换前的配置。`
-    const actions = [{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }, { id: 'support', label: '找客服' }]
+    const adminOwned = `Claude Code 改用当前账号未完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`
+    const readOnly = `Codex CLI 切回官方账号未完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。已恢复到切换前的配置。`
+    const actions = [{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }, { id: 'support', label: '联系客服' }]
     expect(presentOperationError(adminOwned, 'config')).toEqual({
       key: 'configAdminOwned',
-      title: '写不进配置文件',
-      body: '这个工具的设置文件夹归电脑管理员所有，多半是以前用管理员身份运行过它，星芒改不了。点「复制给客服」，客服会教你一步改回来。',
+      title: '无法写入配置文件',
+      body: '该工具的设置文件夹归管理员所有，通常是之前以管理员身份运行过该工具，星芒无法修改。请点击「复制给客服」，客服将指导您恢复。',
       actions,
     })
     expect(presentOperationError(readOnly, 'config')).toEqual({
       key: 'configReadOnly',
-      title: '写不进配置文件',
-      body: '这个文件被设成了只读，星芒没动它。要让星芒写进去，先取消只读。',
+      title: '无法写入配置文件',
+      body: '该文件已设为只读，星芒未作修改。如需写入，请先取消只读属性。',
       actions,
     })
     // 主进程只在写配置时这么说：调用方没说写的是配置（装工具时顺手写密钥）也照样认，不说成安装目录。
@@ -421,7 +427,7 @@ describe('renderer-v2 operation error classification', () => {
     expect(presentOperationFailure({ message: '重新写入密钥没有完成', detail: configWriteBlockerMessage('adminOwned', 'EACCES'), target: 'config' })?.key).toBe('configAdminOwned')
     // 没查出是哪一种的照旧是原来那句；自动恢复也没做成的照旧先叫人去备份迁移。
     expect(classifyOperationError("重新写入密钥 没有完成：EACCES: permission denied, open '本机路径'", 'config')).toBe('configPermission')
-    expect(classifyOperationError(`改用当前账号没有完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。自动恢复也没有完成（EPERM），请到「设置 › 备份迁移」里恢复切换前那一份。`, 'config')).toBe('switchUndoFailed')
+    expect(classifyOperationError(`改用当前账号未完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。自动恢复也未完成（EPERM），请在「设置 › 备份迁移」中恢复切换前的备份。`, 'config')).toBe('switchUndoFailed')
   })
 
   it('treats exactly the home actions that rewrite a tool config as config writes', () => {
@@ -437,28 +443,81 @@ describe('renderer-v2 operation error classification', () => {
       .some((action) => action.label.includes('管理员'))).toBe(false)
   })
 
-  it('offers 重置 Codex between retry and support when the Codex window simply never appeared', () => {
-    const hint = presentOperationError('Codex 桌面端没有打开：等了 45 秒，Codex 没有启动起来。先关掉所有 Codex 窗口，再点「重试」。')
+  it('offers 重置 Codex and then a restart between retry and support when the Codex window simply never appeared', () => {
+    const hint = presentOperationError('Codex 桌面端未能打开：等待 45 秒，Codex 未能启动。请关闭所有 Codex 窗口后点击「重试」。如需确认是否为 Codex 自身问题，可在开始菜单中搜索「ChatGPT」并直接打开：如同样无法打开，则为 Codex 当前版本的问题，可等待微软商店更新，或先使用 Codex CLI；如开始菜单中可以打开而星芒中无法打开，请联系客服。')
     expect(hint?.key).toBe('codexDesktopNotStarted')
+    // 这句里有「Codex 未能启动」，正是 Windows 起不来那一类的标题；只比自己那一类的标题，不能被它整个省掉。
+    expect(hint?.title).toBe('Codex 打开失败')
     expect(hint?.actions).toEqual([
       { id: 'retry', label: '重试' },
       { id: 'resetCodexDesktop', label: '重置 Codex' },
-      { id: 'support', label: '找客服' },
+      { id: 'restartComputer', label: '立即重启' },
+      { id: 'support', label: '联系客服' },
     ])
     expect(hint?.body).toContain('重置 Codex')
+    expect(hint?.body).toContain('「立即重启」')
+  })
+
+  it('puts the restart first and drops 重置 Codex when Windows itself could not start an installed Codex', () => {
+    const message = `Codex 桌面端未能打开：${codexDesktopActivationBrokenSentence(38)}`
+    expect(message).toBe('Codex 桌面端未能打开：Codex 已安装，但 Windows 未能启动它，等待 38 秒仍未检测到 Codex 运行。重启电脑后通常可以恢复。')
+    const hint = presentOperationError(message)
+    expect(hint?.key).toBe('codexDesktopActivationBroken')
+    expect(hint?.title).toBe('Codex 未能启动')
+    expect(hint?.actions).toEqual([
+      { id: 'restartComputer', label: '立即重启' },
+      { id: 'retry', label: '重试' },
+      { id: 'support', label: '联系客服' },
+    ])
+    // 该说的那半句在，不在的是重置：重装都救不了它，重置只会白白清掉 Codex 的登录。
+    expect(hint?.actions.some((action) => action.id === 'resetCodexDesktop')).toBe(false)
+    // 认这一类靠的是 Windows 那半句，不是秒数；没计时的那一版照样认得出。
+    expect(presentOperationError(`Codex 桌面端未能打开：${codexDesktopActivationBrokenSentence()}`)?.key).toBe('codexDesktopActivationBroken')
+  })
+
+  it('sends the customer to the network, not to a reset or a restart, when Windows could not verify Codex online', () => {
+    const message = `Codex 桌面端未能打开：${codexDesktopActivationOfflineSentence(58)}`
+    expect(message).toBe('Codex 桌面端未能打开：Windows 打开 Codex 前需要联网向微软验证，本次验证超时，等待 58 秒仍未检测到 Codex 运行。网络恢复后重新打开即可。')
+    const hint = presentOperationError(message)
+    expect(hint?.key).toBe('codexDesktopActivationOffline')
+    expect(hint?.title).toBe('网络不稳定，Codex 未能启动')
+    expect(hint?.actions).toEqual([
+      { id: 'retry', label: '重试' },
+      { id: 'network', label: '检查网络' },
+      { id: 'support', label: '联系客服' },
+    ])
+    // 重置清掉的是 Codex 的登录，重启要客户放下手里的活，两样都换不来网络。
+    expect(hint?.actions.some((action) => action.id === 'resetCodexDesktop' || action.id === 'restartComputer')).toBe(false)
+    expect(presentOperationError(`Codex 桌面端未能打开：${codexDesktopActivationOfflineSentence()}`)?.key).toBe('codexDesktopActivationOffline')
+  })
+
+  it('asks for Windows Update to be turned on once, with only retry and support, when it blocked the first launch', () => {
+    const message = `Codex 桌面端未能打开：${codexDesktopWindowsUpdateBlockedSentence(62)}`
+    expect(message).toBe('Codex 桌面端未能打开：本机的 Windows 更新服务无法启动，Codex 首次启动所需的验证未能完成，等待 62 秒仍未检测到 Codex 运行。临时开启 Windows 更新并成功打开一次 Codex 后，可重新关闭更新。')
+    const hint = presentOperationError(message)
+    expect(hint?.key).toBe('codexDesktopWindowsUpdateBlocked')
+    expect(hint?.title).toBe('Windows 更新已关闭，Codex 未能启动')
+    expect(hint?.body).toBe('Codex 首次启动时需要借助 Windows 更新服务向微软完成验证。本机的 Windows 更新服务当前无法启动，因此 Codex 未能打开，无需重新安装或重置 Codex。请临时开启 Windows 更新，成功打开一次 Codex 后即可重新关闭。如 Windows 更新由技术人员关闭，请联系相关人员协助开启；也可点击「联系客服」并将下方提示发送给客服。')
+    expect(hint?.actions).toEqual([
+      { id: 'retry', label: '重试' },
+      { id: 'support', label: '联系客服' },
+    ])
+    // 重置只会清掉 Codex 的登录，重启换不来更新服务，系统设置里也不一定开得了（那台是改了文件夹权限）。
+    expect(hint?.actions.some((action) => action.id === 'resetCodexDesktop' || action.id === 'restartComputer')).toBe(false)
+    expect(presentOperationError(`Codex 桌面端未能打开：${codexDesktopWindowsUpdateBlockedSentence()}`)?.key).toBe('codexDesktopWindowsUpdateBlocked')
   })
 
   it('offers the command-line Codex when the installed desktop version is known not to start', () => {
-    const message = `Codex 桌面端没有打开：等了 51 秒，Codex 没有启动起来。${codexDesktopKnownIssueLaunchSentence('26.924.2738.0')}`
+    const message = `Codex 桌面端未能打开：等待 51 秒，Codex 未成功启动。${codexDesktopKnownIssueLaunchSentence('26.924.2738.0')}`
     const hint = presentOperationError(message)
     expect(hint?.key).toBe('codexDesktopKnownIssue')
     expect(hint?.actions).toEqual([
       { id: 'retry', label: '重试' },
-      { id: 'useCodexCli', label: '改用 Codex 命令行版' },
-      { id: 'support', label: '找客服' },
+      { id: 'useCodexCli', label: '改用 Codex CLI' },
+      { id: 'support', label: '联系客服' },
     ])
     // 没带那半句的照旧按普通「没能打开」处理。
-    expect(presentOperationError('Codex 桌面端没有打开：等了 45 秒，Codex 没有启动起来。')?.key).toBe('codexDesktopNotStarted')
+    expect(presentOperationError('Codex 桌面端未能打开：等待 45 秒，Codex 未成功启动。')?.key).toBe('codexDesktopNotStarted')
   })
 
   it('gives every Codex Desktop install failure a retry, the Microsoft Store, the log and support', () => {
@@ -471,9 +530,9 @@ describe('renderer-v2 operation error classification', () => {
         expect([message, hint?.key]).toEqual([message, 'codexDesktopInstallFailed'])
         expect(hint?.actions).toEqual([
           { id: 'retry', label: '重试' },
-          { id: 'openStore', label: '去微软商店装' },
+          { id: 'openStore', label: '前往微软商店安装' },
           { id: 'log', label: '查看日志' },
-          { id: 'support', label: '找客服' },
+          { id: 'support', label: '联系客服' },
         ])
         // 「查看日志」要落到运行日志：原话（SHA-256、退出码）只记在那里。
         expect(operationLogSection({ message, tool: 'codexDesktop' })).toBe('log')
@@ -488,7 +547,7 @@ describe('renderer-v2 operation error classification', () => {
       const hint = presentOperationError(message)
       expect([message, hint?.key]).toEqual([message, 'codexDesktopInstallNoStore'])
       expect(hint?.actions.map((action) => action.id)).toEqual(['retry', 'log', 'support'])
-      expect(JSON.stringify(hint)).not.toContain('去微软商店装')
+      expect(JSON.stringify(hint)).not.toContain('前往微软商店安装')
       expect(operationLogSection({ message, tool: 'codexDesktop' })).toBe('log')
     }
   })
@@ -523,12 +582,12 @@ describe('renderer-v2 operation error classification', () => {
         expect(hint?.actions).toEqual([
           { id: 'retry', label: '重试' },
           { id: 'claudeDesktopOfflinePackages', label: '下载离线安装包' },
-          { id: 'claudeDesktopDownload', label: '去 Claude 官网' },
+          { id: 'claudeDesktopDownload', label: '前往 Claude 官网' },
           { id: 'log', label: '查看日志' },
-          { id: 'support', label: '找客服' },
+          { id: 'support', label: '联系客服' },
         ])
         // 正文点名的那颗按钮得真的在（D64 以前点名的是「去官网下载」）。
-        expect(hint?.body).toBe('先点「重试」；还不行就点「下载离线安装包」，装好后回星芒点「重新检测」。')
+        expect(hint?.body).toBe('请先点击「重试」；如仍失败，请点击「下载离线安装包」，安装完成后回到星芒点击「重新检测」。')
         // 原话（签名、HTTP 状态码）只记在运行日志里。
         expect(operationLogSection({ message, tool: 'claudeDesktop' })).toBe('log')
       }
@@ -538,17 +597,17 @@ describe('renderer-v2 operation error classification', () => {
     expect(classifyOperationError('已取消管理员授权，Claude Desktop 安装未开始。重新点击安装即可再次授权。')).not.toBe('claudeDesktopInstallFailed')
   })
 
-  // 以前认不出，一长串原话配「操作没有完成」，没有下一步（#1096）。下一步在原话后半截（按账号类型写好的），
+  // 以前认不出，一长串原话配「操作未完成」，没有下一步（#1096）。下一步在原话后半截（按账号类型写好的），
   // 所以标题、正文只说「没装、什么都没改，照下面这句话做」，原话照旧在下面。
   it('gives a declined or missing administrator approval its own title and keeps the sentence underneath', () => {
-    const standardAdvice = '这个 Windows 账号不在管理员组，需要在授权窗口里输入一个管理员账号的密码才能继续；公司或学校的电脑请联系 IT 协助。'
+    const standardAdvice = '此 Windows 账号没有管理员权限，无法完成安装。请先使用管理员账号登录 Windows，并在星芒中完成 Node.js 的安装，安装后本机所有 Windows 账号均可使用；随后切换回此账号并点击「重试」。公司或学校的电脑请联系 IT 协助。'
     for (const message of [
-      'Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。重新点击安装即可再次授权。',
-      `Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。${standardAdvice}`,
-      `Node.js 自动安装失败：未获得管理员权限，Node.js安装已停止。${standardAdvice}`,
-      'Node.js 自动安装失败：未获得管理员权限，Node.js安装已停止。请在弹出的授权窗口点击「是」；如果这台电脑用的是普通账号，需要输入一个管理员账号的密码。',
+      'Node.js 自动安装失败：已取消管理员授权，Node.js 安装未开始。重新点击安装即可再次授权。',
+      `Node.js 自动安装失败：已取消管理员授权，Node.js 安装未开始。${standardAdvice}`,
+      `Node.js 自动安装失败：未获得管理员权限，Node.js 安装已停止。${standardAdvice}`,
+      'Node.js 自动安装失败：未获得管理员权限，Node.js 安装已停止。请在弹出的授权窗口中点击「是」；如本机登录的是普通账号，请先使用管理员账号登录 Windows 完成安装，安装后本机所有 Windows 账号均可使用。',
       // 装工具时先装 Node.js（runtime-readiness.ts 的 runtimeInstallFailureMessage）。
-      `Node.js 运行环境没装上，Claude Code 还没开始安装。Node.js 自动安装失败：已取消管理员授权，Node.js安装未开始。${standardAdvice}`,
+      `Node.js 运行环境安装失败，Claude Code 尚未开始安装。Node.js 自动安装失败：已取消管理员授权，Node.js 安装未开始。${standardAdvice}`,
       // 主进程以前那句短的（msiexec 自己报 1602）。
       'Node.js 自动安装失败：已取消管理员授权，Node.js 尚未安装。',
       // 桌面端装不上时主进程原样放行的那两句（codex-desktop-install-failure.ts、claude-desktop-install-failure.ts）。
@@ -557,9 +616,9 @@ describe('renderer-v2 operation error classification', () => {
     ]) {
       const hint = presentOperationError(message)
       expect([message, hint?.key]).toEqual([message, 'elevationDeclined'])
-      expect(hint?.title).toBe('没拿到管理员授权')
-      expect(hint?.body).toBe('这次没装，电脑上什么都没改。先照下面这句话做，再点「重试」；还不行点「找客服」。')
-      expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'support', label: '找客服' }])
+      expect(hint?.title).toBe('未获得管理员授权')
+      expect(hint?.body).toBe('本次未安装，本机未作任何修改。请按下方提示操作后点击「重试」；如仍失败，请点击「联系客服」。')
+      expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'support', label: '联系客服' }])
     }
   })
 
@@ -571,7 +630,7 @@ describe('renderer-v2 operation error classification', () => {
   })
 
   it('gives every failed one-click Mac desktop install a retry and the install guide, ahead of the network rules', () => {
-    // 「检查网络」那一句不能被 timeout 抢走：那边没有「看安装指南」这条出路。
+    // 「检查网络」那一句不能被 timeout 抢走：那边没有「查看安装指南」这条出路。
     for (const message of [
       macosDesktopDownloadFailedMessage('OpenCode'),
       macosDesktopNotOfficialMessage,
@@ -587,14 +646,14 @@ describe('renderer-v2 operation error classification', () => {
       expect([message, hint?.key]).toEqual([message, 'macDesktopInstallFailed'])
       expect(hint?.actions).toEqual([
         { id: 'retry', label: '重试' },
-        { id: 'installGuide', label: '看安装指南' },
+        { id: 'installGuide', label: '查看安装指南' },
         { id: 'log', label: '查看日志' },
-        { id: 'support', label: '找客服' },
+        { id: 'support', label: '联系客服' },
       ])
       // 原因原话只记在运行日志里。
       expect(operationLogSection({ message })).toBe('log')
     }
-    // 磁盘不够还是「磁盘空间不够」那一类，不归到这里：装之前查出来的、装到一半写满的都一样。
+    // 磁盘不够还是「磁盘可用空间不足」那一类，不归到这里：装之前查出来的、装到一半写满的都一样。
     expect(classifyOperationError('OpenCode 安装失败：磁盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理磁盘再试')).toBe('diskFull')
     expect(classifyOperationError(macosDesktopDiskFullMessage('OpenCode'))).toBe('diskFull')
   })
@@ -610,7 +669,7 @@ describe('renderer-v2 operation error classification', () => {
 
   it('gives a failed Codex desktop install on a Mac the install guide, never the Microsoft Store', () => {
     const message = macosDesktopDownloadFailedMessage('Codex 桌面端')
-    expect(message).toBe('Codex 桌面端没下载下来，请检查网络后再点一次「安装」。')
+    expect(message).toBe('Codex 桌面端下载失败，请检查网络后再次点击「安装」。')
     const rejected = new Error(`Error invoking remote method 'desktop:install-codex': ${macosDesktopInstallErrorName}: ${message}`)
     const failure = operationFailureFrom(rejected, '安装 Codex 桌面端')
     expect(failure).toEqual({ message })
@@ -636,7 +695,7 @@ describe('renderer-v2 operation error classification', () => {
     // 同一句里带着 EPERM 也不能被 permission 抢走：改权限、关杀毒都修不好它。
     const hint = presentOperationError('写入失败：应用设置目录不能经过符号链接或目录联接（EPERM）')
     expect(hint?.key).toBe('folderRelocated')
-    expect(hint?.actions).toEqual([{ id: 'network', label: '打开检查页' }, { id: 'support', label: '找客服' }])
+    expect(hint?.actions).toEqual([{ id: 'network', label: '打开检查页' }, { id: 'support', label: '联系客服' }])
   })
 
   it('tells a dotfiles-linked config apart from a relocated folder and keeps where it sits on screen', () => {
@@ -647,25 +706,30 @@ describe('renderer-v2 operation error classification', () => {
       expect(failure.message).toBe(message)
       const hint = presentOperationFailure({ ...failure, target: 'config' })
       expect(hint?.key).toBe('configLink')
-      expect(hint?.title).toBe('配置文件是个链接')
-      expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'support', label: '找客服' }])
+      expect(hint?.title).toBe('配置文件为链接')
+      expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'support', label: '联系客服' }])
     }
-    // 文件夹被搬走（联接、整个工具文件夹被链走）照旧说「文件夹被搬到了别的位置」。
+    // 文件夹被搬走（联接、整个工具文件夹被链走）照旧说「文件夹已被移动」。
     expect(classifyOperationError('配置路径不能经过符号链接或目录联接', 'config')).toBe('folderRelocated')
   })
 
-  it('sends a failed undo to the backups action whether the message names the new or the old place', () => {
-    for (const where of ['「设置 › 备份迁移」', '「备份」']) {
-      const hint = presentOperationError(`改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到${where}里恢复切换前那一份。`)
+  it('sends a failed undo to the backups action whether the message is current or left by an older version', () => {
+    // 现在的说法，加上旧版和旧日志里的两种（「没有完成」、叫人去「备份」）。
+    for (const message of [
+      '改用当前账号未完成：写入失败 EPERM。自动恢复也未完成（EPERM），请在「设置 › 备份迁移」中恢复切换前的备份。',
+      '改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到「设置 › 备份迁移」里恢复切换前那一份。',
+      '改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到「备份」里恢复切换前那一份。',
+    ]) {
+      const hint = presentOperationError(message)
       expect(hint?.key).toBe('switchUndoFailed')
-      expect(hint?.actions).toEqual([{ id: 'backups', label: '去备份迁移' }, { id: 'support', label: '找客服' }])
+      expect(hint?.actions).toEqual([{ id: 'backups', label: '前往备份迁移' }, { id: 'support', label: '联系客服' }])
     }
   })
 
   it('offers retry, 复制路径 and support on the antivirus block', () => {
     const hint = presentOperationError('Grok CLI 安装失败：安装文件已被隔离，请检查杀毒软件的隔离记录')
-    expect(hint?.body).toBe('杀毒软件把安装拦下了。打开杀毒软件，在「隔离区」或「恢复区」里把星芒放出来，再点「重试」；不会弄就点「找客服」。')
-    expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'copyPath', label: '复制路径' }, { id: 'support', label: '找客服' }])
+    expect(hint?.body).toBe('请打开杀毒软件，在「隔离区」或「恢复区」中恢复星芒后点击「重试」；如需协助，请点击「联系客服」。')
+    expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'copyPath', label: '复制路径' }, { id: 'support', label: '联系客服' }])
   })
 
   it('accounts for every catalog entry, either with a real message or a reason it cannot be reached', () => {
@@ -685,12 +749,13 @@ describe('renderer-v2 operation error classification', () => {
   it('tells the user this machine has no keyring rather than blaming permissions', () => {
     // safe-storage-backend.ts 现在的说法，和老版本主进程的说法都要认得。
     for (const message of [
+      '本机不支持安全保存密码，已拒绝写入已保存的账号。',
       '这台电脑没法安全保存密码，已拒绝写入已保存的账号。',
       '当前系统没有可用的密钥环，安全存储只能以明文保存，已拒绝写入已保存的账号。请先启用系统凭据服务后重试。',
     ]) {
       const hint = presentOperationError(message)
       expect(hint?.key).toBe('unsafeStorage')
-      expect(hint?.title).toBe('这台电脑无法安全保存密码')
+      expect(hint?.title).toBe('本机无法安全保存密码')
     }
   })
 
@@ -704,7 +769,7 @@ describe('renderer-v2 operation error classification', () => {
   })
 
   // 候选 4：这两句以前一句落 unknown「操作没有成功」，一句被 timeout 的「网络」
-  // 一词吞掉成「连不上星芒服务器」，用户于是去检查一个本来就通的网络。
+  // 一词吞掉成「无法连接星芒服务器」，用户于是去检查一个本来就通的网络。
   it('names a full disk instead of sending the user to customer support', () => {
     for (const full of [
       'Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write',
@@ -713,13 +778,13 @@ describe('renderer-v2 operation error classification', () => {
       'Codex CLI 安装失败：There is not enough space on the disk.',
     ]) expect([full, classifyOperationError(full)]).toEqual([full, 'diskFull'])
     const hint = presentOperationError('Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write')
-    expect(hint?.title).toBe('磁盘空间不够')
+    expect(hint?.title).toBe('磁盘可用空间不足')
     expect(hint?.actions).toEqual([{ id: 'copyPath', label: '复制路径' }, { id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }])
   })
 
   // #1157 第 13 条：装之前查盘那句在 Windows 上写出盘符，不再带「磁盘」两个字。
   // 句子照 electron/disk-space.test.ts 钉住的原样抄。
-  it('files the pre-install disk check under 磁盘空间不够 whichever drive it names', () => {
+  it('files the pre-install disk check under 磁盘可用空间不足 whichever drive it names', () => {
     for (const shortfall of [
       'C 盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理 C 盘再试',
       'D 盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理 D 盘再试',
@@ -730,7 +795,7 @@ describe('renderer-v2 operation error classification', () => {
         expect([message, presentOperationError(message)?.key]).toEqual([message, 'diskFull'])
       }
     }
-    expect(errors.diskFull.body).toBe('磁盘没有空间了。安装时先下到系统盘的临时文件夹，再装进安装目录，这两处所在的盘都要留出空间，清理后再试。')
+    expect(errors.diskFull.body).toBe('安装时文件会先下载到系统盘的临时文件夹，再安装到安装目录，两处所在磁盘均需留出空间，请清理后重试。')
   })
 
   // Q13：主进程以前只交出「命令执行失败（退出码 1）：node」，上面那几条分类一条
@@ -762,18 +827,18 @@ describe('renderer-v2 operation error classification', () => {
     expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：磁盘空间不足（错误码 ENOSPC）。')).toBe('diskFull')
     expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：安装目录拒绝访问（错误码 EPERM）。')).toBe('permission')
     expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：文件被占用（错误码 EBUSY）。')).toBe('toolRunning')
-    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：下载太久没有完成，超时中止。')).toBe('downloadTimeout')
-    expect(presentOperationError('Codex CLI 安装失败：npm 官方源：下载太久没有完成，超时中止。')?.title).toBe('下载超时')
-    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：解析不出下载源的地址（错误码 ENOTFOUND）。')).toBe('downloadUnreachable')
-    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：和下载源的连接被切断（错误码 ECONNRESET）。')).toBe('downloadUnreachable')
-    expect(classifyOperationError('Codex CLI 安装失败：国内 npm 镜像：下载源那边出错（错误码 E503）。')).toBe('downloadSourceError')
-    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：安全证书没通过校验（错误码 SELF_SIGNED_CERT_IN_CHAIN）。')).toBe('tlsIntercepted')
-    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：安全证书没通过校验（错误码 CERT_HAS_EXPIRED）。')).toBe('certDate')
-    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：下载太久没有完成，超时中止；国内 npm 镜像：找不到要装的版本（错误码 ETIMEDOUT、E404）。过一会儿再点「重试」；一直这样请找客服。')).toBe('downloadTimeout')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：下载长时间未完成，已超时中止。')).toBe('downloadTimeout')
+    expect(presentOperationError('Codex CLI 安装失败：npm 官方源：下载长时间未完成，已超时中止。')?.title).toBe('下载超时')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：无法解析下载源地址（错误码 ENOTFOUND）。')).toBe('downloadUnreachable')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：与下载源的连接已中断（错误码 ECONNRESET）。')).toBe('downloadUnreachable')
+    expect(classifyOperationError('Codex CLI 安装失败：国内 npm 镜像：下载源出错（错误码 E503）。')).toBe('downloadSourceError')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：安全证书未通过校验（错误码 SELF_SIGNED_CERT_IN_CHAIN）。')).toBe('tlsIntercepted')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：安全证书未通过校验（错误码 CERT_HAS_EXPIRED）。')).toBe('certDate')
+    expect(classifyOperationError('Codex CLI 安装失败：npm 官方源：下载长时间未完成，已超时中止；国内 npm 镜像：未找到要安装的版本（错误码 ETIMEDOUT、E404）。请稍后点击「重试」；如持续出现，请联系客服。')).toBe('downloadTimeout')
     for (const message of [
-      'Codex CLI 安装失败：npm 官方源：下载源拒绝了这次下载（错误码 E403）。换个网络后再点「重试」；一直这样请找客服。',
-      'Codex CLI 安装失败：npm 官方源：下载下来的文件没通过校验，已经丢掉（错误码 EINTEGRITY）。再点「重试」；一直这样换个网络。',
-      'Codex CLI 安装失败：npm 官方源：要装的版本和它用到的组件对不上（错误码 ERESOLVE）。过一会儿再点「重试」；一直这样请找客服。',
+      'Codex CLI 安装失败：npm 官方源：下载源拒绝了本次下载（错误码 E403）。请更换网络后点击「重试」；如持续出现，请联系客服。',
+      'Codex CLI 安装失败：npm 官方源：下载的文件未通过校验，已丢弃（错误码 EINTEGRITY）。请点击「重试」；如持续出现，请更换网络。',
+      'Codex CLI 安装失败：npm 官方源：要安装的版本与其依赖组件不匹配（错误码 ERESOLVE）。请稍后点击「重试」；如持续出现，请联系客服。',
     ]) expect([message, presentOperationError(message)]).toEqual([message, null])
   })
 
@@ -794,7 +859,7 @@ describe('renderer-v2 operation error classification', () => {
     const outdated = presentOperationError(`${raw}。${toolCertificateMessages.outdatedNode}`)
     expect(outdated?.key).toBe('toolCertOutdatedNode')
     expect(outdated?.body).toContain('Node.js')
-    expect(outdated?.body).not.toContain('换一个网络')
+    expect(outdated?.body).not.toMatch(/换一个网络|更换网络/)
     const elevated = presentOperationError(`${raw}。${toolCertificateMessages.elevated}`)
     expect(elevated?.key).toBe('toolCertElevated')
     expect(elevated?.body).toContain('正常打开')
@@ -812,7 +877,7 @@ describe('renderer-v2 operation error classification', () => {
       `重新写入密钥 没有完成：${networkFailureMessages.certDate}`,
     ]) expect([dated, classifyOperationError(dated)]).toEqual([dated, 'certDate'])
     const hint = presentOperationError('账号接口请求失败：net::ERR_CERT_DATE_INVALID')
-    expect(hint?.title).toBe('证书日期对不上')
+    expect(hint?.title).toBe('证书日期校验失败')
     expect(hint?.body).toContain('系统时间')
     expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }])
   })
@@ -839,7 +904,7 @@ describe('renderer-v2 operation error classification', () => {
         'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename',
         'Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write',
         'Codex CLI 安装失败：self signed certificate in certificate chain',
-        'Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关掉它的窗口再试。',
+        'Claude Code 更新失败：文件被占用，检测到 Claude Code 正在运行（2 个进程），请关闭其窗口后重试。',
         'Codex CLI 安装失败：npm 官方源：request to registry 失败，reason: ETIMEDOUT',
       ]) expect([message, operationLogSection({ message, tool: 'claude' })]).toEqual([message, 'log'])
     })
@@ -857,7 +922,7 @@ describe('renderer-v2 operation error classification', () => {
     expect(operationFallbackActions()).toEqual([
       { id: 'retry', label: '重试' },
       { id: 'log', label: '查看日志' },
-      { id: 'support', label: '找客服' },
+      { id: 'support', label: '联系客服' },
     ])
   })
 })
@@ -871,7 +936,7 @@ describe('presentOperationFailure', () => {
   })
 
   it('lets the log page follow the original too', () => {
-    expect(operationLogSection({ message: '安装没有完成', detail: 'Defender 已被隔离', tool: 'claude' })).toBe('install-log')
-    expect(operationLogSection({ message: '安装没有完成', detail: 'ENOSPC', tool: 'claude' })).toBe('log')
+    expect(operationLogSection({ message: '安装未完成', detail: 'Defender 已被隔离', tool: 'claude' })).toBe('install-log')
+    expect(operationLogSection({ message: '安装未完成', detail: 'ENOSPC', tool: 'claude' })).toBe('log')
   })
 })

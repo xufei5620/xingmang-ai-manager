@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apiKeyDigest, classifyBackupKey, ConfigBackupStore, type ConfigBackupAccountContext } from './backups'
+import { apiKeyDigest, classifyBackupKey, ConfigBackupStore, resolveBackupIdTime, type ConfigBackupAccountContext } from './backups'
 import type { ProviderId } from './catalog'
 import { providerConfigPaths } from './config-files'
 import { renameWithTransientRetrySync } from './safe-local-data'
@@ -598,25 +598,30 @@ describe('ConfigBackupStore', () => {
       fs.readFileSync(path.join(templateDirectory, 'manifest.json'), 'utf8'),
     ) as { id: string }
 
-    // 克隆出 200 份时间戳更早的备份，让被恢复的那份恰好落在 prune 的删除窗口内。
-    const cloneIds: string[] = []
-    for (let index = 0; index < 200; index += 1) {
-      const cloneId = `199901010000${String(index).padStart(5, '0')}-${randomUUID()}`
-      const cloneDirectory = path.join(userData, 'backups', cloneId)
-      fs.cpSync(templateDirectory, cloneDirectory, { recursive: true })
-      fs.writeFileSync(
-        path.join(cloneDirectory, 'manifest.json'),
-        JSON.stringify({ ...templateManifest, id: cloneId }),
-        'utf8',
-      )
-      cloneIds.push(cloneId)
-    }
+    // 再放 200 份时间戳更早的备份，让被恢复的那份恰好落在 prune 的删除窗口内。只有要恢复的最旧那份
+    // 是整份复制的；prune 只按文件夹名数配额，其余 199 份建成空文件夹就够了。以前 200 份都整份复制
+    // （连同收尾删掉，文件系统调用是现在的五倍），Windows runner 上这一段偶尔慢十几倍，11-22 撞了 30 秒（#2084）。
+    const cloneIds = Array.from(
+      { length: 200 },
+      (_, index) => `199901010000${String(index).padStart(5, '0')}-${randomUUID()}`,
+    )
+    const oldestDirectory = path.join(userData, 'backups', cloneIds[0])
+    fs.cpSync(templateDirectory, oldestDirectory, { recursive: true })
+    fs.writeFileSync(
+      path.join(oldestDirectory, 'manifest.json'),
+      JSON.stringify({ ...templateManifest, id: cloneIds[0] }),
+      'utf8',
+    )
+    for (const cloneId of cloneIds.slice(1)) fs.mkdirSync(path.join(userData, 'backups', cloneId))
 
     writeConfig(configPath, 'current-config')
     const restored = store.restore(cloneIds[0])
     expect(restored.restoredBackupId).toBe(cloneIds[0])
     expect(fs.readFileSync(configPath, 'utf8')).toBe('oldest-config')
     expect(fs.existsSync(path.join(userData, 'backups', cloneIds[0]))).toBe(true)
+    // 恢复前存的那份让总数到 202，比上限多两份：最旧的正被恢复、留下，第二旧的清掉。这一句
+    // 证明空文件夹确实算进了配额、清理真的跑到了上限，不然上面几句不清理也照样过。
+    expect(fs.existsSync(path.join(userData, 'backups', cloneIds[1]))).toBe(false)
   })
 
   it('preserves the rollback copy when restoring it back also fails', () => {
@@ -751,6 +756,71 @@ describe('ConfigBackupStore', () => {
     fs.mkdirSync(corruptDirectory, { recursive: true })
     fs.writeFileSync(path.join(corruptDirectory, 'manifest.json'), '{invalid', 'utf8')
     expect(store.list()).toContainEqual(expect.objectContaining({ id: 'corrupt-manifest', valid: false }))
+  })
+
+  // R2-2: a broken backup keeps a row the card can show, name and delete.
+  it('keeps the tool, reason and time of a broken backup whose manifest still reads', () => {
+    const { home, userData } = fixture()
+    const [configPath] = providerConfigPaths('codex', fixtureProviderRoots(home))
+    writeConfig(configPath, 'original')
+    const store = new ConfigBackupStore({
+      userDataDirectory: userData,
+      homeDirectory: home,
+      now: () => new Date(Date.UTC(2026, 10, 18, 6, 30, 0)),
+    })
+    const torn = store.create('codex', 'pre-save')
+    const backupRelativePath = store.inspect(torn.id).files.find((file) => file.existed)?.backupRelativePath
+    fs.rmSync(path.join(userData, 'backups', torn.id, ...backupRelativePath!.split('/')))
+
+    expect(store.list()).toEqual([{
+      id: torn.id,
+      provider: 'codex',
+      reason: 'pre-save',
+      createdAt: '2026-11-18T06:30:00.000Z',
+      fileCount: 0,
+      existingFileCount: 0,
+      totalSize: 0,
+      valid: false,
+      error: expect.any(String),
+    }])
+    expect(() => store.restore(torn.id)).toThrow()
+    store.delete(torn.id)
+    expect(store.list()).toEqual([])
+  })
+
+  it('names a broken backup of the retired tool so it stays out of the list', () => {
+    const { home, userData } = fixture()
+    const [settingsPath] = providerConfigPaths('gemini', fixtureProviderRoots(home))
+    writeConfig(settingsPath, '{"model":{"name":"gemini-3.8-flash-high"}}\n')
+    const store = new ConfigBackupStore({ userDataDirectory: userData, homeDirectory: home })
+    const gemini = store.create('gemini', 'manual')
+    const backupRelativePath = store.inspect(gemini.id).files.find((file) => file.existed)?.backupRelativePath
+    fs.writeFileSync(path.join(userData, 'backups', gemini.id, ...backupRelativePath!.split('/')), 'longer than before', 'utf8')
+
+    expect(store.list()).toEqual([expect.objectContaining({ id: gemini.id, provider: 'gemini', valid: false })])
+  })
+
+  it('dates a backup whose manifest cannot be read by the time in its folder name', () => {
+    const { home, userData } = fixture()
+    const id = `20261118063000123-${randomUUID()}`
+    fs.mkdirSync(path.join(userData, 'backups', id), { recursive: true })
+    fs.writeFileSync(path.join(userData, 'backups', id, 'manifest.json'), '{invalid', 'utf8')
+    fs.mkdirSync(path.join(userData, 'backups', 'corrupt-manifest'), { recursive: true })
+    const store = new ConfigBackupStore({ userDataDirectory: userData, homeDirectory: home })
+
+    expect(store.list()).toEqual([
+      expect.objectContaining({ id, provider: null, reason: null, createdAt: '2026-11-18T06:30:00.123Z', valid: false }),
+      expect.objectContaining({ id: 'corrupt-manifest', provider: null, createdAt: null, valid: false }),
+    ])
+  })
+
+  it('reads the time out of a backup id only when it is one backupId() could have made', () => {
+    const uuid = randomUUID()
+    expect(resolveBackupIdTime(`20261118063000123-${uuid}`)).toBe('2026-11-18T06:30:00.123Z')
+    expect(resolveBackupIdTime(`20261318063000123-${uuid}`)).toBeNull()
+    expect(resolveBackupIdTime(`20261131063000123-${uuid}`)).toBeNull()
+    expect(resolveBackupIdTime('20261118063000123-not-a-uuid')).toBeNull()
+    expect(resolveBackupIdTime('corrupt-manifest')).toBeNull()
   })
 
   it('rejects oversized source files and manifests before copying or hashing them', () => {

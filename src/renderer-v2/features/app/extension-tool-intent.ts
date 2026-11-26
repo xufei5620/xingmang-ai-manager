@@ -1,32 +1,26 @@
-import type { ActiveProviderId } from '../../../../electron/catalog'
+import type { ExtensionsView } from '../../registry/pages'
 
 /**
- * 从一页扩展跳到另一页时要先选好的工具：技能页选着 Codex CLI 点「去看插件」，插件页要落在 Codex CLI 上，
- * 而不是按「第一个装好的」又挑回 Claude Code。页面切换只传页面名，要选的工具先放在这里，那一页挂上
- * 或已经挂着（去过的页只藏不卸）时取走（同 row-focus）。
+ * 「插件」页要落在哪一栏（「插件」或「技能」）：老页面名（精选、外接工具、技能、插件）跳过来时先放在这里，
+ * 页面挂上或已经挂着（去过的页只藏不卸）时取走（同 row-focus）。页面切换只传页面名，所以要落的那一栏走这里。取走即清空。
  */
-export type ExtensionToolPage = 'mcp' | 'skills' | 'plugins'
+let pendingView: ExtensionsView | null = null
+const viewListeners = new Set<() => void>()
 
-let pending: { page: ExtensionToolPage; tool: ActiveProviderId } | null = null
-const listeners = new Set<() => void>()
-
-export function requestExtensionTool(page: ExtensionToolPage, tool: ActiveProviderId): void {
-  pending = { page, tool }
-  for (const listener of listeners) listener()
+export function requestExtensionsView(view: ExtensionsView): void {
+  pendingView = view
+  for (const listener of viewListeners) listener()
 }
 
-/** 取走这一页待选的工具；别的页的不动，取走即清空。 */
-export function takeExtensionTool(page: ExtensionToolPage): ActiveProviderId | null {
-  if (pending?.page !== page) return null
-  const tool = pending.tool
-  pending = null
-  return tool
+export function takeExtensionsView(): ExtensionsView | null {
+  const view = pendingView
+  pendingView = null
+  return view
 }
 
-/** 页面已经挂着时靠它接住后来的请求；返回值是退订。 */
-export function subscribeExtensionTool(listener: () => void): () => void {
-  listeners.add(listener)
+export function subscribeExtensionsView(listener: () => void): () => void {
+  viewListeners.add(listener)
   return () => {
-    listeners.delete(listener)
+    viewListeners.delete(listener)
   }
 }

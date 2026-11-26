@@ -32,7 +32,7 @@ export function parseAccountKeysQuery(value: unknown): NewApiAccountKeysQuery {
   }
 }
 
-// account:revoke-key's sole argument. A destructive, id-addressed operation
+// account:revoke-key's sole argument (account:enable-key takes the same id). A destructive, id-addressed operation
 // that lands directly in a URL path segment (new-api-client.ts's
 // tokenIdPath) -- must be a genuine positive integer before it gets
 // anywhere near that, same "reject anything that isn't obviously a real id"
@@ -68,7 +68,7 @@ export function parseManagedCliConfigurationInput(value: unknown): AccountManage
     if (model === undefined) continue
     preferredModels[provider] = requiredString(model, 'CLI 首选模型', 512)
   }
-  // repair 是首页「修好它」：工具读不了的那份重建，读得懂的那份只改账号几处（config-files.ts 的 NativeConfigWriteMode）。
+  // repair 是首页「立即修复」：工具读不了的那份重建，读得懂的那份只改账号几处（config-files.ts 的 NativeConfigWriteMode）。
   if (value.mode !== undefined && value.mode !== 'merge' && value.mode !== 'reset' && value.mode !== 'repair') {
     throw new Error('未知的配置写入模式')
   }

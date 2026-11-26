@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { decodeWeixinCredential, encodeWeixinCredential } from './codex-remote-weixin-credential'
 import { createWeixinLoginController, normalizeWeixinVerifyCode, type WeixinLoginDependencies } from './codex-remote-weixin-login'
 
@@ -264,10 +264,27 @@ describe('createWeixinLoginController', () => {
     const login = createWeixinLoginController(dependencies)
     const started = await login.start()
     const second = await login.poll(started.loginId)
-    expect(second).toMatchObject({ phase: 'waiting-scan', message: '二维码过期了，已换了一张，请重新扫' })
+    expect(second).toMatchObject({ phase: 'waiting-scan', message: '二维码已过期，已更换新的二维码，请重新扫码' })
     expect(second.qrImage).toContain(Buffer.from('https://liteapp.weixin.qq.com/q/q2').toString('base64'))
     await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'waiting-scan' })
-    await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'failed', message: '二维码过期太多次，请重新开始' })
+    await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'failed', message: '二维码多次过期，请重新开始' })
+  })
+
+  // M11：输完数字交上去那一下断网，界面按 retryAfterMs 再问时不带数字；主进程得留着那串数字接着验，不然客户要重输。
+  it('keeps the submitted number through a network blip and sends it again on the next poll', async () => {
+    const { dependencies, requests } = harness([
+      qr('q1'),
+      jsonResponse({ status: 'need_verifycode' }),
+      new TypeError('fetch failed'),
+      jsonResponse({ status: 'scaned' }),
+    ])
+    const login = createWeixinLoginController(dependencies)
+    const started = await login.start()
+    await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'need-verify-code' })
+    await expect(login.poll(started.loginId, '2222')).resolves.toMatchObject({ phase: 'need-verify-code', message: '无法连接微信，正在重试', retryAfterMs: 2_000 })
+    await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'scanned', retryAfterMs: 0 })
+    expect(requests[2]).toContain('verify_code=2222')
+    expect(requests[3]).toContain('verify_code=2222')
   })
 
   it('keeps waiting through a network blip and gives up after the deadline', async () => {
@@ -276,7 +293,7 @@ describe('createWeixinLoginController', () => {
     const started = await login.start()
     await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'waiting-scan', retryAfterMs: 2_000 })
     clock.now += 9 * 60_000
-    await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'failed', message: '等太久了，请重新开始扫码' })
+    await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'failed', message: '等待时间过长，请重新开始扫码' })
   })
 
   it('offers the existing token so an already-linked WeChat stays linked', async () => {
@@ -284,7 +301,7 @@ describe('createWeixinLoginController', () => {
     const { dependencies, saved, reconnects } = harness([qr('q1'), jsonResponse({ status: 'binded_redirect' })], existing)
     const login = createWeixinLoginController(dependencies)
     const started = await login.start()
-    await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'confirmed', message: '这个微信已经连着这台电脑了' })
+    await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'confirmed', message: '该微信已连接本机' })
     expect(saved).toHaveLength(0)
     // YKS-6：凭据没换，保存那条重启渠道的路不走，由这里让渠道重连。
     expect(reconnects.count).toBe(1)
@@ -293,10 +310,10 @@ describe('createWeixinLoginController', () => {
   it('still finishes the login when the channel cannot reconnect after the old login is recognised', async () => {
     const existing = encodeWeixinCredential({ version: 1, token: 'old', botId: 'b1@im.bot', origin: 'https://ilinkai.weixin.qq.com', ownerUserId: null })
     const { dependencies, reconnects, logs } = harness([qr('q1'), jsonResponse({ status: 'binded_redirect' })], existing)
-    reconnects.failure = new Error('这台电脑还没装 Codex 命令行工具，先在首页把它装好。')
+    reconnects.failure = new Error('本机尚未安装 Codex CLI，请先在首页完成安装。')
     const login = createWeixinLoginController(dependencies)
     const started = await login.start()
-    await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'confirmed', message: '这个微信已经连着这台电脑了' })
+    await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'confirmed', message: '该微信已连接本机' })
     expect(reconnects.count).toBe(1)
     expect(logs).toContain('weixin-login-reconnect-failed')
   })
@@ -341,6 +358,76 @@ describe('createWeixinLoginController save failures', () => {
   })
 })
 
+// M12：微信那边确认了、正在存登录信息时，取消和重新扫码都不能让结果乱掉。
+describe('createWeixinLoginController while saving', () => {
+  function confirmedHarness() {
+    const h = harness([
+      qr('q1'),
+      jsonResponse({ status: 'confirmed', bot_token: 'tok1', ilink_bot_id: 'b1@im.bot', ilink_user_id: 'owner@im.wechat' }),
+      qr('q2'),
+    ])
+    let release: () => void = () => undefined
+    const order: string[] = []
+    h.dependencies.saveCredential = async (value, label, verifiedOwner) => {
+      order.push('save-start')
+      await new Promise<void>((resolve) => {
+        release = resolve
+      })
+      h.saved.push({ value, label, verifiedOwner })
+      order.push('save-done')
+    }
+    h.dependencies.readCredential = async () => {
+      order.push('read')
+      return h.saved.at(-1)?.value ?? null
+    }
+    return { ...h, order, release: () => release() }
+  }
+
+  it('lets a save that already started finish as a login instead of pretending the cancel stopped it', async () => {
+    const { dependencies, saved, logs, order, release } = confirmedHarness()
+    const login = createWeixinLoginController(dependencies)
+    const started = await login.start()
+    const result = login.poll(started.loginId)
+    await vi.waitFor(() => expect(order).toContain('save-start'))
+    login.cancel(started.loginId)
+    expect(logs).toContain('weixin-login-cancel-while-saving')
+    release()
+    await expect(result).resolves.toMatchObject({ phase: 'confirmed' })
+    expect(saved).toHaveLength(1)
+  })
+
+  it('waits for a save under way before starting the next login, so the next one sees the saved login', async () => {
+    const { dependencies, saved, order, release, requests } = confirmedHarness()
+    const login = createWeixinLoginController(dependencies)
+    const first = await login.start()
+    const firstResult = login.poll(first.loginId)
+    await vi.waitFor(() => expect(order).toContain('save-start'))
+    const second = login.start()
+    await Promise.resolve()
+    expect(requests).toHaveLength(2)
+    release()
+    await expect(firstResult).resolves.toMatchObject({ phase: 'confirmed' })
+    await expect(second).resolves.toMatchObject({ phase: 'waiting-scan' })
+    expect(order).toEqual(['read', 'save-start', 'save-done', 'read'])
+    expect(requests).toHaveLength(3)
+    expect(saved).toHaveLength(1)
+  })
+
+  it('answers a second poll during the save with the saved result instead of saving twice', async () => {
+    const { dependencies, saved, order, release, requests } = confirmedHarness()
+    const login = createWeixinLoginController(dependencies)
+    const started = await login.start()
+    const first = login.poll(started.loginId)
+    await vi.waitFor(() => expect(order).toContain('save-start'))
+    const again = login.poll(started.loginId)
+    release()
+    await expect(first).resolves.toMatchObject({ phase: 'confirmed' })
+    await expect(again).resolves.toMatchObject({ phase: 'confirmed' })
+    expect(saved).toHaveLength(1)
+    expect(requests).toHaveLength(2)
+  })
+})
+
 describe('createWeixinLoginController wording', () => {
   it('only puts approved sentences on screen', async () => {
     const unknownStatus = harness([qr('q1'), jsonResponse({ status: 'something-new' })])
@@ -354,7 +441,7 @@ describe('createWeixinLoginController wording', () => {
     const noToken = harness([qr('q1'), jsonResponse({ status: 'confirmed', ilink_bot_id: 'b1@im.bot' })])
     const third = createWeixinLoginController(noToken.dependencies)
     const again = await third.start()
-    await expect(third.poll(again.loginId)).resolves.toMatchObject({ phase: 'failed', message: '扫码成功了，但微信没有给回登录信息，请重新扫码' })
+    await expect(third.poll(again.loginId)).resolves.toMatchObject({ phase: 'failed', message: '扫码成功，但微信未返回登录信息，请重新扫码' })
   })
 
   it('answers a poll for a login that is gone with the general sentence', async () => {

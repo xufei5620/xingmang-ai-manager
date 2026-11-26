@@ -46,7 +46,7 @@ import { shortcutTools } from '../../registry/tools'
 import { AppUninstallRow } from '../app/AppUninstall'
 import { BackupCard } from './BackupCard'
 import { StorageCard } from './StorageCard'
-import { CodexRemoteCard } from './codex-remote/CodexRemoteCard'
+import { StandingInstructionsField, standingInstructionsMissedLines } from './StandingInstructions'
 import { VersionCard } from './VersionCard'
 import { RelayRouteRestartNotice, RelayRouteRow } from '../app/RelayRouteSettings'
 import { ThemeCards, type ThemeCardValue } from '../app/ThemeCards'
@@ -58,16 +58,32 @@ import { useRowFocus } from '../app/row-focus'
 import { currentWindowOs, type WindowOs } from '../app/window-os'
 import { parseImportedConversations, readChatPhrases } from '../chat/storage'
 import type { Conversation } from '../chat/state'
-import { anonymousUsageFrom, dataTransferExportMessage, dataTransferImportMessage, settingsPatchFrom } from '../app/data-transfer'
+import {
+  anonymousUsageFrom,
+  dataTransferExportMessage,
+  dataTransferImportMessage,
+  settingsPatchFrom,
+  standingInstructionsFrom,
+  worksCount,
+  worksExportingText,
+  worksExportNoteFor,
+  worksExportQuestion,
+  worksExportTitle,
+  worksExportWorthAsking,
+  worksImportingText,
+  type DataTransferCanvasProjectsOutcome,
+  type DataTransferWorksOutcome,
+} from '../app/data-transfer'
+import { useBackgroundWork } from '../../background-work'
 import type { V2Bridge } from '../../types'
-import type { ClaudeToggleResult, DataTransferImportPreview } from '../../../../electron/ipc-contract'
+import type { ClaudeToggleResult, DataTransferImportPreview, DataTransferWorksSummary } from '../../../../electron/ipc-contract'
 import type { PlatformSystemState } from '../../../../electron/platform/contract'
 import { platformApi } from '../../platform-api'
 import type { BusinessActions } from '../../business-actions'
 
 type AppSettings = Awaited<ReturnType<V2Bridge['getSettings']>>
 type SettingsUpdate = Parameters<V2Bridge['saveSettings']>[0]
-/** 检查结果里「星芒 AI 网络」那一项的代号；设置里「网络检查」的「去检查页」直接翻到这一项。 */
+/** 检查结果里「星芒 AI 网络」那一项的代号；设置里「网络检查」的「前往检查页」直接翻到这一项。 */
 const networkDiagnosticCode = 'XINGMANG_NETWORK'
 /** 主进程说的「代理路由」是技术词，界面上换成「连接路径」「通过转发连接」，不出现「代理」。 */
 function proxySummaryText(summary: string): string {
@@ -101,16 +117,16 @@ export const settingsPageLead = '改动会立即保存。'
 
 type ClaudeToggleNotice = { text: string; tone: 'ok' | 'warn' }
 /** later：现在不是星芒在管 Claude Code 的配置（官方账号、没登录、自己填的密钥、还没配过），等下次星芒替它保存配置时一起写。 */
-const claudeToggleLaterNotice: ClaudeToggleNotice = { text: '开关记下了，下次星芒替 Claude Code 保存配置时一起写进去。', tone: 'ok' }
+const claudeToggleLaterNotice: ClaudeToggleNotice = { text: '设置已记录，将在下次保存 Claude Code 配置时一并写入。', tone: 'ok' }
 
 /**
- * 「点关闭按钮时」里藏起窗口那一项。Mac 上没有「托盘」这个说法，星芒的图标在屏幕顶部的菜单栏里
+ * 「点击关闭按钮时」里藏起窗口那一项。Mac 上没有「托盘」这个说法，星芒的图标在屏幕顶部的菜单栏里
  * （深查 TR-5、决定单 D30）；Windows、Linux 照旧。主进程关窗询问框那颗按钮是同一句（window-presentation.ts）。
  */
 export function closeToTrayLabel(isMac: boolean): string {
   return isMac ? '收到菜单栏' : '缩到托盘'
 }
-/** 「点关闭按钮时」下面那句说明（有地方放星芒图标时）。 */
+/** 「点击关闭按钮时」下面那句说明（有地方放星芒图标时）。 */
 export function closeToTrayNote(isMac: boolean, accelerationAvailable: boolean): string {
   if (isMac) return '收到菜单栏后，正在进行的安装会继续在后台运行'
   return accelerationAvailable
@@ -123,37 +139,37 @@ export function closeToTrayNote(isMac: boolean, accelerationAvailable: boolean):
  */
 export function launchAtLoginFallbackNote(isMac: boolean): string {
   return isMac
-    ? '开机后在菜单栏里待命，不弹窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。要用时点屏幕顶部的星芒图标。'
-    : '开机后在托盘里待命，不弹窗口'
+    ? '开机后在菜单栏中待命，不弹出窗口；开机后数分钟内不进行检测和更新，以免占用系统资源。需要时请点击屏幕顶部的星芒图标。'
+    : '开机后在托盘中待命，不弹出窗口'
 }
 /**
  * 「发测试通知」交给系统以后那句（决定单 D68、深查 NT-6）。系统里把星芒的通知关了，大多不会报错
  * （Mac 上一般静默），所以不能再说「已发送」，叫客户没看到时去系统的通知设置里看。
  */
-export const testNotificationHandedOffText = '已经交给系统了。没看到通知的话，去系统的通知设置里看看星芒有没有被关掉。'
+export const testNotificationHandedOffText = '测试通知已提交给系统。如未收到，请在系统通知设置中确认星芒的通知已开启。'
 /** 那句旁边的按钮，打开哪一页由主进程定（electron/platform/system-service.ts 的 notificationSettingsTarget）。 */
 export const openNotificationSettingsLabel = '打开系统通知设置'
 /** 系统没让打开时补的那句，说法同检查页「没能打开网络设置」（network-settings-fix.ts）。 */
-export const notificationSettingsUnavailableText = '没能打开系统通知设置，请在系统设置里找「通知」。'
+export const notificationSettingsUnavailableText = '无法打开系统通知设置，请在系统设置中找到「通知」。'
 /** Windows、Mac 有能直接打开的系统通知设置页；Linux 各家桌面的设置程序不一样，不给按钮。 */
 export function canOpenNotificationSettings(platform: string): boolean {
   return platform === 'windows' || platform === 'macos'
 }
 /**
- * 「只让 Claude Code 改项目文件夹里的文件」拨完以后那句小提示（Fable 第二轮 Q6）。kept：Claude Code 自己的设置里
+ * 「仅允许 Claude Code 修改项目文件夹内的文件」拨完以后那句小提示（Fable 第二轮 Q6）。kept：Claude Code 自己的设置里
  * 客户写过这一项（星芒没写过），星芒不替他改，开关照样记下。
  */
 export function claudeWriteBoundaryNotice(result: ClaudeToggleResult): ClaudeToggleNotice {
-  if (result.applied === 'kept') return { text: '开关记下了。Claude Code 自己的设置里你写过这一项，星芒没有改它。', tone: 'warn' }
+  if (result.applied === 'kept') return { text: '设置已记录。Claude Code 自身设置中已有此项，星芒未作修改。', tone: 'warn' }
   if (result.applied === 'later') return claudeToggleLaterNotice
-  return { text: result.enabled ? '已打开，新开的 Claude Code 会按这个来。' : '已关掉，新开的 Claude Code 不再拦。', tone: 'ok' }
+  return { text: result.enabled ? '已开启，新打开的 Claude Code 将按此设置运行。' : '已关闭，新打开的 Claude Code 将不再限制文件修改范围。', tone: 'ok' }
 }
 
 /** 「Claude Code 提交代码时不署名」拨完以后那句小提示（同类对比 备选 6），说法同上。 */
 export function claudeCommitAttributionNotice(result: ClaudeToggleResult): ClaudeToggleNotice {
-  if (result.applied === 'kept') return { text: '开关记下了。Claude Code 自己的设置里你写过署名这一项，星芒没有改它。', tone: 'warn' }
+  if (result.applied === 'kept') return { text: '设置已记录。Claude Code 自身设置中已有署名项，星芒未作修改。', tone: 'warn' }
   if (result.applied === 'later') return claudeToggleLaterNotice
-  return { text: result.enabled ? '已打开，新开的 Claude Code 提交代码时不再署名。' : '已关掉，新开的 Claude Code 提交代码时照常署名。', tone: 'ok' }
+  return { text: result.enabled ? '已开启，新打开的 Claude Code 提交代码时将不再署名。' : '已关闭，新打开的 Claude Code 提交代码时将照常署名。', tone: 'ok' }
 }
 
 /**
@@ -204,6 +220,7 @@ export function SettingsPage({
   api,
   navigate,
   onSettingsChanged,
+  openLegal,
   openGuide,
   replayTour,
   uiScale,
@@ -216,7 +233,6 @@ export function SettingsPage({
   onSettingsGroupChange,
   onBackupRestored,
   installedProviders,
-  openHelp,
 }: { api: V2Bridge } & BusinessActions & Pick<Parameters<typeof BackupCard>[0], 'installedProviders'> & {
   /** 备份卡恢复成功后回调，用来让首页重读配置。 */
   onBackupRestored?: Parameters<typeof BackupCard>[0]['onRestored']
@@ -258,7 +274,7 @@ export function SettingsPage({
   }), [api, setResourceData])
   const operation = useOperation()
   const showToast = useToast().show
-  // 「星芒占用的空间」清掉旧备份就加一，「工具配置备份」那张卡跟着重读。
+  // 「星芒占用空间」清掉旧备份就加一，「工具配置备份」那张卡跟着重读。
   const [backupsRevision, setBackupsRevision] = useState(0)
   const systemApi = platformApi()
   const [systemState, setSystemState] = useState<PlatformSystemState | null>(
@@ -405,9 +421,6 @@ export function SettingsPage({
     }
   }, [api, resource.setData])
   const [saveError, setSaveError] = useState('')
-  const [legal, setLegal] = useState<Awaited<
-    ReturnType<V2Bridge['getLegalDocument']>
-  > | null>(null)
   const [shortcuts, setShortcuts] = useState(false)
   // 显示方式要重开软件才生效：改完就在这一行下面给「现在重开」「稍后」。
   const [displayRelaunch, setDisplayRelaunch] = useState(false)
@@ -453,20 +466,26 @@ export function SettingsPage({
       setPending((value) => value - 1)
     }
   }
-  // 「搬到新电脑」导入：先整份校验，再在这台电脑上改过的设置要被换掉时问一句。
+  // 「迁移到新电脑」导入：先整份校验，再在这台电脑上改过的设置要被换掉时问一句。
   const [importAsk, setImportAsk] = useState<{
     preview: DataTransferImportPreview
     conversations: Conversation[]
   } | null>(null)
-  // 对话先导入：它更可能出错，出错时设置还没动。
+  // 「搬作品改」：作品可能要复制好几分钟，那一行下面写一句正在做什么；这期间界面不让主进程收掉（省内存那一下）。
+  const [worksBusy, setWorksBusy] = useState<'export' | 'import' | null>(null)
+  useBackgroundWork('data-transfer-works', worksBusy !== null)
+  // 导入的长期嘱咐有工具没写上：「工具管理」那一格下面照样列出是哪家、为什么，保存按钮可以直接再点（第三轮复查第 7 条）。
+  const [standingInstructionsMissed, setStandingInstructionsMissed] = useState<{ lines: string[] } | null>(null)
+  // 对话先导入：它更可能出错，出错时设置还没动。作品最后导：最慢，也最可能缺空间，前面的不受它影响。
   const applyImport = async (
     preview: DataTransferImportPreview,
     conversations: Conversation[],
     overwrite: boolean,
   ) => {
-    const { added, updated, skipped } = chatTransfer
-      ? await chatTransfer.importConversations(conversations, readChatPhrases(preview.phrases))
-      : { added: 0, updated: 0, skipped: 0 }
+    const videoProjects = preview.videoProjects ?? []
+    const { added, updated, skipped, videosAdded, videosSkipped } = chatTransfer
+      ? await chatTransfer.importConversations(conversations, readChatPhrases(preview.phrases), videoProjects)
+      : { added: 0, updated: 0, skipped: 0, videosAdded: 0, videosSkipped: 0 }
     const patch = overwrite
       ? settingsPatchFrom(preview.settings, preview.conflictingSettings)
       : settingsPatchFrom(preview.settings)
@@ -475,8 +494,8 @@ export function SettingsPage({
     const settingsFailed = () =>
       new Error(
         added
-          ? `导入了 ${added} 个对话，设置没有保存成功，可以再点一次「导入」`
-          : '设置没有保存成功，可以再点一次「导入」',
+          ? `已导入 ${added} 个对话，但设置保存失败，请再次点击「导入」`
+          : '设置保存失败，请再次点击「导入」',
       )
     if (patch && !(await update(patch, { quiet: true }))) throw settingsFailed()
     // 主题：有系统界面设置时，开机用哪套颜色看的是那边的主题偏好（platform-api.ts 的 bindPlatformAppearance），
@@ -492,14 +511,73 @@ export function SettingsPage({
         throw settingsFailed()
       }
     }
+    // 「给 AI 的长期嘱咐」也不在 settings.json：走设置页保存嘱咐那一条，写进三家工具的说明文件。
+    const instructions = standingInstructionsFrom(preview, overwrite)
+    let instructionsMissed = false
+    if (instructions !== undefined) {
+      const saved = await api.saveStandingInstructions(instructions).catch((error: unknown) => {
+        setSaveError(errorMessage(error))
+        throw settingsFailed()
+      })
+      const missed = standingInstructionsMissedLines(saved)
+      // 三家都没写上时这段话没记下：跟设置没存上一样说，页顶红条说是哪家、为什么。
+      if (!saved.tools.some((tool) => tool.outcome !== 'skipped' && tool.outcome !== 'failed')) {
+        setSaveError(missed.join(' '))
+        throw settingsFailed()
+      }
+      resource.setData((previous) =>
+        previous ? { ...previous, settings: { ...previous.settings, standingInstructions: saved.text || undefined } } : previous,
+      )
+      instructionsMissed = missed.length > 0
+      setStandingInstructionsMissed(instructionsMissed ? { lines: missed } : null)
+    }
+    const { works, canvasProjects } = chatTransfer ? await importWorks(preview) : {}
+    // 导进来的画布项目里生成的作品也进了作品库，创作页同样要重读。
+    if ((works?.kind === 'done' && works.added) || (canvasProjects?.kind === 'done' && canvasProjects.added)) chatTransfer?.reloadCreate()
     return dataTransferImportMessage({
       fileConversations: conversations.length,
+      fileVideos: videoProjects.length,
+      fileWorks: preview.works ? worksCount(preview.works) : 0,
+      fileCanvasProjects: preview.canvasProjects?.count ?? 0,
       added,
       updated,
       skipped,
+      videosAdded,
+      videosSkipped,
+      ...(works ? { works } : {}),
+      ...(canvasProjects ? { canvasProjects } : {}),
       signedIn: Boolean(chatTransfer),
-      settingsChanged: Boolean(patch) || anonymousUsage !== undefined,
+      settingsChanged: Boolean(patch) || anonymousUsage !== undefined || instructions !== undefined,
+      ...(instructionsMissed ? { standingInstructionsMissed: true } : {}),
     })
+  }
+  // 画布项目跟作品走同一次导入：要从「作品」里拿回项目生成的作品，空间也是一起估的。
+  const importWorks = async (
+    preview: DataTransferImportPreview,
+  ): Promise<{ works?: DataTransferWorksOutcome; canvasProjects?: DataTransferCanvasProjectsOutcome }> => {
+    const { works, canvasProjects: projects } = preview
+    if (!works) return {}
+    // 「画布项目」文件夹没有或读不出来：作品照导，项目那句单说。
+    const projectsNotReady: DataTransferCanvasProjectsOutcome | undefined = projects && projects.state !== 'ready'
+      ? projects.state === 'missing' ? { kind: 'missing' } : { kind: 'unreadable', count: projects.count }
+      : undefined
+    if (works.state !== 'ready') {
+      const outcome: DataTransferWorksOutcome = works.state === 'missing' ? { kind: 'missing' } : { kind: 'unreadable', count: worksCount(works) }
+      return { works: outcome, ...(projectsNotReady ? { canvasProjects: projectsNotReady } : {}) }
+    }
+    setWorksBusy('import')
+    try {
+      const result = await api.importAppWorks(works.token)
+      // 空间是跟作品一起估的：不够时项目一个没导（主进程不回项目的数）；项目导完以后作品才缺空间的，照报项目的数。
+      const canvasProjects: DataTransferCanvasProjectsOutcome | undefined = projectsNotReady
+        ?? (result.canvasProjects ? { kind: 'done', ...result.canvasProjects } : result.status === 'no-space' && projects ? { kind: 'no-space' } : undefined)
+      const outcome: DataTransferWorksOutcome = result.status === 'no-space'
+        ? { kind: 'no-space', neededBytes: result.neededBytes, availableBytes: result.availableBytes }
+        : { kind: 'done', added: result.added, existing: result.existing, failed: result.failed }
+      return { works: outcome, ...(canvasProjects ? { canvasProjects } : {}) }
+    } finally {
+      setWorksBusy(null)
+    }
   }
   const importDone = (message: string | null) => {
     if (message) showToast(message, 'ok')
@@ -513,7 +591,8 @@ export function SettingsPage({
         chatTransfer?.assertChatIdle()
         const preview = await api.importAppData()
         if (!preview) return null
-        const conversations = parseImportedConversations(preview.conversations)
+        // 作品这次能一起导进来，对话里的图片、视频才原样留着；否则换成一句说明，不留打不开的空格。
+        const conversations = parseImportedConversations(preview.conversations, { withWorks: preview.works?.state === 'ready' })
         if (preview.conflictLabels.length) {
           setImportAsk({ preview, conversations })
           return null
@@ -533,23 +612,44 @@ export function SettingsPage({
     )
   }
   // 导出的结果带「打开所在位置」，要给人点，照旧留在页顶。
+  // 当前账号作品库里有作品时先问一句带不带（「搬作品改」）；量不出来就照旧只导聊天记录和设置，不拦导出。
+  const [exportAsk, setExportAsk] = useState<DataTransferWorksSummary | null>(null)
+  const exportData = async (includeWorks: boolean) => {
+    const chat = chatTransfer ? await chatTransfer.exportChat({ withWorks: includeWorks }) : { conversations: [] }
+    if (!includeWorks) return api.exportAppData(chat)
+    setWorksBusy('export')
+    try {
+      return await api.exportAppData({ ...chat, includeWorks: true })
+    } finally {
+      setWorksBusy(null)
+    }
+  }
+  const exportDone = (result: Awaited<ReturnType<typeof api.exportAppData>>) =>
+    result
+      ? {
+          text: dataTransferExportMessage(result),
+          revealPath: result.outputPath,
+        }
+      : null
   const startExport = () =>
     void operation.execute(
       'transfer-export',
-      async () =>
-        api.exportAppData(
-          chatTransfer
-            ? await chatTransfer.exportChat()
-            : { conversations: [] },
-        ),
-      (result) =>
-        result
-          ? {
-              text: dataTransferExportMessage(result),
-              revealPath: result.outputPath,
-            }
-          : null,
+      async () => {
+        if (chatTransfer) {
+          const works = await api.inspectAppWorks().catch(() => null)
+          if (works && worksExportWorthAsking(works)) {
+            setExportAsk(works)
+            return null
+          }
+        }
+        return exportData(false)
+      },
+      exportDone,
     )
+  const finishExport = (includeWorks: boolean) => {
+    setExportAsk(null)
+    void operation.execute('transfer-export', () => exportData(includeWorks), exportDone)
+  }
   // 设置里两个 Claude Code 开关不走 saveSettings：主进程先对齐 Claude Code 的配置（先做一份备份）再记开关，
   // 改配置失败就不记、页顶出红条；做成了按主进程实际做了什么弹一句。
   const switchClaudeToggle = (
@@ -593,12 +693,12 @@ export function SettingsPage({
     />
   )
   // 要先读一次系统状态的那几项：读的那一下照常画开关、灰着点不了，不写字；没读到写
-  // 「暂未读到」，页顶红条给「重新读取」；只有这台电脑真的没有这一项，才写「这台电脑上用不了」。
+  // 「暂未获取」，页顶红条给「重新读取」；只有这台电脑真的没有这一项，才写「本机不可用」。
   const systemPending = (label: string) =>
     !systemApi ? (
-      <Pill tone="neutral">这台电脑上用不了</Pill>
+      <Pill tone="neutral">本机不可用</Pill>
     ) : systemError ? (
-      <Pill tone="neutral">暂未读到</Pill>
+      <Pill tone="neutral">暂未获取</Pill>
     ) : (
       <Switch
         checked={false}
@@ -661,10 +761,9 @@ export function SettingsPage({
         reloadSignal={backupsRevision}
       />
     ),
-    // 星芒占用的空间（D100）：切到这一组时新挂上、算一次；清掉旧备份后叫上面那张备份卡重读。
+    // 星芒占用空间（D100）：切到这一组时新挂上、算一次；清掉旧备份后叫上面那张备份卡重读。
     storage: <StorageCard key="storage" api={api} active={active} onBackupsCleaned={() => setBackupsRevision((value) => value + 1)} />,
     // 手机遥控 Codex：不读设置，自己向主进程要状态。
-    'codex-remote': <CodexRemoteCard key="codex-remote" api={api} navigate={navigate} onOpenHelp={openHelp} isMac={isMac} />,
     // 原来的更新页。两个开关不在卡上再摆一份，就是下面那两行。
     version: (
       <VersionCard
@@ -777,8 +876,8 @@ export function SettingsPage({
           {row(
             'hardware-acceleration',
             resource.data?.capabilities.displayCompat === 'auto'
-              ? '显卡驱动刚才接连出了几次问题，这次已临时改用兼容方式显示。界面出现黑屏、花屏、闪烁或打开就闪退时，关掉它'
-              : '界面出现黑屏、花屏、闪烁或打开就闪退时，关掉它',
+              ? '显卡驱动近期多次出现异常，本次已临时改用兼容显示模式。界面出现黑屏、花屏、闪烁或启动后闪退时，请关闭此项'
+              : '界面出现黑屏、花屏、闪烁或启动后闪退时，请关闭此项',
             <Switch
               checked={settings.hardwareAcceleration !== false}
               onChange={(hardwareAcceleration) =>
@@ -786,7 +885,7 @@ export function SettingsPage({
                   if (saved) setDisplayRelaunch(true)
                 })
               }
-              aria-label="用显卡加速显示"
+              aria-label="使用显卡加速显示"
               testId="settings-hardware-acceleration"
             />,
             { badge: '重开后生效' },
@@ -794,7 +893,7 @@ export function SettingsPage({
           {displayRelaunch && (
             <Notice
               tone="neutral"
-              title="显示方式已改好"
+              title="显示方式已更新"
               body="重开星芒后生效。"
               testId="settings-display-relaunch"
               actions={
@@ -854,7 +953,7 @@ export function SettingsPage({
             }
           />
         ) : systemState ? (
-          <Pill tone="neutral">这台电脑上用不了</Pill>
+          <Pill tone="neutral">本机不可用</Pill>
         ) : (
           systemPending('开机自动启动')
         ),
@@ -864,7 +963,7 @@ export function SettingsPage({
         // Linux 的任务栏不一定有放托盘图标的地方（主进程先问过），没有就只能退出。
         // 没有游戏加速的电脑（Linux）不说加速。
         isLinux && resource.data && !resource.data.capabilities.tray
-          ? '这台电脑的任务栏上没有放星芒图标的地方，点关闭会直接退出软件'
+          ? '本机任务栏不支持显示星芒图标，关闭窗口将直接退出软件'
           : closeToTrayNote(isMac, accelerationAvailable),
         <Segment
           options={[
@@ -900,7 +999,7 @@ export function SettingsPage({
       ),
       workspace: row(
         'workspace',
-        '打开工具时进入这个文件夹；工具会读写里面的文件，请选你信任的文件夹',
+        '打开工具时进入此文件夹；工具将读写其中的文件，请选择可信任的文件夹',
         <div className="v2-business-control">
           <span className="v2-business-path">{settings.workspace}</span>
           <Button
@@ -911,7 +1010,8 @@ export function SettingsPage({
                 'workspace',
                 async () => {
                   const workspace = await api.chooseWorkspace()
-                  if (workspace) await update({ workspace })
+                  // 带上 workspaceChosen：首页「打开」据此先进这里换的文件夹（Q1）。
+                  if (workspace) await update({ workspace, workspaceChosen: true })
                 },
                 '',
               )
@@ -923,10 +1023,10 @@ export function SettingsPage({
       ),
       'claude-write-boundary': row(
         'claude-write-boundary',
-        '开着时，Claude Code 写文件、改文件只在你打开的那个文件夹里做，要改外面的会被拒绝。它在终端里跑的命令不受这个限制。',
+        '开启后，Claude Code 仅能在当前打开的文件夹中写入和修改文件，修改其他位置将被拒绝。其在终端中执行的命令不受此限制。',
         <Switch
           checked={settings.claudeWritesInsideProject === true}
-          aria-label="只让 Claude Code 改项目文件夹里的文件"
+          aria-label="仅允许 Claude Code 修改项目文件夹内的文件"
           testId="settings-claude-write-boundary"
           disabled={Boolean(operation.busy)}
           onChange={(enabled) =>
@@ -936,7 +1036,7 @@ export function SettingsPage({
       ),
       'claude-commit-attribution': row(
         'claude-commit-attribution',
-        '开着时，Claude Code 替你提交代码（git commit）和发 PR 时，不再在末尾加上 Claude 的署名。',
+        '开启后，Claude Code 提交代码（git commit）和创建 PR 时，将不再在末尾添加 Claude 署名。',
         <Switch
           checked={settings.claudeHidesCommitAttribution === true}
           aria-label="Claude Code 提交代码时不署名"
@@ -947,12 +1047,43 @@ export function SettingsPage({
           }
         />,
       ),
+      'standing-instructions': row(
+        'standing-instructions',
+        '此处填写的要求将对 Claude Code、Codex、Grok 在所有文件夹中生效，例如：回答请尽量简洁；我从事外贸行业。',
+        <StandingInstructionsField
+          api={api}
+          saved={settings.standingInstructions ?? ''}
+          busy={Boolean(operation.busy)}
+          missedAfterImport={standingInstructionsMissed}
+          save={(run, done) =>
+            void operation.execute(
+              'standing-instructions',
+              async () => {
+                const result = await run()
+                setStandingInstructionsMissed(null)
+                resource.setData((previous) =>
+                  previous
+                    ? { ...previous, settings: { ...previous.settings, standingInstructions: result.text || undefined } }
+                    : previous,
+                )
+                return result
+              },
+              (result) => {
+                const text = done(result)
+                if (text) showToast(text, 'ok')
+                return null
+              },
+            )
+          }
+        />,
+        { wide: true, testId: 'settings-standing-instructions' },
+      ),
       'latest-cli': row(
         'latest-cli',
-        '默认装星芒验证过的推荐版本；打开后跟随官方最新版，可能遇到还没验证过的问题',
+        '默认安装经星芒验证的推荐版本；开启后跟随官方最新版本，可能遇到尚未验证的问题',
         <Switch
           checked={settings.alwaysInstallLatestCli === true}
-          aria-label="命令行工具总是装最新版"
+          aria-label="命令行工具始终安装最新版本"
           onChange={(alwaysInstallLatestCli) =>
             void update({ alwaysInstallLatestCli })
           }
@@ -983,10 +1114,10 @@ export function SettingsPage({
       ),
       'tool-route-restart-hints': row(
         'tool-route-restart-hints',
-        '连接线路因为连不上换了以后，开着的工具要重开才会走新线路。关掉以后不再弹提示，只在首页工具卡上标「需重开生效」。',
+        '因连接失败切换线路后，已打开的工具需重新打开才会使用新线路。关闭后将不再弹出提示，仅在首页工具卡片上标注「需重开生效」。',
         <Switch
           checked={settings.toolRouteRestartHints !== false}
-          aria-label="换线路后提醒我重开工具"
+          aria-label="切换线路后提醒重新打开工具"
           testId="settings-tool-route-restart-hints"
           onChange={(toolRouteRestartHints) =>
             void update({ toolRouteRestartHints })
@@ -1026,7 +1157,7 @@ export function SettingsPage({
             查看
           </Button>
         ) : (
-          <Pill tone="neutral">这台电脑上用不了</Pill>
+          <Pill tone="neutral">本机不可用</Pill>
         ),
       ),
       'network-check': row(
@@ -1038,7 +1169,7 @@ export function SettingsPage({
           onClick={() => navigate?.('health', networkDiagnosticCode)}
           testId="settings-network-health"
         >
-          去检查
+          前往检查
         </Button>,
       ),
       certificate: row(
@@ -1050,7 +1181,7 @@ export function SettingsPage({
           onClick={() => navigate?.('health', certificateDiagnosticCode)}
           testId="settings-certificate-health"
         >
-          去检查
+          前往检查
         </Button>,
       ),
       // 「发测试通知」并进了桌面通知这一行：总开关关着时发不出去，按钮跟着灰。
@@ -1077,7 +1208,7 @@ export function SettingsPage({
                   if (result === 'disabled')
                     throw new Error('请先开启桌面通知。')
                   if (result === 'unsupported')
-                    throw new Error('这台电脑当前无法显示系统通知。')
+                    throw new Error('本机当前无法显示系统通知。')
                 },
                 testNotificationHandedOff,
               )
@@ -1137,7 +1268,7 @@ export function SettingsPage({
           key="transfer"
           anchor="transfer"
           title={chatTransfer ? settingsItemLabel('transfer') : '导出设置'}
-          description={chatTransfer ? '文件里没有密码和密钥，在新电脑上登录一下就行' : '登录后再导出，会连聊天记录一起带上'}
+          description={worksBusy === 'export' ? worksExportingText : worksBusy === 'import' ? worksImportingText : chatTransfer ? '文件中不含密码和密钥，在新电脑上登录即可' : '登录后导出可包含聊天记录'}
           control={
             <Button
               size="sm"
@@ -1166,7 +1297,7 @@ export function SettingsPage({
       ),
       'crash-reporting': row(
         'crash-reporting',
-        '出错或卡住时把错误信息、版本和系统信息发到海外的错误收集服务；不含账号、密钥、文件路径和对话内容',
+        '出错或无响应时，将错误信息、版本和系统信息发送至海外错误收集服务；不包含账号、密钥、文件路径和对话内容',
         <Switch
           aria-label="自动发送错误报告"
           checked={settings.crashReporting !== false}
@@ -1176,7 +1307,7 @@ export function SettingsPage({
       // 没碰过 = 开（主进程 usage-stats.ts）；本机只有客户亲手点过才存值。
       'usage-stats': row(
         'usage-stats',
-        '每天最多发一次版本、系统、装了哪些工具、安装和更新是否成功；不含账号、密钥、文件路径和对话内容，也没有电脑编号',
+        '每天最多发送一次版本、操作系统、已安装工具及安装更新结果；不包含账号、密钥、文件路径、对话内容及设备标识',
         systemApi && systemState ? (
           <Switch
             aria-label="匿名使用统计偏好"
@@ -1226,38 +1357,20 @@ export function SettingsPage({
           </Button>
         </>,
       ),
-      legal: row(
+      // 协议两个账号共用一份：交给 App 里欢迎页、登录框用的那个弹窗读（固定读星芒账号那一份、按排版显示、
+      // 有「重新读取」）。设置页以前自己按当前账号读，历史账号那边没有协议，点了只报「当前账号暂不支持此功能」。
+      legal: openLegal ? row(
         'legal',
         null,
         <>
-          <Button
-            size="sm"
-            onClick={() =>
-              void operation.execute(
-                'legal',
-                async () =>
-                  setLegal(await api.getLegalDocument('user-agreement')),
-                '',
-              )
-            }
-          >
+          <Button size="sm" onClick={() => openLegal('user-agreement')} testId="settings-legal-user-agreement">
             用户协议
           </Button>
-          <Button
-            size="sm"
-            onClick={() =>
-              void operation.execute(
-                'legal',
-                async () =>
-                  setLegal(await api.getLegalDocument('privacy-policy')),
-                '',
-              )
-            }
-          >
+          <Button size="sm" onClick={() => openLegal('privacy-policy')} testId="settings-legal-privacy-policy">
             隐私政策
           </Button>
         </>,
-      ),
+      ) : undefined,
       'update-check': row(
         'update-check',
         null,
@@ -1322,7 +1435,7 @@ export function SettingsPage({
   const hits = settings && searching ? searchSettingsItems(search).filter(shown) : []
   // 小标题右边的那句、卡片上面的那条：桌面通知关着时提醒项都不会响；线路存好了要重开才用上。
   const sectionNotes: Partial<Record<SettingsSectionId, ReactNode>> = {
-    reminders: settings?.desktopNotifications === false ? '桌面通知关着，下面这些都不会提醒' : undefined,
+    reminders: settings?.desktopNotifications === false ? '桌面通知已关闭，以下提醒均不会显示' : undefined,
   }
   const sectionLeads: Partial<Record<SettingsSectionId, ReactNode>> = settings
     ? {
@@ -1341,7 +1454,7 @@ export function SettingsPage({
   }
   let content: ReactNode = (
     <Card padding="none">
-      <p role="status">{resource.error ? '设置暂时没有读到' : '正在读取设置…'}</p>
+      <p role="status">{resource.error ? '设置暂时无法获取' : '正在读取设置…'}</p>
     </Card>
   )
   if (settings && searching) {
@@ -1391,12 +1504,12 @@ export function SettingsPage({
       </div>
     ) : (
       <div className="v2-settings-empty" data-testid="settings-search-empty">
-        <h3>没有找到相关设置</h3>
-        <p>换个说法试试，比如「托盘」「镜像」「快捷键」。</p>
+        <h3>未找到相关设置</h3>
+        <p>请尝试其他关键词，如「托盘」「镜像」「快捷键」。</p>
       </div>
     )
   } else if (settings || resource.error) {
-    // 设置没读到时只摆这一组里的那张卡（如果有），上面照旧写「设置暂时没有读到」、给「重新读取」。
+    // 设置没读到时只摆这一组里的那张卡（如果有），上面照旧写「设置暂时无法获取」、给「重新读取」。
     const blocks = buildSettingsBlocks(group, settingsItems.filter((item) => shown(item) && (Boolean(settings) || item.card === true)))
     const groupContent = blocks.map((block, index) => (
       <section key={block.section?.value ?? `rows-${index}`} className="v2-settings-block">
@@ -1514,13 +1627,13 @@ export function SettingsPage({
             <h2>{searching ? `搜索「${search.trim()}」` : settingsGroups.find((item) => item.value === group)?.label}</h2>
             {pending > 0 && <span role="status">正在保存更改…</span>}
           </div>
-          {settings && searching && <p className="v2-settings-panel-lead">找到 {hits.length} 项，可以直接在这里修改</p>}
+          {settings && searching && <p className="v2-settings-panel-lead">找到 {hits.length} 项，可直接在此修改</p>}
           {content}
         </div>
       </div>
       <Dialog
         open={Boolean(importAsk)}
-        title="要换成文件里的设置吗？"
+        title="是否使用文件中的设置？"
         onClose={() => setImportAsk(null)}
         footer={
           <>
@@ -1529,31 +1642,49 @@ export function SettingsPage({
               onClick={() => finishImport(false)}
               testId="settings-transfer-keep"
             >
-              保留这台电脑的
+              保留本机设置
             </Button>
             <Button
               variant="primary"
               onClick={() => finishImport(true)}
               testId="settings-transfer-overwrite"
             >
-              换成文件里的
+              使用文件中的设置
             </Button>
           </>
         }
       >
         <p>
-          这台电脑上你已经改过这几项，和文件里的不一样：
+          以下设置在本机已修改，与文件中的不同：
           {importAsk?.preview.conflictLabels.join('、')}。
         </p>
-        <p>其他设置和聊天记录照常导入，不受这个选择影响。</p>
+        <p>其他设置和聊天记录将正常导入，不受此选择影响。</p>
       </Dialog>
       <Dialog
-        open={Boolean(legal)}
-        title={legal?.kind === 'privacy-policy' ? '隐私政策' : '用户协议'}
-        width={640}
-        onClose={() => setLegal(null)}
+        open={Boolean(exportAsk)}
+        title={exportAsk ? worksExportTitle(exportAsk) : ''}
+        onClose={() => setExportAsk(null)}
+        footer={
+          <>
+            <Button onClick={() => setExportAsk(null)} testId="settings-transfer-works-cancel">取消</Button>
+            <Button
+              onClick={() => finishExport(false)}
+              testId="settings-transfer-works-skip"
+            >
+              仅导出聊天记录和设置
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => finishExport(true)}
+              testId="settings-transfer-works-include"
+            >
+              导出全部
+            </Button>
+          </>
+        }
       >
-        <pre className="v2-business-legal">{legal?.markdown}</pre>
+        <p data-testid="settings-transfer-works-summary">{exportAsk ? worksExportQuestion(exportAsk) : ''}</p>
+        <p>{exportAsk ? worksExportNoteFor(exportAsk) : ''}</p>
       </Dialog>
       <Dialog
         open={shortcuts}

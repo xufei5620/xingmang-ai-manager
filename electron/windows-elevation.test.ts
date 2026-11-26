@@ -627,8 +627,8 @@ describe('Windows CLI launch', () => {
 
   it.each([
     [{ code: 'ENOENT', message: 'spawn failed' }, '系统 PowerShell 启动文件不存在'],
-    [{ code: 'EACCES', message: 'spawn failed' }, 'Windows 拒绝访问 PowerShell 或工作目录'],
-    [{ message: 'The directory name is invalid' }, '工作目录已失效或无法访问'],
+    [{ code: 'EACCES', message: 'spawn failed' }, 'Windows 拒绝访问 PowerShell 或项目文件夹'],
+    [{ message: 'The directory name is invalid' }, '项目文件夹已失效或无法访问'],
   ])('classifies Windows CLI launch failures', (error, expected) => {
     expect(describeWindowsCliLaunchError(error)).toContain(expected)
   })
@@ -666,9 +666,9 @@ describe('Windows CLI launch', () => {
 
   it('still recognizes the cause once it is read from stderr alone', () => {
     expect(describeWindowsCliLaunchError(brokerFailure('此命令由于以下错误而无法运行: 目录名称无效。\r\n')))
-      .toBe('工作目录已失效或无法访问，请重新选择工作目录')
+      .toBe('项目文件夹已失效或无法访问，请重新选择项目文件夹')
     expect(describeWindowsCliLaunchError(brokerFailure('This command cannot be run due to the error: Access is denied.\r\n')))
-      .toBe('Windows 拒绝访问 PowerShell 或工作目录，请检查目录权限后重试')
+      .toBe('Windows 拒绝访问 PowerShell 或项目文件夹，请检查文件夹权限后重试')
   })
 
   it('still says why PowerShell could not be started, though execFile attaches an empty stderr', () => {
@@ -676,13 +676,13 @@ describe('Windows CLI launch', () => {
       .toBe('系统 PowerShell 启动文件不存在或已被移除，请修复 Windows PowerShell 或安装 PowerShell 7')
     // 英文原话不上屏，只在 terminal.failed 那条日志里（#1100 第1条）。
     expect(describeWindowsCliLaunchError(spawnFailure('EMFILE')))
-      .toBe('Windows 没能启动 PowerShell，原因已经记进运行日志。')
+      .toBe('Windows 未能启动 PowerShell，原因已记录到运行日志。')
   })
 
   it('sends a launch that ended without a cause to the log, not to the command line', () => {
     // The broker ran past its limit and was stopped: nothing on stderr to quote.
     const timedOut = brokerFailure('', { code: null, killed: true, signal: 'SIGTERM' })
-    expect(describeWindowsCliLaunchError(timedOut)).toBe('Windows 没能启动 PowerShell，原因已经记进运行日志。')
+    expect(describeWindowsCliLaunchError(timedOut)).toBe('Windows 未能启动 PowerShell，原因已记录到运行日志。')
     // Raised by launchCliPowerShell itself, the reason is the message.
     expect(describeWindowsCliLaunchError(new Error('PowerShell 启动代理未返回有效的终端进程 ID')))
       .toBe('Windows 无法启动 PowerShell：PowerShell 启动代理未返回有效的终端进程 ID')
@@ -717,7 +717,7 @@ describe('Windows CLI launch', () => {
       ' ',
     ])
     expect(describeWindowsCliLaunchError(brokerFailure(wrapped)))
-      .toBe('Windows 没能启动 PowerShell，原因已经记进运行日志。')
+      .toBe('Windows 未能启动 PowerShell，原因已记录到运行日志。')
     expect(parseWindowsCliLaunchCause(wrapped)).toBe('Cannot perform operation because the wildcard path D:\\作业[1] did not resolve to a file.')
   })
 
@@ -737,7 +737,7 @@ describe('Windows CLI launch', () => {
       ' ',
     ])
     expect(parseWindowsCliLaunchCause(fromWindowsPowerShell)).toBe(blocked)
-    expect(describeWindowsCliLaunchError(brokerFailure(fromWindowsPowerShell))).toBe('Windows 没能启动 PowerShell，原因已经记进运行日志。')
+    expect(describeWindowsCliLaunchError(brokerFailure(fromWindowsPowerShell))).toBe('Windows 未能启动 PowerShell，原因已记录到运行日志。')
     // PowerShell 7: the reason alone, "Line |", the quote, then "~" and the cause behind a bar.
     const fromPowerShell7 = clixml([
       '_x001B_[31;1mParserError: ',
@@ -747,7 +747,7 @@ describe('Windows CLI launch', () => {
       `_x001B_[36;1m_x001B_[36;1m     | _x001B_[31;1m${blocked}_x001B_[0m`,
     ])
     expect(parseWindowsCliLaunchCause(fromPowerShell7)).toBe(blocked)
-    expect(describeWindowsCliLaunchError(brokerFailure(fromPowerShell7))).toBe('Windows 没能启动 PowerShell，原因已经记进运行日志。')
+    expect(describeWindowsCliLaunchError(brokerFailure(fromPowerShell7))).toBe('Windows 未能启动 PowerShell，原因已记录到运行日志。')
   })
 
   it.each([
@@ -791,7 +791,7 @@ describe('Windows CLI launch', () => {
 
   it.each([
     [{ executable: '', workspace: 'C:\\Work', title: 'Codex' }, 'CLI 路径不能为空'],
-    [{ executable: 'codex.cmd', workspace: '  ', title: 'Codex' }, '工作目录不能为空'],
+    [{ executable: 'codex.cmd', workspace: '  ', title: 'Codex' }, '项目文件夹不能为空'],
     [{ executable: 'codex.cmd', workspace: 'C:\\Work', title: '\0' }, '窗口标题包含无效字符'],
   ])('rejects invalid launch values', (request, message) => {
     expect(() => buildCliLaunchPlan(request, testPowerShell)).toThrow(message)
@@ -847,7 +847,7 @@ describe('windows elevation capability', () => {
     const cancelled = windowsElevationCancelledMessage('Node.js', 'administrator')
     expect(cancelled).toContain('已取消管理员授权')
     expect(cancelled).toContain('重新点击安装')
-    expect(cancelled).not.toContain('不在管理员组')
+    expect(cancelled).not.toContain('没有管理员权限')
 
     const blocked = windowsElevationCancelledMessage('Node.js', 'standard')
     expect(blocked).toContain('已取消管理员授权')
@@ -857,7 +857,43 @@ describe('windows elevation capability', () => {
 
   it('keeps the old advice when the probe could not answer', () => {
     expect(windowsElevationDeniedMessage('Codex 桌面端')).toContain('点击「是」')
-    expect(windowsElevationDeniedMessage('Codex 桌面端', 'standard')).toContain('管理员账号的密码')
+    expect(windowsElevationDeniedMessage('Codex 桌面端', 'standard')).not.toContain('点击「是」')
+  })
+
+  // Both elevated installers refuse a token from another account (exit 2225), so a
+  // standard user who types an administrator's password still gets nothing. The advice
+  // used to say exactly that, which sent people in a circle.
+  it('sends a standard account to an administrator account instead of the password prompt', () => {
+    expect(windowsStandardAccountAdvice()).toBe('此 Windows 账号没有管理员权限，无法完成安装。请先使用管理员账号登录 Windows，并在星芒中完成 Node.js 的安装，安装后本机所有 Windows 账号均可使用；随后切换回此账号并点击「重试」。公司或学校的电脑请联系 IT 协助。')
+    expect(windowsStandardAccountAdvice({ kind: 'account', product: 'Codex 桌面端' })).toBe(
+      '此 Windows 账号没有管理员权限，无法安装 Codex 桌面端。如需使用，请使用管理员账号登录 Windows，并在该账号中安装和使用。公司或学校的电脑请联系 IT 协助。',
+    )
+    for (const advice of [windowsStandardAccountAdvice(), windowsStandardAccountAdvice({ kind: 'account', product: 'Claude Desktop' })]) {
+      expect(advice).not.toContain('密码')
+      expect(advice).not.toContain('管理员组')
+    }
+    // 桌面端只注册给装它的那个账号，不能说装一次大家都能用。
+    expect(windowsStandardAccountAdvice({ kind: 'account', product: 'Claude Desktop' })).not.toContain('所有 Windows 账号均可使用')
+    expect(windowsElevationDeniedMessage('Claude Desktop ', 'standard', { kind: 'account', product: 'Claude Desktop' }))
+      .toBe('未获得管理员权限，Claude Desktop 安装已停止。此 Windows 账号没有管理员权限，无法安装 Claude Desktop。如需使用，请使用管理员账号登录 Windows，并在该账号中安装和使用。公司或学校的电脑请联系 IT 协助。')
+  })
+
+  // #1321: when the probe cannot tell the account type, the denied sentence used to
+  // tell a standard user to type an administrator's password, which ends in 2225 too.
+  it('points an unconfirmed standard account at an administrator account, never at the password prompt', () => {
+    expect(windowsElevationDeniedMessage('Node.js '))
+      .toBe('未获得管理员权限，Node.js 安装已停止。请在弹出的授权窗口中点击「是」；如本机登录的是普通账号，请先使用管理员账号登录 Windows 完成安装，安装后本机所有 Windows 账号均可使用。')
+    expect(windowsElevationDeniedMessage('Codex 桌面端', 'unknown', { kind: 'account', product: 'Codex 桌面端' }))
+      .toBe('未获得管理员权限，Codex 桌面端安装已停止。请在弹出的授权窗口中点击「是」；如本机登录的是普通账号，请使用管理员账号登录 Windows，并在该账号中安装和使用。')
+    for (const capability of ['administrator', 'standard', 'unknown'] as const) {
+      for (const target of [{ kind: 'machine' }, { kind: 'account', product: 'Claude Desktop' }] as const) {
+        expect(windowsElevationDeniedMessage('Node.js ', capability, target)).not.toContain('密码')
+        expect(windowsElevationCancelledMessage('Node.js ', capability, target)).not.toContain('密码')
+      }
+    }
+    // 桌面端只注册给装它的那个账号。
+    expect(windowsElevationDeniedMessage('Claude Desktop ', 'unknown', { kind: 'account', product: 'Claude Desktop' }))
+      .not.toContain('所有 Windows 账号均可使用')
   })
 
   it('never proposes running this app elevated as the fix', () => {
@@ -1222,9 +1258,9 @@ describe('PowerShell quoting with random inputs', () => {
 describe('unelevated uninstall command window', () => {
   const text = {
     title: '星芒：卸载 Claude Code',
-    running: '正在卸载 Claude Code，请稍等，别关这个窗口。',
-    succeeded: '卸载完成。现在可以关掉这个窗口，回星芒点「重新检测」。',
-    failed: '卸载没有完成（错误代码 {code}）。关掉这个窗口，回星芒点「重新检测」看看；还不行请找客服。',
+    running: '正在卸载 Claude Code，请稍候，请勿关闭此窗口。',
+    succeeded: '卸载完成。现在可以关闭此窗口，返回星芒点击「重新检测」。',
+    failed: '卸载未完成（错误代码 {code}）。请关闭此窗口，返回星芒点击「重新检测」；如仍未卸载，请联系客服。',
   }
   const chcp = 'C:\\Windows\\System32\\chcp.com'
 
@@ -1238,11 +1274,11 @@ describe('unelevated uninstall command window', () => {
       '@echo off',
       '"C:\\Windows\\System32\\chcp.com" 65001 >nul',
       'title 星芒：卸载 Claude Code',
-      'echo 正在卸载 Claude Code，请稍等，别关这个窗口。',
+      'echo 正在卸载 Claude Code，请稍候，请勿关闭此窗口。',
       'echo.',
       'call npm.cmd uninstall -g @anthropic-ai/claude-code',
       'echo.',
-      'if errorlevel 1 (echo 卸载没有完成（错误代码 %errorlevel%）。关掉这个窗口，回星芒点「重新检测」看看；还不行请找客服。) else (echo 卸载完成。现在可以关掉这个窗口，回星芒点「重新检测」。)',
+      'if errorlevel 1 (echo 卸载未完成（错误代码 %errorlevel%）。请关闭此窗口，返回星芒点击「重新检测」；如仍未卸载，请联系客服。) else (echo 卸载完成。现在可以关闭此窗口，返回星芒点击「重新检测」。)',
       'echo.',
       'pause',
       'del "%~f0"',

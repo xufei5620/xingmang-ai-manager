@@ -271,7 +271,7 @@ describe('the environment the Windows Grok shell is worked out from', () => {
   })
 })
 
-// Fable 第二轮 Q6：设置里「只让 Claude Code 改项目文件夹里的文件」。
+// Fable 第二轮 Q6：设置里「仅允许 Claude Code 修改项目文件夹内的文件」。
 describe('the Claude Code write boundary toggle', () => {
   const settingsOf = (userHome: string) => JSON.parse(fs.readFileSync(path.join(userHome, '.claude', 'settings.json'), 'utf8')) as { permissions?: Record<string, unknown> }
   const saveForAccount = (service: ReturnType<typeof createService>['service'], apiKey = 'sk-fixture') => service.saveConfig(
@@ -316,8 +316,8 @@ describe('the Claude Code write boundary toggle', () => {
     await saveForAccount(service)
     const before = fs.readFileSync(path.join(userHome, '.claude', 'settings.json'), 'utf8')
 
-    await expect(service.setClaudeWriteBoundary(true, () => { throw new Error('没能先备份 Claude Code 的配置，这次没有改') }))
-      .rejects.toThrow('没能先备份 Claude Code 的配置，这次没有改')
+    await expect(service.setClaudeWriteBoundary(true, () => { throw new Error('未能先备份 Claude Code 的配置，本次未修改') }))
+      .rejects.toThrow('未能先备份 Claude Code 的配置，本次未修改')
     expect(fs.readFileSync(path.join(userHome, '.claude', 'settings.json'), 'utf8')).toBe(before)
     expect(store.read().claudeWritesInsideProject).toBeUndefined()
   })
@@ -350,6 +350,47 @@ describe('the Claude Code write boundary toggle', () => {
 
     await expect(service.setClaudeWriteBoundary(true)).resolves.toEqual({ enabled: true, applied: 'later' })
     expect(fs.readFileSync(path.join(userHome, '.claude', 'settings.json'), 'utf8')).toBe(before)
+  })
+
+  it('writes the standing instructions into all three tools whatever account they use, and remembers them', async () => {
+    const { root, store, userHome, service } = createService()
+    await store.setOfficialProvider('codex', true)
+    fs.writeFileSync(path.join(userHome, '.claude', 'CLAUDE.md'), '# 我自己的\n')
+
+    const saved = await service.saveStandingInstructions('回答简短一点')
+    expect(saved).toEqual({
+      text: '回答简短一点',
+      tools: [
+        { provider: 'claude', outcome: 'written' },
+        { provider: 'codex', outcome: 'written' },
+        { provider: 'grok', outcome: 'written' },
+      ],
+    })
+    expect(store.read().standingInstructions).toBe('回答简短一点')
+    expect(fs.readFileSync(path.join(userHome, '.claude', 'CLAUDE.md'), 'utf8').startsWith('# 我自己的\n\n')).toBe(true)
+    expect(fs.readFileSync(path.join(root, 'codex', 'AGENTS.md'), 'utf8')).toContain('回答简短一点')
+    expect(fs.readFileSync(path.join(userHome, '.grok', 'AGENTS.md'), 'utf8')).toContain('回答简短一点')
+
+    const cleared = await service.saveStandingInstructions('')
+    expect(cleared.tools.map((tool) => tool.outcome)).toEqual(['removed', 'removed', 'removed'])
+    expect(store.read().standingInstructions).toBeUndefined()
+    expect(fs.readFileSync(path.join(userHome, '.claude', 'CLAUDE.md'), 'utf8')).toBe('# 我自己的\n')
+    expect(fs.existsSync(path.join(root, 'codex', 'AGENTS.md'))).toBe(false)
+  })
+
+  it('keeps the last standing instructions on record when no tool could take the new ones', async () => {
+    const { root, store, userHome, service } = createService()
+    await service.saveStandingInstructions('旧的嘱咐')
+    // 三家的说明都换成了 GBK 存的（「中文」），一家也写不上。
+    const gbk = Buffer.from([0xd6, 0xd0, 0xce, 0xc4, 0x0a])
+    for (const file of [path.join(userHome, '.claude', 'CLAUDE.md'), path.join(root, 'codex', 'AGENTS.md'), path.join(userHome, '.grok', 'AGENTS.md')]) {
+      fs.writeFileSync(file, gbk)
+    }
+
+    const saved = await service.saveStandingInstructions('新的嘱咐')
+    expect(saved.tools.map((tool) => tool.outcome)).toEqual(['skipped', 'skipped', 'skipped'])
+    expect(saved.text).toBe('旧的嘱咐')
+    expect(store.read().standingInstructions).toBe('旧的嘱咐')
   })
 })
 

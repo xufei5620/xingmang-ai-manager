@@ -21,7 +21,7 @@ import { readBoundedResponseBytes } from './bounded-response'
 import { describeInsufficientDiskSpace, paidGenerationMinimumFreeBytes, readDiskSpace, type DiskSpaceReading } from './disk-space'
 import { fetchWithRedirectAllowlist } from './redirect-allowlist-fetch'
 
-const DEFAULT_MAXIMUM_IMAGE_BYTES = 64 * 1024 * 1024
+export const DEFAULT_MAXIMUM_IMAGE_BYTES = 64 * 1024 * 1024
 const MAXIMUM_VIDEO_INPUT_IMAGE_BYTES = 8 * 1024 * 1024
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 120_000
 const MAXIMUM_REMOTE_URL_LENGTH = 4_096
@@ -42,7 +42,12 @@ const AI_ASSET_WRITE_FAILED_ERROR_CODE = 'AI_IMAGE_WRITE_FAILED'
 export const AI_OUTPUT_UNWRITABLE_ERROR_CODE = 'AI_OUTPUT_UNWRITABLE'
 /** 付过钱的图写不进去、但已经交给 keepUnsaved 暂存好了：生图那边据此换一句「先替你收着」（深查 S-1）。 */
 export const AI_IMAGE_KEPT_UNSAVED_ERROR_CODE = 'AI_IMAGE_KEPT_UNSAVED'
-const DEFAULT_UNWRITABLE_GUIDANCE = '请联系客服帮你处理。'
+/**
+ * 同上，但暂存文件夹也写不进、只留在内存里：一退出就没了，生图那边要多说一句「先别退出」
+ * （11-18 复核 A02，总单 #61）。
+ */
+export const AI_IMAGE_KEPT_IN_MEMORY_ERROR_CODE = 'AI_IMAGE_KEPT_IN_MEMORY'
+const DEFAULT_UNWRITABLE_GUIDANCE = '请联系客服协助处理。'
 
 const blockedIpv4Addresses = new BlockList()
 for (const [address, prefix] of [
@@ -127,6 +132,8 @@ export type AiAssetFetch = (
   resolvedAddresses: readonly string[],
 ) => Promise<Response>
 export type AiAssetProxyFetch = (input: string, init: RequestInit) => Promise<Response>
+/** 暂存收在哪：disk = 软件自己的数据文件夹（重开还在），memory = 只在内存里（退出就没了）。 */
+export type AiImageKeptPlace = 'disk' | 'memory'
 
 export interface AiAssetStoreOptions {
   outputRoot: string
@@ -148,10 +155,11 @@ export interface AiAssetStoreOptions {
   /**
    * 付过钱的图（生图回来的 base64 和下载下来的图）存不进保存位置时，把字节交给它先暂存，
    * 腾出空间后再补存（深查 S-1，ai-unsaved-image-stash.ts）。只管扣过费的那两条路：本机导入的
-   * 原文件还在客户手里，不用替它留一份。回 true 表示收下了，抛出去的错误换成
-   * AI_IMAGE_KEPT_UNSAVED_ERROR_CODE；回 false 或它自己出错，照旧是写不进去那个错误。
+   * 原文件还在客户手里，不用替它留一份。回 'disk' 表示收在盘上，抛出去的错误换成
+   * AI_IMAGE_KEPT_UNSAVED_ERROR_CODE；回 'memory' 表示只留在内存里，换成 AI_IMAGE_KEPT_IN_MEMORY_ERROR_CODE；
+   * 回 null 或它自己出错，照旧是写不进去那个错误。
    */
-  keepUnsaved?: (userId: number, bytes: Buffer) => Promise<boolean>
+  keepUnsaved?: (userId: number, bytes: Buffer) => Promise<AiImageKeptPlace | null>
 }
 
 interface OwnedAssetRecord {
@@ -567,7 +575,7 @@ export class AiAssetStore {
   private readonly downloadTimeoutMs: number
   private readonly unwritableGuidance: string
   private readonly readDiskSpace: (target: string) => Promise<DiskSpaceReading | null>
-  private readonly keepUnsaved: ((userId: number, bytes: Buffer) => Promise<boolean>) | undefined
+  private readonly keepUnsaved: ((userId: number, bytes: Buffer) => Promise<AiImageKeptPlace | null>) | undefined
   private readonly records = new Map<string, OwnedAssetRecord>()
   private readonly locator: OwnedAssetLocator
 
@@ -602,7 +610,7 @@ export class AiAssetStore {
     try {
       ensureSafeDataDirectory(this.outputRoot, FILE_LABEL)
     } catch {
-      throw new Error('AI 作品保存位置建不起来，请稍后重试；一直不行请联系客服')
+      throw new Error('AI 作品保存位置创建失败，请稍后重试；如持续失败，请联系客服')
     }
   }
 
@@ -632,7 +640,7 @@ export class AiAssetStore {
       ensureSafeDataDirectory(this.outputRoot, FILE_LABEL)
       await probeDirectoryWritable(directory, FILE_LABEL, this.randomBytes)
     } catch (cause) {
-      const error = new Error(`保存位置写不进去，这次没有扣费。${this.unwritableGuidance}`, { cause })
+      const error = new Error(`保存位置无法写入，本次未扣费。${this.unwritableGuidance}`, { cause })
       Object.assign(error, { code: AI_OUTPUT_UNWRITABLE_ERROR_CODE })
       throw error
     }
@@ -920,8 +928,9 @@ export class AiAssetStore {
       return await this.persist(userId, bytes, declaredMime, meta)
     } catch (error) {
       if (this.keepUnsaved && (error as { code?: unknown }).code === AI_ASSET_WRITE_FAILED_ERROR_CODE) {
-        const kept = await this.keepUnsaved(userId, bytes).catch(() => false)
-        if (kept) Object.assign(error as Error, { code: AI_IMAGE_KEPT_UNSAVED_ERROR_CODE })
+        const kept = await this.keepUnsaved(userId, bytes).catch(() => null)
+        if (kept === 'disk') Object.assign(error as Error, { code: AI_IMAGE_KEPT_UNSAVED_ERROR_CODE })
+        if (kept === 'memory') Object.assign(error as Error, { code: AI_IMAGE_KEPT_IN_MEMORY_ERROR_CODE })
       }
       throw error
     }
@@ -981,7 +990,7 @@ export class AiAssetStore {
         throw new Error('AI 图片资产标识冲突，请重试')
       }
       // 原因挂在 cause 上，日志里才看得到 ENOSPC、EPERM 这些（深查 S-1）；界面照旧只说这一句。
-      const failure = new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服', { cause: error })
+      const failure = new Error('作品未能存入保存位置，请稍后重试；如持续失败，请联系客服', { cause: error })
       throw Object.assign(failure, { code: AI_ASSET_WRITE_FAILED_ERROR_CODE })
     }
     this.cacheRecord(assetId, { userId, filePath, asset })

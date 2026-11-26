@@ -475,18 +475,18 @@ describe('auto install wording', () => {
 
   it('leaves the consent window out on macOS', () => {
     expect(buildAutoInstallNotice('0.2.12', 'quit', 'darwin').body).not.toContain('授权')
-    expect(buildAutoInstallNotice('0.2.12', 'launch', 'darwin').body).toContain('先关掉')
+    expect(buildAutoInstallNotice('0.2.12', 'launch', 'darwin').body).toContain('先关闭')
     expect(previousAutoInstallFailureMessage('darwin')).not.toContain('授权')
   })
 
   it('tells Mac users how to answer the keychain prompt after either install moment', () => {
     expect(buildAutoInstallNotice('0.2.12', 'quit', 'darwin')).toEqual({
       title: '正在安装星芒AI新版本',
-      body: '正在装新版 0.2.12，装好会自动打开。重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。',
+      body: '正在安装新版 0.2.12，安装完成后将自动打开。重启后 Mac 可能弹出钥匙串密码框，请输入本机开机密码并点击「始终允许」。',
     })
     expect(buildAutoInstallNotice('0.2.12', 'launch', 'darwin')).toEqual({
-      title: '星芒AI马上更新',
-      body: '上次下好的新版 0.2.12 几秒后开始安装，软件会先关掉，装好自动打开。重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。',
+      title: '星芒AI即将更新',
+      body: '已下载的新版 0.2.12 将在几秒后开始安装，软件将先关闭，安装完成后自动打开。重启后 Mac 可能弹出钥匙串密码框，请输入本机开机密码并点击「始终允许」。',
     })
     for (const moment of ['quit', 'launch'] as const) {
       for (const elevated of [true, false]) expect(buildAutoInstallNotice('0.2.12', moment, 'win32', elevated).body).not.toContain('钥匙串')
@@ -497,11 +497,11 @@ describe('auto install wording', () => {
     // 已知19：自带 Administrator 之类不弹授权窗口，那句不说，别的照旧。
     expect(buildAutoInstallNotice('0.2.12', 'quit', 'win32', true)).toEqual({
       title: '正在安装星芒AI新版本',
-      body: '正在装新版 0.2.12，装好会自动打开。',
+      body: '正在安装新版 0.2.12，安装完成后将自动打开。',
     })
     expect(buildAutoInstallNotice('0.2.12', 'launch', 'win32', true)).toEqual({
-      title: '星芒AI马上更新',
-      body: '上次下好的新版 0.2.12 几秒后开始安装，软件会先关掉，装好自动打开。',
+      title: '星芒AI即将更新',
+      body: '已下载的新版 0.2.12 将在几秒后开始安装，软件将先关闭，安装完成后自动打开。',
     })
     for (const moment of ['quit', 'launch'] as const) {
       expect(buildAutoInstallNotice('0.2.12', moment, 'win32', false).body).toContain('授权窗口')
@@ -511,16 +511,16 @@ describe('auto install wording', () => {
   it('says the app is switching back, not installing a new version, when the publisher rolled back to an older one', () => {
     // D11：撤回本机这一版、退回旧版时还说「新版」，客户以为写错了或者中了毒。
     expect(buildAutoInstallNotice('0.2.23', 'quit', 'win32', false, true)).toEqual({
-      title: '正在换回星芒AI的 0.2.23 版',
-      body: '正在换回 0.2.23 版，装好会自动打开。Windows 弹出授权窗口时请点「是」。',
+      title: '正在回退至星芒AI 0.2.23 版',
+      body: '正在回退至 0.2.23 版，安装完成后将自动打开。Windows 弹出授权窗口时，请点击「是」。',
     })
     expect(buildAutoInstallNotice('0.2.23', 'launch', 'win32', true, true)).toEqual({
-      title: '星芒AI马上更新',
-      body: '上次下好的 0.2.23 版几秒后开始安装，软件会先关掉，装好自动打开。',
+      title: '星芒AI即将更新',
+      body: '已下载的 0.2.23 版将在几秒后开始安装，软件将先关闭，安装完成后自动打开。',
     })
     // 钥匙串那句、授权那句跟平时一样接在后面。
     expect(buildAutoInstallNotice('0.2.23', 'quit', 'darwin', false, true).body)
-      .toBe('正在换回 0.2.23 版，装好会自动打开。重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。')
+      .toBe('正在回退至 0.2.23 版，安装完成后将自动打开。重启后 Mac 可能弹出钥匙串密码框，请输入本机开机密码并点击「始终允许」。')
     for (const moment of ['quit', 'launch'] as const) {
       for (const platform of ['win32', 'darwin', 'linux'] as const) {
         const notice = buildAutoInstallNotice('0.2.23', moment, platform, false, true)
@@ -538,16 +538,16 @@ describe('auto install wording', () => {
   })
 
   it('names the suggested older version, not a new one, when the install that failed was a rollback', () => {
-    // D11：同一页上一句已经说「建议退回的 X 版」，这句不能再说「新版本」。
+    // D11：同一页上一句已经说「建议回退的 X 版」，这句不能再说「新版本」。
     expect(previousAutoInstallFailureMessage('win32', '0.2.22'))
-      .toBe('建议退回的 0.2.22 版上次没装上：Windows 的授权窗口被关掉了，或者安装程序没起来。点「重新安装」再试一次，授权窗口弹出来时点「是」。')
+      .toBe('建议回退的 0.2.22 版上次安装失败：Windows 授权窗口被关闭，或安装程序未能启动。请点击「重新安装」重试，授权窗口弹出时请点击「是」。')
     for (const platform of ['darwin', 'linux'] as const) {
-      expect(previousAutoInstallFailureMessage(platform, '0.2.22')).toBe('建议退回的 0.2.22 版上次没装上，安装程序没起来。点「重新安装」再试一次。')
+      expect(previousAutoInstallFailureMessage(platform, '0.2.22')).toBe('建议回退的 0.2.22 版上次安装失败，安装程序未能启动。请点击「重新安装」重试。')
     }
     // 平时更新、读不到版本号时照旧。
     expect(previousAutoInstallFailureMessage('win32'))
-      .toBe('新版本上次没装上：Windows 的授权窗口被关掉了，或者安装程序没起来。点「重新安装」再试一次，授权窗口弹出来时点「是」。')
-    expect(previousAutoInstallFailureMessage('darwin', null)).toBe('新版本上次没装上，安装程序没起来。点「重新安装」再试一次。')
+      .toBe('新版本上次安装失败：Windows 授权窗口被关闭，或安装程序未能启动。请点击「重新安装」重试，授权窗口弹出时请点击「是」。')
+    expect(previousAutoInstallFailureMessage('darwin', null)).toBe('新版本上次安装失败，安装程序未能启动。请点击「重新安装」重试。')
     expect(previousAutoInstallFailureMessage('linux', '')).toBe(previousAutoInstallFailureMessage('linux'))
   })
 
@@ -593,21 +593,21 @@ describe('system installer channel (Linux .deb)', () => {
 
   it('tells the user up front that the app closes and the system asks for the login password', () => {
     const linux = quitInstallPrompt('0.2.12', 'system-installer')
-    expect(linux.message).toBe('新版本 0.2.12 已经下载好，现在装上吗？')
+    expect(linux.message).toBe('新版本 0.2.12 已下载，是否立即安装？')
     expect(linux.detail).toContain('输入开机密码')
     expect(linux.detail).toContain('重新打开星芒')
-    expect(linux.buttons).toEqual(['关掉并安装', '先退出，下次再装'])
+    expect(linux.buttons).toEqual(['关闭并安装', '退出，下次再安装'])
     expect(quitInstallPrompt('0.2.12', undefined)).toEqual({
-      message: '新版本 0.2.12 已经下载好，顺手装上吗？',
-      detail: '安装很快，装完会自动打开。现在不装也行，更新会一直留着，下次退出时再问你。',
-      buttons: ['安装并退出', '先退出，下次再装'],
+      message: '新版本 0.2.12 已下载，是否一并安装？',
+      detail: '安装耗时很短，完成后将自动打开。如暂不安装，更新将保留，下次退出时将再次询问。',
+      buttons: ['安装并退出', '退出，下次再安装'],
     })
-    expect(quitInstallPrompt(null, 'system-installer').message).toBe('新版本已经下载好，现在装上吗？')
+    expect(quitInstallPrompt(null, 'system-installer').message).toBe('新版本已下载，是否立即安装？')
   })
 
   it('warns Mac users about the keychain prompt in the quit question, and nobody else', () => {
     expect(quitInstallPrompt('0.2.12', null, 'darwin').detail)
-      .toBe('安装很快，装完会自动打开。重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。现在不装也行，更新会一直留着，下次退出时再问你。')
+      .toBe('安装耗时很短，完成后将自动打开。重启后 Mac 可能弹出钥匙串密码框，请输入本机开机密码并点击「始终允许」。如暂不安装，更新将保留，下次退出时将再次询问。')
     expect(quitInstallPrompt('0.2.12', null, 'win32')).toEqual(quitInstallPrompt('0.2.12', null))
     expect(quitInstallPrompt('0.2.12', 'system-installer', 'linux').detail).not.toContain('钥匙串')
   })
@@ -616,11 +616,11 @@ describe('system installer channel (Linux .deb)', () => {
     // D11：跟设置页「建议退回」一个说法，只换问的那句。
     expect(quitInstallPrompt('0.2.23', null, 'win32', true)).toEqual({
       ...quitInstallPrompt('0.2.23', null, 'win32'),
-      message: '建议退回的 0.2.23 版已经下好，顺手装上吗？',
+      message: '建议回退的 0.2.23 版已下载，是否一并安装？',
     })
     expect(quitInstallPrompt('0.2.23', 'system-installer', 'linux', true)).toEqual({
       ...quitInstallPrompt('0.2.23', 'system-installer', 'linux'),
-      message: '建议退回的 0.2.23 版已经下好，现在装上吗？',
+      message: '建议回退的 0.2.23 版已下载，是否立即安装？',
     })
     // 说不出版本号时没法说「X 版」，照旧。
     expect(quitInstallPrompt(null, null, 'win32', true)).toEqual(quitInstallPrompt(null, null, 'win32'))

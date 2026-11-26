@@ -65,28 +65,28 @@ export interface CuratedExtension {
 
 // 面向用户的一句话，风险标签与说明都上屏，所以措辞不留内部代号。
 export const curatedRiskLabels: Record<CuratedRisk, { label: string; detail: string }> = {
-  'local-fs-write': { label: '会修改本地文件', detail: '能在你指定的位置新建、修改和删除文件。' },
-  browser: { label: '会操作浏览器', detail: '能自己打开网页并在上面点击、输入。' },
-  'remote-exec': { label: '内容会发到对方服务器', detail: '请求由提供方在他们的服务器上处理，不在你电脑上。' },
-  network: { label: '需要联网', detail: '断网时这一项用不了。' },
-  'third-party': { label: '第三方维护', detail: '由该软件的作者维护，不随星芒一起更新。' },
-  'git-write': { label: '会提交到 Git', detail: '会执行提交、推送这类 Git 命令，推出去的改动要你自己到远端撤回。' },
-  'extra-usage': { label: '会多消耗额度', detail: '会让 AI 多跑几轮，同一件事用掉的额度比平时多。' },
+  'local-fs-write': { label: '会修改本地文件', detail: '可在您指定的位置新建、修改和删除文件。' },
+  browser: { label: '会操作浏览器', detail: '可自动打开网页并在页面上点击、输入。' },
+  'remote-exec': { label: '内容将发送至对方服务器', detail: '请求由提供方在其服务器上处理，不在本机运行。' },
+  network: { label: '需要联网', detail: '断网时此项无法使用。' },
+  'third-party': { label: '第三方维护', detail: '由该软件的作者维护，不随星芒更新。' },
+  'git-write': { label: '会提交到 Git', detail: '会执行提交、推送等 Git 命令，已推送的改动需您自行在远端撤回。' },
+  'extra-usage': { label: '会多消耗额度', detail: '会让 AI 多运行几轮，同一任务消耗的额度高于平时。' },
 };
 export const curatedNetworkLabels: Record<CuratedNetworkNeed, string | null> = {
   none: null,
-  'npm-first-run': '第一次使用时需要联网下载，之后就不用了',
+  'npm-first-run': '首次使用时需联网下载，此后无需联网',
   always: '每次使用都需要联网',
-  'install-only': '安装时需要联网下载一次，用起来不需要',
+  'install-only': '安装时需联网下载一次，使用时无需联网',
 };
 export const curatedRuntimeLabels: Record<CuratedRuntime, string> = {
-  node: '在你电脑上运行，用的是星芒装好的运行环境',
-  python: '在你电脑上运行，需要另外装一个运行环境',
-  none: '不在你电脑上装东西',
-  prompt: '只给工具本身加命令和技能，不在你电脑上跑额外的程序',
+  node: '在本机运行，使用星芒已安装的运行环境',
+  python: '在本机运行，需另行安装运行环境',
+  none: '不在本机安装任何内容',
+  prompt: '仅为工具添加命令和技能，不在本机运行额外程序',
 };
 // 预置第三方扩展等于替它们背书，所以确认框里这句免责说明是固定文案，不按条目变。
-export const curatedDisclaimer = '这些都是第三方软件，由它们各自的作者维护和更新，不随星芒一起发布。装之前请先看清它要哪些权限。';
+export const curatedDisclaimer = '以下均为第三方软件，由各自作者维护和更新，不随星芒发布。安装前请确认其所需权限。';
 
 function text(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
@@ -198,12 +198,6 @@ export function parseCuratedExtensions(raw: unknown): CuratedExtension[] {
 }
 
 export const curatedExtensions = parseCuratedExtensions(catalog);
-
-/** 页面只展示当前 tab 的类别、且当前工具支持的那几条。 */
-export function curatedItemsFor(kind: CuratedKind, provider: ProviderId): CuratedExtension[] {
-  if (!isActiveProviderId(provider)) return [];
-  return curatedExtensions.filter(item => item.kind === kind && item.providers.includes(provider));
-}
 
 /**
  * 确认框里必须原样列出「将要执行的确切命令」，所以这里只拼展示文本，不做转义也不

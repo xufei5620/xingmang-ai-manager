@@ -1,4 +1,6 @@
 import { EventEmitter } from 'node:events'
+import fs from 'node:fs'
+import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
   buildActivityNotificationMessage,
@@ -74,7 +76,7 @@ describe('bounded native activity notifications', () => {
     expect(h.controller.notify('task', 'user:task-1')).toBe('duplicate')
     expect(h.runtime.create).toHaveBeenCalledWith({
       title: '生成任务已完成',
-      body: '任务结果已经更新，可以回到星芒查看。',
+      body: '任务结果已更新，请返回星芒查看。',
       silent: true,
     })
     h.notifications[0].emit('click')
@@ -101,7 +103,7 @@ describe('acceleration reminders sent by the main process', () => {
     expect(h.controller.notifyHost('accelerationExpiring', 'xm-account:1:t0')).toBe('requested')
     expect(h.runtime.create).toHaveBeenCalledWith({
       title: '加速还剩 5 分钟',
-      body: '当前账号的免费加速时长快用完了，用完会自动断开。',
+      body: '当前账号的免费加速时长即将用完，用完后将自动断开。',
       silent: true,
     })
     // 同一次连接只提醒一次，每种各一条。
@@ -119,14 +121,14 @@ describe('acceleration reminders sent by the main process', () => {
     const h = setup()
     expect(h.controller.notifyHost('accelerationInterrupted', 'xm-account:1:t0')).toBe('requested')
     expect(h.runtime.create).toHaveBeenLastCalledWith({
-      title: '加速意外断开了',
-      body: '网络已恢复正常，可以到「设置 › 网络加速」重新连接。',
+      title: '加速意外断开',
+      body: '网络已恢复，请前往「设置 › 网络加速」重新连接。',
       silent: true,
     })
     expect(h.controller.notifyHost('accelerationInterruptedUnrestored', 'xm-account:1:t1')).toBe('requested')
     expect(h.runtime.create).toHaveBeenLastCalledWith({
-      title: '加速意外断开了',
-      body: '网络可能暂时连不上，点这里打开网络加速，星芒会再试着恢复。',
+      title: '加速意外断开',
+      body: '网络可能暂时无法连接，请点击此处打开网络加速，星芒将尝试恢复。',
       silent: true,
     })
     h.preferences.acceleration = false
@@ -137,18 +139,18 @@ describe('acceleration reminders sent by the main process', () => {
     for (const kind of Object.keys(h.preferences) as Array<keyof typeof h.preferences>) h.preferences[kind] = false
     expect(h.controller.notifyHost('hiddenToTray', 'first')).toBe('requested')
     expect(h.runtime.create).toHaveBeenLastCalledWith({
-      title: '星芒AI管理工具还在运行',
-      body: '窗口缩到了右下角的托盘里，点星芒图标就能打开。看不到图标的话，点任务栏右边的小箭头 ^。',
+      title: '星芒AI管理工具仍在运行',
+      body: '窗口已缩到右下角的托盘，点击星芒图标即可打开。如未看到图标，请点击任务栏右侧的小箭头 ^。',
       silent: true,
     })
     expect(h.controller.notifyHost('hiddenToTray', 'first')).toBe('duplicate')
     expect(h.controller.notifyHost('hiddenToMenuBar', 'first')).toBe('requested')
-    expect(h.runtime.create).toHaveBeenLastCalledWith(expect.objectContaining({ body: '窗口已收起，点屏幕顶部菜单栏里的星芒图标，或者程序坞里的星芒图标，就能打开。' }))
+    expect(h.runtime.create).toHaveBeenLastCalledWith(expect.objectContaining({ body: '窗口已收起，点击屏幕顶部菜单栏或程序坞中的星芒图标即可打开。' }))
     h.enable(false)
     expect(h.controller.notifyHost('hiddenToTray', 'second')).toBe('disabled')
     expect(hostNotificationMessage('hiddenToTray')).toEqual({
-      title: '星芒AI管理工具还在运行',
-      body: '窗口缩到了右下角的托盘里，点星芒图标就能打开。看不到图标的话，点任务栏右边的小箭头 ^。',
+      title: '星芒AI管理工具仍在运行',
+      body: '窗口已缩到右下角的托盘，点击星芒图标即可打开。如未看到图标，请点击任务栏右侧的小箭头 ^。',
     })
   })
 
@@ -157,8 +159,8 @@ describe('acceleration reminders sent by the main process', () => {
     expect(hiddenWindowNotification('darwin')).toBe('hiddenToMenuBar')
     expect(hiddenWindowNotification('linux')).toBe('hiddenToPanel')
     expect(hostNotificationMessage('hiddenToPanel')).toEqual({
-      title: '星芒AI管理工具还在运行',
-      body: '窗口已收起，点屏幕顶部或任务栏右边的星芒图标就能打开。',
+      title: '星芒AI管理工具仍在运行',
+      body: '窗口已收起，点击屏幕顶部或任务栏右侧的星芒图标即可打开。',
     })
     // Linux 上没有 Windows 那个小箭头，也不一定在右下角。
     expect(hostNotificationMessage('hiddenToPanel').body).not.toMatch(/右下角|\^/)
@@ -170,7 +172,7 @@ describe('acceleration reminders sent by the main process', () => {
     expect(h.controller.notifyHost('paymentSettled', 'XM-20260925-1')).toBe('requested')
     expect(h.runtime.create).toHaveBeenLastCalledWith({
       title: '付款已到账',
-      body: '刚才那笔订单已到账，余额和订阅已更新。',
+      body: '该订单已到账，余额和订阅已更新。',
       silent: true,
     })
     expect(JSON.stringify((h.runtime.create as ReturnType<typeof vi.fn>).mock.calls)).not.toContain('XM-20260925-1')
@@ -215,10 +217,10 @@ describe('Codex conversation too large reminders', () => {
   it('says what happened to the conversation in fixed words, once per notice, under the terminal trouble switch', () => {
     const h = setup()
     const expected = {
-      codexPayloadSwitched: ['Codex 的对话已换到线路2', '这个对话超过了线路1 的 100MB 上限，已为你切到线路2。完全退出 Codex 再打开，就能接着聊。'],
-      codexPayloadTooLarge: ['Codex 里这个对话太大，发不出去了', '这个对话已经超过 100MB，线路1 发不出去。请新开一个对话继续，点这里看原因。'],
-      codexPayloadLineTwoTooLarge: ['Codex 里这个对话太大，发不出去了', '请新开一个对话继续，点这里看原因。'],
-      codexPayloadNearing: ['Codex 里有个对话快到线路1 的上限了', '超过 100MB 后线路1 就发不出去了，建议做完手上这件事就新开一个对话。'],
+      codexPayloadSwitched: ['Codex 对话已切换至线路2', '该对话已超过线路1 的 100MB 上限，已为您切换至线路2。请完全退出 Codex 后重新打开，即可继续对话。'],
+      codexPayloadTooLarge: ['Codex 对话体积过大，无法发送', '该对话已超过 100MB，无法通过线路1 发送。请新建对话继续，点击此处查看原因。'],
+      codexPayloadLineTwoTooLarge: ['Codex 对话体积过大，无法发送', '请新建对话继续，点击此处查看原因。'],
+      codexPayloadNearing: ['Codex 中有对话即将达到线路1 的上限', '超过 100MB 后将无法通过线路1 发送，建议完成当前任务后新建对话。'],
     } as const
     for (const [event, [title, body]] of Object.entries(expected) as Array<[keyof typeof expected, readonly [string, string]]>) {
       expect(h.controller.notifyHost(event, '1800000000000')).toBe('requested')
@@ -246,7 +248,7 @@ describe('CLI update reminders', () => {
     )
     expect(h.runtime.create).toHaveBeenCalledWith({
       title: '工具有新版本',
-      body: '你装的工具出了新版本，回到星芒首页就能逐个更新。',
+      body: '您安装的工具有新版本，请返回星芒首页逐个更新。',
       silent: true,
     })
     expect(h.controller.notify('cliUpdate', 'cli-update:claude.2.0.0')).toBe(
@@ -268,7 +270,7 @@ describe('CLI update reminders', () => {
     const message = buildActivityNotificationMessage('cliUpdate', 'cli-update:codexDesktop.26.928.3736.0')
     expect(message).toEqual({
       title: '工具有新版本',
-      body: '你装的工具出了新版本，回到星芒首页就能逐个更新。',
+      body: '您安装的工具有新版本，请返回星芒首页逐个更新。',
     })
     expect(`${message.title} ${message.body}`).not.toContain('命令行')
   })
@@ -280,7 +282,7 @@ describe('announcement reminders', () => {
     expect(h.controller.notify('announcement', 'notice-0a1b2c3d')).toBe('requested')
     expect(h.runtime.create).toHaveBeenCalledWith({
       title: '有新公告',
-      body: '当前账号有一条新公告，回到星芒就能看到。',
+      body: '当前账号有一条新公告，请返回星芒查看。',
       silent: true,
     })
     expect(h.controller.notify('announcement', 'notice-0a1b2c3d')).toBe('duplicate')
@@ -292,8 +294,8 @@ describe('announcement reminders', () => {
     const h = setup()
     expect(h.controller.notify('balance', 'balance-empty:7:1')).toBe('requested')
     expect(h.runtime.create).toHaveBeenLastCalledWith({
-      title: '当前账号余额是 $0',
-      body: 'AI 工具现在用不了，有的会一直转圈重连，像是网断了。点这里去充值，付完马上生效，回到工具里再发一次就行。',
+      title: '当前账号余额为 $0',
+      body: 'AI 工具当前无法使用，部分工具会持续重连，看似网络已断开。请点击此处充值，付款后立即生效，返回工具重新发送即可。',
       silent: true,
     })
     h.notifications[0].emit('click')
@@ -301,7 +303,7 @@ describe('announcement reminders', () => {
     expect(h.controller.notify('balance', 'balance-empty:7:1')).toBe('duplicate')
     // The ordinary low-balance key keeps its own wording.
     expect(h.controller.notify('balance', 'balance:7:2')).toBe('requested')
-    expect(h.runtime.create).toHaveBeenLastCalledWith({ title: '余额需要留意', body: '星芒余额不足 $5，可以在个人中心查看和充值。', silent: true })
+    expect(h.runtime.create).toHaveBeenLastCalledWith({ title: '余额不足提醒', body: '星芒余额不足 $5，请前往个人中心查看并充值。', silent: true })
     h.preferences.balance = false
     expect(h.controller.notify('balance', 'balance-empty:7:3')).toBe('disabled')
   })
@@ -316,14 +318,14 @@ describe('announcement reminders', () => {
     expect(h.controller.notify('announcement', 'promo:notice-0a1b2c3d')).toBe('requested')
     expect(h.runtime.create).toHaveBeenLastCalledWith({
       title: '有新的充值活动',
-      body: '当前账号有一个充值活动，回到星芒首页看看，点「去充值」就能参加。',
+      body: '当前账号有一项充值活动，请返回星芒首页，点击「前往充值」参与。',
       silent: true,
     })
     expect(h.controller.notify('announcement', 'promo:notice-0a1b2c3d')).toBe('duplicate')
     expect(h.controller.notify('announcement', 'promo-daily:notice-0a1b2c3d:20260930')).toBe('requested')
     expect(h.runtime.create).toHaveBeenLastCalledWith({
-      title: '充值活动还在进行',
-      body: '当前账号的充值活动还没结束，回到星芒首页看看。',
+      title: '充值活动进行中',
+      body: '当前账号的充值活动尚未结束，请返回星芒首页查看。',
       silent: true,
     })
     h.preferences.announcement = false
@@ -336,17 +338,17 @@ describe('announcement reminders', () => {
     h.controller.notify('install', 'install:node:installFailed:3', { tool: 'node', outcome: 'installFailed' })
     h.controller.notify('install', 'install:gemini:updateFailed:4', { tool: 'gemini', outcome: 'updateFailed' })
     expect(vi.mocked(h.runtime.create).mock.calls.map(([options]) => options)).toEqual([
-      { title: 'Claude Code 装好了', body: '回到星芒就能打开使用。', silent: true },
-      { title: 'Codex CLI 已经更新好了', body: '回到星芒就能接着用。', silent: true },
-      { title: '运行环境没装上', body: '回到星芒看看原因，照提示点一下就能重试。', silent: true },
-      { title: 'Gemini CLI 没更新好', body: '回到星芒看看原因，照提示点一下就能重试。', silent: true },
+      { title: 'Claude Code 已安装', body: '请返回星芒打开使用。', silent: true },
+      { title: 'Codex CLI 已更新', body: '请返回星芒继续使用。', silent: true },
+      { title: '运行环境安装失败', body: '请返回星芒查看原因，并按提示重试。', silent: true },
+      { title: 'Gemini CLI 更新失败', body: '请返回星芒查看原因，并按提示重试。', silent: true },
     ])
   })
   it('falls back to a generic name for ids outside the fixed list', () => {
     const h = setup()
     h.controller.notify('install', 'install:x:1', { tool: 'constructor', outcome: 'installed' })
     h.controller.notify('install', 'install:y:2', { tool: 'unknownTool', outcome: 'installFailed' })
-    expect(vi.mocked(h.runtime.create).mock.calls.map(([options]) => options.title)).toEqual(['工具装好了', '工具没装上'])
+    expect(vi.mocked(h.runtime.create).mock.calls.map(([options]) => options.title)).toEqual(['工具已安装', '工具安装失败'])
   })
   it('keeps install results behind the install switch', () => {
     const h = setup()
@@ -359,11 +361,11 @@ describe('announcement reminders', () => {
 describe('spend spike reminders', () => {
   it('writes the amount and multiple in a fixed format built in the main process', () => {
     expect(buildActivityNotificationMessage('spend', 'spend:7:1', { cents: 1240, multiple: 8 })).toEqual({
-      title: '这一小时花得比平时多',
-      body: '过去一小时用掉了 $12.40，大约是平时的 8 倍。如果不是你在用，回星芒看看是哪个工具。',
+      title: '近一小时消费高于平时',
+      body: '过去一小时消费 $12.40，约为平时的 8 倍。如非本人使用，请返回星芒查看具体工具。',
     })
     expect(buildActivityNotificationMessage('spend', 'spend:7:1', { cents: 505, multiple: null }).body)
-      .toBe('过去一小时用掉了 $5.05，比平时多很多。如果不是你在用，回星芒看看是哪个工具。')
+      .toBe('过去一小时消费 $5.05，远高于平时。如非本人使用，请返回星芒查看具体工具。')
   })
   it('can be switched off on its own and opens the usage page on click', () => {
     const h = setup()
@@ -383,23 +385,39 @@ describe('spend spike reminders', () => {
 })
 
 describe('chat notifications and click destinations', () => {
-  it('uses chat-specific copy for chat and image completions instead of the async task sentence', () => {
+  it('uses create-page copy for chat, image and video completions instead of the async task sentence', () => {
     expect(buildActivityNotificationMessage('task', 'chat:req-1')).toEqual({
-      title: 'AI 回复好了',
-      body: '回到星芒的「聊天」查看。',
+      title: 'AI 回复已完成',
+      body: '请返回星芒的「创作」页查看。',
     })
     expect(buildActivityNotificationMessage('task', 'image:req-1')).toEqual({
-      title: '图片生成好了',
-      body: '回到星芒的「聊天」查看。',
+      title: '图片已生成',
+      body: '请返回星芒的「创作」页查看。',
+    })
+    // 「创作」输入框里生成的视频（useChatController.ts 发的 video: 编号），以前落回通用那句。
+    expect(buildActivityNotificationMessage('task', 'video:req-1')).toEqual({
+      title: '视频已生成',
+      body: '请返回星芒的「创作」页查看。',
     })
     expect(buildActivityNotificationMessage('task', 'xm-account:7:12:0').title).toBe('生成任务已完成')
     // 前缀只对 task 这一类生效，别的种类照旧用自己的说法。
-    expect(buildActivityNotificationMessage('balance', 'chat:1').title).toBe('余额需要留意')
+    expect(buildActivityNotificationMessage('balance', 'chat:1').title).toBe('余额不足提醒')
+  })
+  it('recognizes every task prefix the create page sends so none falls back to the async task page', () => {
+    // 「创作」页按前缀发 task 通知；新加一种前缀却没在这里认，客户就会收到「生成任务已完成」并被送去「异步任务」。
+    const source = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'renderer-v2', 'features', 'chat', 'useChatController.ts'), 'utf8')
+    const prefixes = [...source.matchAll(/notifyActivity\('task', `([a-z-]+):/g)].map((match) => match[1])
+    expect(prefixes.sort()).toEqual(['chat', 'image', 'video'])
+    for (const prefix of prefixes) {
+      expect(resolveNotificationTarget('task', `${prefix}:req-1`)).toBe('chat')
+      expect(buildActivityNotificationMessage('task', `${prefix}:req-1`).body).toBe('请返回星芒的「创作」页查看。')
+    }
   })
   it('maps every notification kind to a fixed page decided in the main process', () => {
     expect(resolveNotificationTarget('balance', 'balance:7:1')).toBe('topup')
     expect(resolveNotificationTarget('task', 'chat:req-1')).toBe('chat')
     expect(resolveNotificationTarget('task', 'image:req-1')).toBe('chat')
+    expect(resolveNotificationTarget('task', 'video:req-1')).toBe('chat')
     expect(resolveNotificationTarget('task', 'xm-account:7:12:0')).toBe('tasks')
     expect(resolveNotificationTarget('install', 'install:claude:installed:1')).toBe('home')
     expect(resolveNotificationTarget('cliUpdate', 'claude@2')).toBe('home')
@@ -455,16 +473,16 @@ describe('terminal tool reminders', () => {
   it('names the tool and gives a fixed reason without the word balance or site names', () => {
     for (const reason of reasons) {
       const message = buildTerminalNotificationMessage({ tool: 'claude', event: 'failed', reason })
-      expect(message.title).toBe('Claude Code 刚才没回上')
+      expect(message.title).toBe('Claude Code 未能回复')
       expect(message.body).not.toMatch(/余额|solov|Sub2API|API|npm|PATH/)
     }
-    expect(buildTerminalNotificationMessage({ tool: 'claude', event: 'failed', reason: 'billing' }).body).toContain('当前账号的额度不够了')
-    expect(buildTerminalNotificationMessage({ tool: 'gemini', event: 'waiting' }).title).toBe('Gemini CLI 在等你')
-    expect(buildTerminalNotificationMessage({ tool: 'claude', event: 'finished' }).title).toBe('Claude Code 做完了')
-    expect(buildTerminalNotificationMessage({ tool: 'codex', event: 'finished' }).title).toBe('Codex 做完了')
-    expect(buildTerminalNotificationMessage({ tool: 'grok', event: 'failed', reason: 'auth' }).title).toBe('Grok 刚才没回上')
-    expect(buildTerminalNotificationMessage({ tool: 'grok', event: 'waiting' }).title).toBe('Grok 在等你')
-    expect(buildTerminalNotificationMessage({ tool: 'grok', event: 'finished' }).title).toBe('Grok 做完了')
+    expect(buildTerminalNotificationMessage({ tool: 'claude', event: 'failed', reason: 'billing' }).body).toContain('当前账号额度不足')
+    expect(buildTerminalNotificationMessage({ tool: 'gemini', event: 'waiting' }).title).toBe('Gemini CLI 等待您确认')
+    expect(buildTerminalNotificationMessage({ tool: 'claude', event: 'finished' }).title).toBe('Claude Code 已完成')
+    expect(buildTerminalNotificationMessage({ tool: 'codex', event: 'finished' }).title).toBe('Codex 已完成')
+    expect(buildTerminalNotificationMessage({ tool: 'grok', event: 'failed', reason: 'auth' }).title).toBe('Grok 未能回复')
+    expect(buildTerminalNotificationMessage({ tool: 'grok', event: 'waiting' }).title).toBe('Grok 等待您确认')
+    expect(buildTerminalNotificationMessage({ tool: 'grok', event: 'finished' }).title).toBe('Grok 已完成')
   })
 
   it('sends billing trouble to top-up, other trouble to the check page and turn reminders nowhere', () => {

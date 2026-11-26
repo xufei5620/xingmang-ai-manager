@@ -3,14 +3,19 @@ import path from 'node:path'
 import { randomBytes, randomInt as cryptoRandomInt } from 'node:crypto'
 import {
   AppServerMethodError,
+  AppServerRequestError,
+  AppServerTimeoutError,
   CodexAppServerClient,
   type AppServerProcess,
 } from './codex-remote-app-server'
 import {
+  isCodexThreadId,
   remoteChannelIds,
+  remoteConversationErrors,
   remoteImageMaxBytes,
   remoteImagesPerPrompt,
   type CodexRemoteChannelSnapshot,
+  type CodexRemoteConversationList,
   type CodexRemoteLastRequestSnapshot,
   type CodexRemoteSnapshot,
   type CodexRemoteTaskState,
@@ -34,14 +39,19 @@ import {
   type RemoteOutboundApproval,
   type RemoteIdleCloseHours,
   type RemotePeer,
+  type RemotePermission,
   type RemoteProgressCard,
   type RemoteProgressStep,
 } from './codex-remote-channel'
 import { sniffRemoteImageType, type RemoteImageStore } from './codex-remote-images'
-import { appendRecentMessageId, emptyChannelSettings, maxRemoteWorkspaces, remoteWorkspaceList, type CodexRemoteStore } from './codex-remote-store'
+import { appendRecentMessageId, emptyChannelSettings, maxConversationTitleLength, maxRemoteWorkspaces, remoteWorkspaceList, type CodexRemoteChosenConversation, type CodexRemoteSettings, type CodexRemoteStore } from './codex-remote-store'
 import {
   approvalAcceptedMessage,
   approvalDeclinedMessage,
+  conversationListMessage,
+  conversationMissingMessage,
+  conversationSwitchedFromComputerMessage,
+  conversationSwitchedMessage,
   approvalExpiredMessage,
   approvalExpiringMessage,
   classifyRemoteTurnFailure,
@@ -77,6 +87,7 @@ import {
 } from './codex-remote-text'
 import { classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
 import { isRecord } from './input-guards'
+import { compareVersionNumbers } from './versions'
 
 // 手机遥控的底座：谁能指挥（配对、只认绑定的那一个人）、Codex 每次要动手前问谁（审批）、
 // 发出电脑的字遮掉什么（脱敏），都只在这里决定。渠道（飞书、微信）只管收发。
@@ -85,9 +96,12 @@ import { isRecord } from './input-guards'
 // - Whoever controls the bound chat account can make Codex act on this
 //   computer, so binding needs a fresh 6-digit code shown only on this screen,
 //   attempts are capped, and messages from anyone else are dropped silently.
-// - Codex runs with approvalPolicy "untrusted", sandbox "workspace-write" and
-//   approvals routed to the user (never to an auto reviewer). Every request is
-//   answered with plain accept or decline; there is no "accept for session",
+// - Codex runs with approvalPolicy "on-request" and either sandbox
+//   "workspace-write" (the default, same as Codex on the computer: work inside
+//   the folder without asking, ask before network or writes outside it) or
+//   "read-only" (yoyo typed consent to this widening on 2026-11-22).
+//   Approvals are routed to the user (never to an auto reviewer). Every request
+//   is answered with plain accept or decline; there is no "accept for session",
 //   no full-access mode and no way to run a shell command directly.
 // - Threads started from the phone get no MCP servers, plugins or apps: their
 //   tool calls do not all go through an approval, so nothing the phone cannot
@@ -166,13 +180,25 @@ const progressCardFirstMs = 2 * 60_000
 const progressStepGapMs = 30_000
 const progressRefreshMs = 5 * 60_000
 const progressTextEveryMs = 5 * 60_000
+/**
+ * 最后那次把卡改成做完了、停了、没做完的更新没成（M17）：隔这么久再改一次，都不成才算了。不补的话卡片一直停在
+ * 「正在处理」，还带着「停止」按钮。改的是同一张卡的整份内容，多改一次不会多出东西。
+ */
+const progressFinalRetryMs: readonly number[] = [5_000, 30_000]
 /** 进度卡最多列这么多步、每步最多这么多个字：卡片有大小上限，手机上也看不过来。 */
 const maxProgressSteps = 15
 const maxProgressStepLength = 80
 /** 单子满了还要加（YF-19）：界面上满了「添加一个」就灰着，这句只在别的路子绕过来时出现。 */
-const workspaceListFullMessage = `最多加 ${maxRemoteWorkspaces} 个文件夹，先移除一个再添加。`
+const workspaceListFullMessage = `最多添加 ${maxRemoteWorkspaces} 个文件夹，请先移除一个再添加。`
+/** 电脑页「选择对话」最多列这么多段。 */
+const pageConversationLimit = 20
+/** 手机上「对话」最多列这么多段；先从 Codex 拿 phoneConversationScan 段，滤掉不在加过的文件夹里的。 */
+const phoneConversationLimit = 10
+const phoneConversationScan = 100
 /** 每个渠道记住最近结束的这么多轮的编号，它们迟到的审批和通知都不认（belongsToOtherTurn）。 */
 const maxRetiredTurns = 16
+/** 最多记这么多份「turn/start 没等到回执就放弃了」的对话（M02）。 */
+const maxAbandonedTurnThreads = 8
 /** Codex 起不来、半路退出时，stderr 最后这么多字进日志。 */
 const maxStderrLogLength = 1000
 const quittingMessage = '星芒正在退出。'
@@ -192,8 +218,8 @@ export type CodexRemoteReleaseAction = 'update' | 'uninstall'
 
 /** 遥控里的 Codex 正在干活，不替客户停它（#1407 P3-3，yoyo 10-29「按推荐」）。 */
 export const codexRemoteBusyMessages: Readonly<Record<CodexRemoteReleaseAction, string>> = {
-  update: '手机遥控里的 Codex 正在干活，等它做完再更新，或者先在设置里关掉手机遥控。',
-  uninstall: '手机遥控里的 Codex 正在干活，等它做完再卸载，或者先在设置里关掉手机遥控。',
+  update: '遥控中的 Codex 正在处理任务，请待其完成后再更新，或先在「遥控」页关闭遥控。',
+  uninstall: '遥控中的 Codex 正在处理任务，请待其完成后再卸载，或先在「遥控」页关闭遥控。',
 }
 
 const developerInstructions = [
@@ -221,6 +247,11 @@ export interface CodexRemoteServiceOptions {
   readCodexSecrets(): Promise<readonly string[]>
   /** 这台电脑现在能不能开遥控；不能就给上屏的原因（比如星芒以管理员身份运行）。 */
   inspectAvailability(): string | null
+  /**
+   * 这台 Windows 电脑登录的账号本身就带管理员权限（自带 Administrator、关了授权弹窗），能开遥控，卡片上多一句提醒。
+   * 一次运行里不会变。缺省 = 不是。
+   */
+  alwaysElevatedAccount?: boolean
   /** 打开渠道前看一眼 Codex 命令行工具在不在；不在就给上屏的原因。缺省 = 不看，等真用到时再报。 */
   checkCodexReady?(): Promise<string | null>
   /**
@@ -248,7 +279,7 @@ export function nextApprovalNumber(last: number): number {
 }
 
 /** Codex 半路退出时手机上收到的「这一轮没做完：…」里的原因，卡片「最近一次」照抄。 */
-const codexExitedReason = '电脑上的 Codex 意外退出了，再发一次试试。'
+const codexExitedReason = '电脑端的 Codex 意外退出，请重新发送。'
 
 /** 只对这一条审批有效的随机串，放进有按钮渠道的按钮里（16 个字符，飞书按钮值里放得下）。 */
 export function generateApprovalNonce(): string {
@@ -309,20 +340,241 @@ function imageOnly(message: RemoteInbound): boolean {
  * 调用不一定先问人，手机上看不到也拦不住。只关这一份对话，电脑上直接用 Codex 照旧，联网搜索也不动。
  * mcpServers 是 buildRemoteMcpServerOverrides 算出来的那份。
  */
-export function buildThreadStartParams(workspace: string, mcpServers: Record<string, Record<string, unknown>> = {}): Record<string, unknown> {
+export function buildThreadStartParams(
+  workspace: string,
+  mcpServers: Record<string, Record<string, unknown>> = {},
+  model: string | null = null,
+  permission: RemotePermission = 'default',
+): Record<string, unknown> {
   return {
     cwd: workspace,
-    approvalPolicy: 'untrusted',
+    // 「手机端使用的模型」单独选了才带；不带 = Codex 照 config.toml，与电脑端相同。
+    ...(model ? { model } : {}),
+    approvalPolicy: remoteApprovalPolicy,
     // auto_review / guardian 会让另一个模型替人点同意；遥控只许人自己点。
     approvalsReviewer: 'user',
-    sandbox: 'workspace-write',
+    sandbox: permission === 'readOnly' ? 'read-only' : 'workspace-write',
     developerInstructions,
+    config: {
+      'features.apps': false,
+      'features.plugins': false,
+      // 跟中途换档（buildRemoteSandboxPolicy）一样不开网、可写的只有这个文件夹（第三轮复查第 5 条）：不压住，Codex 照客户
+      // config.toml 的 [sandbox_workspace_write] 来，客户开过联网的，手机上不问就能联网，加过的可写文件夹也能改。
+      // 只压这两项：不写 /tmp 那两项是客户自己收的，照客户的。只读档用不上这张表，带着也不碍事。
+      'sandbox_workspace_write.network_access': false,
+      'sandbox_workspace_write.writable_roots': [],
+      ...(Object.keys(mcpServers).length > 0 ? { mcp_servers: mcpServers } : {}),
+    },
+  }
+}
+
+/**
+ * 新开的对话 Codex 回报的沙箱是不是比手机这一档宽：联网、能改文件夹以外的地方、只读档却能写。宽了第一句的 turn/start 再降下来，
+ * 跟接已有对话超出这一档时一样（resumedPermissionFits）。buildThreadStartParams 已经压住了，Codex 0.169 实测回报的就是压住后的；
+ * 这一道防的是哪个版本不认那两项。回报认不出的不算宽，照开对话时带的那一档：Windows 没开沙箱时 Codex 会把可写降成只读，
+ * 不能因为认不出反倒用 turn/start 抬上去。
+ */
+export function startedSandboxExceeds(sandbox: unknown, permission: RemotePermission, workspace: string, platform: NodeJS.Platform): boolean {
+  if (!isRecord(sandbox)) return false
+  if (sandbox.networkAccess === true) return true
+  if (sandbox.type === 'dangerFullAccess' || sandbox.type === 'externalSandbox') return true
+  if (sandbox.type !== 'workspaceWrite') return false
+  if (permission === 'readOnly') return true
+  return Array.isArray(sandbox.writableRoots) && sandbox.writableRoots.some((root) => typeof root !== 'string' || !sameRemoteFolder(root, workspace, platform))
+}
+
+/**
+ * 两档都是 on-request（跟 Codex 自己的「默认」「只读」两档一样）：沙箱里能做的不问，要出沙箱（连网、改文件夹外面、
+ * 只读档里改文件）才问手机上的人。以前是 untrusted，改文件和大多数命令都要先点同意（11-19 yoyo 嫌要同意的太多）。
+ */
+const remoteApprovalPolicy = 'on-request'
+
+/**
+ * 开着的对话中途换了「权限」：下一句的 turn/start 带上的沙箱（Codex 0.169 的 SandboxPolicy）。工作区可写那档 Codex 自己会把
+ * 对话的文件夹算进可写范围，这里不另加；两档都不开网，要连网得先问。
+ */
+export function buildRemoteSandboxPolicy(permission: RemotePermission): Record<string, unknown> {
+  if (permission === 'readOnly') return { type: 'readOnly', networkAccess: false }
+  return { type: 'workspaceWrite', writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false }
+}
+
+/**
+ * 接着电脑上已有的那段对话（yoyo 2026-11-22「接对话接原的」）：不带权限，先照原对话的；原对话超出手机这一档时，
+ * 第一句的 turn/start 再降下来（resumedPermissionFits）。外部工具跟新开的对话一样只在这一份里关掉，Codex 0.169 实测
+ * 不会带到电脑上。excludeTurns：只要对话的设置，不把整段历史读回来。
+ */
+export function buildThreadResumeParams(threadId: string, mcpServers: Record<string, Record<string, unknown>> = {}): Record<string, unknown> {
+  return {
+    threadId,
+    excludeTurns: true,
     config: {
       'features.apps': false,
       'features.plugins': false,
       ...(Object.keys(mcpServers).length > 0 ? { mcp_servers: mcpServers } : {}),
     },
   }
+}
+
+/** thread/resume 答回来的那几样：对话编号、所在文件夹、型号，还有原对话现在的权限。 */
+export interface ResumedThread {
+  threadId: string
+  cwd: string
+  model: string
+  reasoningEffort: string | null
+  approvalPolicy: unknown
+  approvalsReviewer: unknown
+  sandbox: unknown
+}
+
+export function readResumedThread(result: unknown): ResumedThread | null {
+  if (!isRecord(result) || !isRecord(result.thread)) return null
+  const threadId = stringField(result.thread.id)
+  const cwd = stringField(result.cwd) ?? stringField(result.thread.cwd)
+  const model = stringField(result.model)
+  if (!threadId || !cwd || !model) return null
+  return {
+    threadId,
+    cwd,
+    model,
+    reasoningEffort: stringField(result.reasoningEffort),
+    approvalPolicy: result.approvalPolicy,
+    approvalsReviewer: result.approvalsReviewer,
+    sandbox: result.sandbox,
+  }
+}
+
+/**
+ * 原对话的权限在不在手机这一档里面（接对话第 10、21 句）：审批是 untrusted / on-request、只许人点同意，沙箱不比这一档宽
+ * （只读档只认只读；默认档还认只在这个文件夹里可写），两档都不开网。在里面就照原对话的，不去改它；认不出的一律算超出，
+ * 降到这一档。
+ */
+export function resumedPermissionFits(
+  resumed: Pick<ResumedThread, 'approvalPolicy' | 'approvalsReviewer' | 'sandbox'>,
+  permission: RemotePermission,
+  workspace: string,
+  platform: NodeJS.Platform,
+): boolean {
+  if (resumed.approvalPolicy !== 'untrusted' && resumed.approvalPolicy !== 'on-request') return false
+  if (resumed.approvalsReviewer !== 'user') return false
+  const sandbox = resumed.sandbox
+  if (!isRecord(sandbox) || sandbox.networkAccess !== false) return false
+  if (sandbox.type === 'readOnly') return true
+  if (sandbox.type !== 'workspaceWrite' || permission !== 'default' || !Array.isArray(sandbox.writableRoots)) return false
+  return sandbox.writableRoots.every((root) => typeof root === 'string' && sameRemoteFolder(root, workspace, platform))
+}
+
+/**
+ * 两个文件夹是不是同一个：Codex 记的路径跟我们核过的写法可能差个结尾的斜杠，Windows 上还不分大小写。
+ * Mac 的盘可能分大小写，这里照严的算：认不出是同一个，权限就照手机这一档降，列表里少列一段。
+ */
+export function sameRemoteFolder(left: string, right: string, platform: NodeJS.Platform): boolean {
+  if (platform === 'win32') return path.win32.resolve(left).toLowerCase() === path.win32.resolve(right).toLowerCase()
+  return path.posix.resolve(left) === path.posix.resolve(right)
+}
+
+/**
+ * 接已有对话从哪一版 Codex 起开放（yoyo 2026-11-22「接对话接原的」）：0.169.0 是最早实测过的。更新的版本不按版本号挡，
+ * 每次接上时由 applyRemoteRules 当场问 Codex 规矩套上了没有，没套上就明说这一版不支持（0.2.25 第三轮复查第 4 条）；
+ * 以前只认 0.169.x，推荐版一抬，这个功能就对照做的客户悄悄关了。
+ */
+const resumeMinimumCodexVersion = [0, 169, 0] as const
+
+/** initialize 答回来的 userAgent 是「xingmang_remote/0.169.0 (…)」。 */
+export function readCodexVersion(initialize: unknown): string | null {
+  if (!isRecord(initialize) || typeof initialize.userAgent !== 'string') return null
+  return /^[^/\s]+\/(\d+\.\d+\.\d+)/.exec(initialize.userAgent)?.[1] ?? null
+}
+
+export function codexSupportsResume(version: string | null): boolean {
+  const match = version ? /^(\d+)\.(\d+)\.(\d+)$/.exec(version) : null
+  if (!match) return false
+  return compareVersionNumbers([Number(match[1]), Number(match[2]), Number(match[3])], resumeMinimumCodexVersion) >= 0
+}
+
+/**
+ * thread/resume 答回来的 collaborationMode 里，这份对话现在套着的是不是遥控这一段规矩。Codex 自己报的才算数，
+ * 只认一字不差的；没有这一项、字段改了名、换成了别的字，都算没套上。
+ */
+export function remoteRulesInEffect(resumed: unknown): boolean {
+  if (!isRecord(resumed) || !isRecord(resumed.collaborationMode) || !isRecord(resumed.collaborationMode.settings)) return false
+  return resumed.collaborationMode.settings.developer_instructions === developerInstructions
+}
+
+/**
+ * Codex 明着说不认这个请求：-32600 是方法名、字段认不出或者试验功能没开（Codex 0.171 对不认识的方法回的也是它），
+ * -32602 是参数不对。这是这一版对不上，不是一时出错；等不到回执、Codex 停了这些不算（code 是 null）。
+ */
+export function codexRejectedRequest(error: unknown): boolean {
+  return error instanceof AppServerRequestError && (error.code === -32600 || error.code === -32602)
+}
+
+/** 一段能接着聊的对话（thread/list 里的一项）：cwd 是 Codex 记的原样，标题是一行、截短的。 */
+export interface ListedConversation {
+  threadId: string
+  title: string
+  cwd: string
+  /** 毫秒。 */
+  updatedAt: number
+}
+
+/**
+ * thread/list 答回来的列表：只留人在电脑上聊过的（Codex 子任务、一次性的不算），没有标题也没有第一句的不算
+ * （还没说过话，没什么可接的）。标题用 Codex 起的名字，没有就用第一句话。
+ */
+export function readListedConversations(result: unknown): ListedConversation[] {
+  if (!isRecord(result) || !Array.isArray(result.data)) return []
+  const list: ListedConversation[] = []
+  for (const thread of result.data) {
+    if (!isRecord(thread) || thread.ephemeral === true || thread.parentThreadId) continue
+    const threadId = typeof thread.id === 'string' && isCodexThreadId(thread.id) ? thread.id : null
+    const cwd = stringField(thread.cwd)
+    const title = conversationTitle(thread.name) ?? conversationTitle(thread.preview)
+    const updatedAt = typeof thread.updatedAt === 'number' && Number.isFinite(thread.updatedAt) && thread.updatedAt > 0 ? Math.round(thread.updatedAt * 1000) : null
+    if (!threadId || !cwd || !path.isAbsolute(cwd) || !title || updatedAt === null) continue
+    if (list.some((entry) => entry.threadId === threadId)) continue
+    list.push({ threadId, title, cwd, updatedAt })
+  }
+  return list
+}
+
+function conversationTitle(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const line = value.replace(/\s+/g, ' ').trim()
+  return line ? truncateRemoteText(line, maxConversationTitleLength) : null
+}
+
+/**
+ * 接着已有对话时套上的遥控规矩：Codex 的试验字段 collaborationMode（initialize 要开 experimentalApi），由
+ * thread/settings/update 写进这份对话，之后每一句都作为一段 developer 消息带上，电脑上接着聊也还在（yoyo 2026-11-22
+ * 知道并同意，接对话第 10、20 句）。mode 用 default（普通对话，不是计划模式）；型号、推理强度照原对话的，不另改。
+ */
+export function buildRemoteCollaborationMode(model: string, reasoningEffort: string | null): Record<string, unknown> {
+  return { mode: 'default', settings: { model, reasoning_effort: reasoningEffort, developer_instructions: developerInstructions } }
+}
+
+/** 「手机端的对话」选的那段还算不算数：它所在的文件夹得是正在用的那个，换了文件夹就回到新对话。 */
+export function resolveChosenConversation(settings: Pick<CodexRemoteSettings, 'conversation' | 'workspaceDirectory'>): CodexRemoteChosenConversation | null {
+  const chosen = settings.conversation
+  return chosen && chosen.folder === settings.workspaceDirectory ? chosen : null
+}
+
+/** 文件夹的名字（最后一段），手机上「对话」列表里用。 */
+function remoteFolderName(folder: string, platform: NodeJS.Platform): string {
+  return (platform === 'win32' ? path.win32 : path.posix).basename(folder) || folder
+}
+
+/** 接不上电脑页上选的那段对话：reply 是发到手机上的那句（第 26、27 句）。 */
+class RemoteConversationError extends Error {
+  constructor(readonly reply: string, cause?: unknown) {
+    super(reply, cause === undefined ? undefined : { cause })
+    this.name = 'RemoteConversationError'
+  }
+}
+
+/** Codex `config/read` 答回来的生效配置里的 model（就是电脑上 Codex 现在用的那个）；没配、读不出是 null。 */
+export function configuredCodexModel(configRead: unknown): string | null {
+  const config = isRecord(configRead) && isRecord(configRead.config) ? configRead.config : null
+  return config && typeof config.model === 'string' && config.model ? config.model : null
 }
 
 function mcpServerTable(config: unknown): Record<string, unknown> | null {
@@ -400,17 +652,17 @@ export function collectCredentialSecrets(credential: string | null): string[] {
 /** 选给遥控用的文件夹：要是存在的目录，不能是主目录、盘根、桌面这类「一份配置管全电脑」的地方。 */
 export function validateRemoteWorkspace(directory: unknown, homeDirectory: string, platform: NodeJS.Platform): string {
   if (typeof directory !== 'string' || !path.isAbsolute(directory) || directory.length > 4096) {
-    throw new Error('请选一个文件夹。')
+    throw new Error('请选择一个文件夹。')
   }
   const kind = classifyWorkspace(directory, { platform, home: homeDirectory })
-  if (kind) throw new Error(`这个文件夹是${sensitiveWorkspaceLabel(kind)}，手机遥控不能在这里用，请选一个具体的项目文件夹。`)
+  if (kind) throw new Error(`该文件夹是${sensitiveWorkspaceLabel(kind)}，无法用于遥控，请选择具体的项目文件夹。`)
   let info: fs.Stats
   try {
     info = fs.statSync(directory)
   } catch {
-    throw new Error('这个文件夹不存在了，请重新选。')
+    throw new Error('该文件夹已不存在，请重新选择。')
   }
-  if (!info.isDirectory()) throw new Error('请选一个文件夹。')
+  if (!info.isDirectory()) throw new Error('请选择一个文件夹。')
   return path.resolve(directory)
 }
 
@@ -635,7 +887,7 @@ export function buildFileChangeSummary(params: Record<string, unknown>, changedF
       path: displayPath(change.path, options),
       ...(change.movePath ? { movePath: displayPath(change.movePath, options) } : {}),
     }))
-    if (changedFiles.length > shown) lines.push(`另外还有 ${changedFiles.length - shown} 个文件`)
+    if (changedFiles.length > shown) lines.push(`另有 ${changedFiles.length - shown} 个文件`)
     const summary = [...lines, ...tail].join('\n')
     // 量的是脱敏以后的长度：手机上显示的就是那个。
     if (redactRemoteText(summary, options).length <= maxSummaryLength) return summary
@@ -805,7 +1057,27 @@ interface ChannelRuntime {
    */
   handoff: Promise<void>
   outbox: Promise<void>
+  /**
+   * 关遥控时加一（M14）：排进发件队时记下的这个数跟轮到它时不一样，就是关之前排的，不再发。不加这一道，
+   * 电脑上已经关了、手机也收到「已关闭」，前面排着的回答、进度卡还会一条条发出去。
+   */
+  outboxEpoch: number
   threadId: string | null
+  /**
+   * 这份对话现在用的是「手机端使用的模型」单独选的哪个；null = 跟电脑上的 Codex 一样。只在 threadId 有值时算数：
+   * 开对话时记下，手机上下一句交给 Codex 前跟设置比一比，不一样才在 turn/start 里改（handTurnToCodex）。
+   */
+  threadModel: string | null
+  /**
+   * 这份对话现在用的是「权限」哪一档；跟 threadModel 一样，只在 threadId 有值时算数，不一样才在 turn/start 里改。
+   * exceeds：接着的是电脑上已有的对话，它原来的权限超出手机这一档（resumedPermissionFits），或者新开的对话 Codex 回报的
+   * 比这一档宽（startedSandboxExceeds），第一句就降下来。
+   */
+  threadPermission: RemotePermission | 'exceeds'
+  /** 手机上最近一次发「对话」列出来的那几段，「对话 N」照这个次序认；还没列过是 null。 */
+  conversationChoices: ListedConversation[] | null
+  /** 手机上最近一次发「文件夹」列出来的那几个（M18），「文件夹 N」照这份认；还没列过是 null，照电脑上现在的单子认。 */
+  folderChoices: string[] | null
   /** 原来的对话不是手机上发「新对话」丢的（dropThread）：下次开新对话时先说一声（D66 / YKS-16）。 */
   threadLost: boolean
   /** 上一次回「这条是 N 分钟前发的」的时间（noticeStale），0 = 还没回过；收到一条照常处理的消息就清零。 */
@@ -818,6 +1090,8 @@ interface ChannelRuntime {
    * 下次打开时发「重试」，不该把上次开着时的话翻出来执行。
    */
   lastPrompt: string | null
+  /** 上一句是换文件夹前说的、换的时候扔掉了（M06）：「重试」回「文件夹已切换」，不回「没有可以重发的」。 */
+  lastPromptLeftBehind: boolean
   /** 上一句带着交给 Codex 的图（YF-14），「重试」时一起重发；下一句交出去、关遥控、换人时删掉。 */
   lastPromptImages: string[]
   /**
@@ -887,12 +1161,18 @@ function emptyRuntime(id: RemoteChannelId): ChannelRuntime {
     inboxExceptImages: Promise.resolve(),
     handoff: Promise.resolve(),
     outbox: Promise.resolve(),
+    outboxEpoch: 0,
     threadId: null,
+    threadModel: null,
+    threadPermission: 'default',
+    conversationChoices: null,
+    folderChoices: null,
     threadLost: false,
     staleNoticeAt: 0,
     turn: null,
     retiredTurnIds: [],
     lastPrompt: null,
+    lastPromptLeftBehind: false,
     lastPromptImages: [],
     pendingImages: [],
     undeliveredAnswer: null,
@@ -961,13 +1241,39 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
 }
 
+/** 排在发件队里、轮到时遥控已经关过的那条（M14）：不发，按没发出去交回。 */
+class RemoteSendDroppedError extends Error {
+  constructor() {
+    super('remote channel closed before this message was sent')
+  }
+}
+
 export class CodexRemoteService {
   private readonly runtimes: Record<RemoteChannelId, ChannelRuntime>
   private readonly pending = new Map<string, PendingApproval>()
   private readonly fileChanges = new Map<string, RemoteFileChangeLine[]>()
   /** 上一条审批的编号；null = 这次打开星芒还没从设置里读过。 */
   private lastApprovalNumber: number | null = null
+  /** 正在用的那份 Codex 是哪个版本（initialize 的 userAgent）；读不出是 null。接已有对话从 0.169 起开放。 */
+  private codexVersion: string | null = null
+  /**
+   * 这次开着星芒时，哪一版 Codex 接对话时核出规矩套不上（applyRemoteRules）：之后列对话、选对话都直接说不支持，
+   * 不再一次次接上去试。只记在内存里，重开星芒或者换了版本再核一遍。
+   */
+  private resumeUnconfirmedVersion: string | null = null
+  /** 电脑页「选择对话」最近一次列出来的那几段：选的时候只认这里有的，文件夹也从这里拿（渲染层只给编号，I5）。 */
+  private listedConversations = new Map<string, ListedConversation>()
+  /** 遥控关着时临时起的那份 Codex 是哪个版本（withListingCodex）。 */
+  private listedVersion: string | null = null
   private revision = 0
+  private emittedRevision = 0
+  /**
+   * turn/start 等满 60 秒没回执、这边已经放弃了的对话（M02）。Codex 可能已经照做、回执只是晚了：这份对话再冒出哪一轮
+   * 的动静，就补一次打断，不让它在手机看不见的地方接着跑、接着扣钱。
+   */
+  private readonly abandonedTurnThreads = new Set<string>()
+  /** 正在换文件夹、换对话的那几次（M07）：手机上这时发来的话等它们换完再开这一轮。 */
+  private readonly folderSwitches = new Set<Promise<void>>()
   private codex: CodexAppServerClient | null = null
   private codexStarting: Promise<CodexAppServerClient> | null = null
   /**
@@ -1096,7 +1402,12 @@ export class CodexRemoteService {
   }
 
   async snapshot(): Promise<CodexRemoteSnapshot> {
+    // 版本号在读设置、读凭据之前就定下（M15）：先开始、后读完的那份读到的是旧设置，要是读完才加一，它反倒
+    // 拿到更大的号，界面按号收下的就是旧的。
+    this.revision += 1
+    const revision = this.revision
     const settings = await this.options.store.readSettings()
+    const chosen = resolveChosenConversation(settings)
     const unavailableReason = this.options.inspectAvailability()
     const channels: Partial<Record<RemoteChannelId, CodexRemoteChannelSnapshot>> = {}
     let pendingApprovals = 0
@@ -1106,13 +1417,15 @@ export class CodexRemoteService {
       const stored = settings.channels[id]
       const now = this.now()
       if (runtime.pairing && runtime.pairing.expiresAt <= now) this.clearPairing(runtime)
+      const hasCredential = (await this.options.store.readCredential(id)) !== null
       channels[id] = {
         channel: id,
-        hasCredential: (await this.options.store.readCredential(id)) !== null,
+        hasCredential,
         accountLabel: stored?.accountLabel ?? null,
         enabled: runtime.enabled,
         status: runtime.status,
-        boundPeer: stored?.boundPeer
+        // 没有凭据就没有绑着的人：退出登录时设置没写进去（M21），盘上留着的那个也不显示。
+        boundPeer: hasCredential && stored?.boundPeer
           ? {
               userIdTail: stored.boundPeer.userId.slice(-4),
               boundAt: stored.boundPeer.boundAt,
@@ -1134,11 +1447,11 @@ export class CodexRemoteService {
       if (waiting > 0) task = 'waiting-approval'
       else if (runtime.turn && task !== 'waiting-approval') task = runtime.turn.id ? 'running' : 'starting'
     }
-    this.revision += 1
     return {
-      revision: this.revision,
+      revision,
       available: unavailableReason === null,
       ...(unavailableReason ? { unavailableReason } : {}),
+      ...(this.options.alwaysElevatedAccount && unavailableReason === null ? { alwaysElevated: true } : {}),
       credentialPersistence: this.options.store.credentialPersistence(),
       workspaceDirectory: settings.workspaceDirectory
         ? remoteDisplayPath(settings.workspaceDirectory, this.options.homeDirectory, this.platform)
@@ -1151,6 +1464,11 @@ export class CodexRemoteService {
       ...(settings.autoStart ? { autoStart: true } : {}),
       ...(settings.autoStart && this.autoStartFailure ? { autoStartFailure: this.autoStartFailure } : {}),
       ...(settings.idleCloseHours ? { idleCloseHours: settings.idleCloseHours } : {}),
+      ...(settings.model ? { model: settings.model } : {}),
+      ...(settings.permission ? { permission: settings.permission } : {}),
+      ...(chosen
+        ? { conversation: { id: chosen.threadId, title: chosen.title, folder: remoteDisplayPath(chosen.folder, this.options.homeDirectory, this.platform), updatedAt: chosen.updatedAt } }
+        : {}),
       ...(this.codexStartFailed ? { codexStartFailed: true } : {}),
       ...(this.lastRequest ? { lastRequest: lastRequestSnapshot(this.lastRequest) } : {}),
       channels: channels as Record<RemoteChannelId, CodexRemoteChannelSnapshot>,
@@ -1182,9 +1500,11 @@ export class CodexRemoteService {
     const settings = await this.options.store.readSettings()
     const target = this.findWorkspace(settings, folder)
     if (target === settings.workspaceDirectory) return this.emit()
-    this.assertNoTurnForWorkspace()
-    validateRemoteWorkspace(target, this.options.homeDirectory, this.platform)
-    await this.switchWorkspace(target)
+    await this.switchingFolder(async () => {
+      this.assertNoTurnForWorkspace()
+      validateRemoteWorkspace(target, this.options.homeDirectory, this.platform)
+      await this.switchWorkspace(target)
+    })
     return this.emit()
   }
 
@@ -1192,7 +1512,7 @@ export class CodexRemoteService {
   async removeWorkspace(folder: string): Promise<CodexRemoteSnapshot> {
     await this.options.store.updateSettings((settings) => {
       const target = this.findWorkspace(settings, folder)
-      if (target === settings.workspaceDirectory) throw new Error('正在用的文件夹不能移除，先换到别的再移除。')
+      if (target === settings.workspaceDirectory) throw new Error('使用中的文件夹无法移除，请先切换至其他文件夹。')
       settings.workspaceDirectories = remoteWorkspaceList(settings).filter((entry) => entry !== target)
     })
     return this.emit()
@@ -1200,28 +1520,63 @@ export class CodexRemoteService {
 
   private findWorkspace(settings: Parameters<typeof remoteWorkspaceList>[0], folder: string): string {
     const target = remoteWorkspaceList(settings).find((entry) => remoteDisplayPath(entry, this.options.homeDirectory, this.platform) === folder)
-    if (!target) throw new Error('这个文件夹已经不在单子上了。')
+    if (!target) throw new Error('该文件夹已不在列表中。')
     return target
+  }
+
+  /**
+   * 换文件夹、换对话（M07）：先查过没有正在做的，再写设置、丢掉旧对话。写设置要一会儿，这当中手机上发来的话原来照旧
+   * 在旧文件夹开了对话，写完这边把对话编号清掉，那一轮结束的消息按编号找不到人，卡在「正在处理」直到 1 小时的卡死计时。
+   * 现在这一段登记在 folderSwitches 里，runPrompt 等它换完、按换好的设置开这一轮。work 里查有没有正在做的那一句
+   * 要写在第一个 await 之前：登记和查是同一步，中间插不进手机上的话。
+   */
+  private async switchingFolder<T>(work: () => Promise<T>): Promise<T> {
+    const running = work()
+    const settled = running.then(() => undefined, () => undefined)
+    this.folderSwitches.add(settled)
+    try {
+      return await running
+    } finally {
+      this.folderSwitches.delete(settled)
+    }
   }
 
   private assertNoTurnForWorkspace(): void {
     if (remoteChannelIds.some((id) => this.runtimes[id].turn)) {
-      throw new Error('Codex 正在处理手机上发来的任务，等它做完再换文件夹。')
+      throw new Error('Codex 正在处理手机发来的任务，请待其完成后再切换文件夹。')
     }
   }
 
   private async switchWorkspace(target: string): Promise<void> {
     await this.options.store.updateSettings((settings) => {
-      if (!remoteWorkspaceList(settings).includes(target)) throw new Error('这个文件夹已经不在单子上了。')
+      if (!remoteWorkspaceList(settings).includes(target)) throw new Error('该文件夹已不在列表中。')
       settings.workspaceDirectories = remoteWorkspaceList(settings)
       settings.workspaceDirectory = target
+      // 选的那段对话在原来的文件夹里：换了文件夹就回到新对话，换回来也不再接它。
+      if (settings.conversation && settings.conversation.folder !== target) delete settings.conversation
     })
     this.workspaceChanged()
   }
 
   /** 新文件夹从新对话开始：旧对话的工作目录还是原来那个。 */
   private workspaceChanged(): void {
-    for (const id of remoteChannelIds) this.dropThread(this.runtimes[id])
+    for (const id of remoteChannelIds) {
+      this.dropThread(this.runtimes[id])
+      this.leaveFolderWork(this.runtimes[id])
+    }
+  }
+
+  /**
+   * 换了干活的文件夹（M06）：跟「新对话」一样扔掉攒着还没用的图，上一句和它带的图也不留给「重试」，
+   * 不然下一句把旧图带到新文件夹、「重试」在新文件夹里把旧任务再做一遍。换的时候不会有正在做的一轮
+   * （电脑上、手机上换之前都查过），上一句带的图 Codex 已经用完了。返回扔掉的图有几张。
+   */
+  private leaveFolderWork(runtime: ChannelRuntime): number {
+    const dropped = runtime.pendingImages.length
+    if (runtime.lastPrompt !== null) runtime.lastPromptLeftBehind = true
+    runtime.lastPrompt = null
+    this.dropImages(runtime)
+    return dropped
   }
 
   async setChannelEnabled(channel: RemoteChannelId, enabled: boolean): Promise<CodexRemoteSnapshot> {
@@ -1235,9 +1590,9 @@ export class CodexRemoteService {
     const reason = this.options.inspectAvailability()
     if (reason) throw new Error(reason)
     const settings = await this.options.store.readSettings()
-    if (!settings.workspaceDirectory) throw new Error('先选好 Codex 在哪个文件夹里干活。')
+    if (!settings.workspaceDirectory) throw new Error('请先选择 Codex 的工作文件夹。')
     validateRemoteWorkspace(settings.workspaceDirectory, this.options.homeDirectory, this.platform)
-    if ((await this.options.store.readCredential(channel)) === null) throw new Error('先完成这个渠道的登录。')
+    if ((await this.options.store.readCredential(channel)) === null) throw new Error('请先完成该渠道的登录。')
     const codexProblem = await this.options.checkCodexReady?.()
     if (codexProblem) throw new Error(codexProblem)
     const blocked = await this.startChannel(runtime)
@@ -1308,7 +1663,7 @@ export class CodexRemoteService {
         await this.setChannelEnabled(id, true)
         opened.push(id)
       } catch (error) {
-        failure ??= errorMessage(error, '手机遥控没能打开。')
+        failure ??= errorMessage(error, '遥控未能开启。')
         this.options.log('warn', 'remote.tray-enable-failed', { channel: id })
       }
     }
@@ -1348,6 +1703,187 @@ export class CodexRemoteService {
     }
     this.options.log('info', 'remote.idle-close-set', { hours: hours ?? 0 })
     return this.emit()
+  }
+
+  /**
+   * 「手机端使用的模型」（yoyo 2026-11-19「改」）：null = 跟电脑上的 Codex 一样。只记下来，手机上下一句交给 Codex 时
+   * 才用上（handTurnToCodex），正在做的那一轮不打断，开着的对话也接着用，不丢前面说过的。
+   */
+  async setModel(model: string | null): Promise<CodexRemoteSnapshot> {
+    await this.options.store.updateSettings((settings) => {
+      if (model === null) delete settings.model
+      else settings.model = model
+    })
+    this.options.log('info', 'remote.model-set', { follow: model === null })
+    return this.emit()
+  }
+
+  /**
+   * 「权限」两档（yoyo 2026-11-22 亲手打字同意）。跟模型一样只记下来，手机上下一句交给 Codex 时才用上（handTurnToCodex），
+   * 正在做的那一轮不打断，开着的对话也接着用。
+   */
+  async setPermission(permission: RemotePermission): Promise<CodexRemoteSnapshot> {
+    await this.options.store.updateSettings((settings) => {
+      if (permission === 'readOnly') settings.permission = 'readOnly'
+      else delete settings.permission
+    })
+    this.options.log('info', 'remote.permission-set', { permission })
+    return this.emit()
+  }
+
+  /**
+   * 电脑页「选择对话」（yoyo 2026-11-22「接对话接原的」）：本机 Codex 最近的对话，桌面端和命令行的都算。遥控关着时
+   * 临时起一份 Codex 读完就停（withListingCodex）。Codex 不是核过的版本时只说不支持，不列。
+   */
+  async listConversations(): Promise<CodexRemoteConversationList> {
+    try {
+      return await this.withListingCodex(async (client, version) => {
+        if (!this.resumeAvailable(version)) {
+          this.listedConversations.clear()
+          return { supported: false }
+        }
+        const listed = await this.readConversations(client, pageConversationLimit)
+        this.listedConversations = new Map(listed.map((entry) => [entry.threadId, entry]))
+        return {
+          supported: true,
+          items: listed.map((entry) => ({
+            id: entry.threadId,
+            title: entry.title,
+            folder: remoteDisplayPath(entry.cwd, this.options.homeDirectory, this.platform),
+            updatedAt: entry.updatedAt,
+          })),
+        }
+      })
+    } catch (error) {
+      this.options.log('warn', 'remote.conversations-unreadable', { reason: error instanceof Error ? error.name : 'unknown' })
+      throw new Error(remoteConversationErrors.unreadable)
+    }
+  }
+
+  /**
+   * 电脑页选好了「手机端的对话」：null = 新对话。选已有的那段时只认上一次列出来的，它所在的文件夹要能给遥控用
+   * （validateRemoteWorkspace），加进「干活的文件夹」并换成正在用的；手机上下一句就接着它（handTurnToCodex）。
+   * Codex 正在处理手机上的消息时不换，换好了给开着的手机说一声（第 28、29 句）。
+   */
+  async chooseConversation(threadId: string | null): Promise<CodexRemoteSnapshot> {
+    const told = await this.switchingFolder(() => this.switchConversation(threadId))
+    if (told !== null) await this.tellPhones(told)
+    return this.emit()
+  }
+
+  /** 电脑页「选择对话」写设置、丢掉旧对话的那一段（M07 里登记着）；返回要跟手机说的那句，没换就是 null。 */
+  private async switchConversation(threadId: string | null): Promise<string | null> {
+    if (remoteChannelIds.some((id) => this.runtimes[id].turn)) throw new Error(remoteConversationErrors.busy)
+    const before = await this.options.store.readSettings()
+    const current = resolveChosenConversation(before)
+    if (threadId === null) {
+      if (!current) return null
+      await this.forgetChosenConversation()
+      for (const id of remoteChannelIds) this.startOverThread(this.runtimes[id])
+      this.options.log('info', 'remote.conversation-chosen', { from: 'computer', conversation: 'new' })
+      return remoteMessages.conversationNewFromComputer
+    }
+    if (current?.threadId === threadId) return null
+    const entry = this.listedConversations.get(threadId)
+    if (!entry) throw new Error(remoteConversationErrors.unreadable)
+    if (!this.resumeAvailable(this.codexVersion ?? this.listedVersion)) throw new Error(remoteConversationErrors.unsupported)
+    let folder: string
+    try {
+      folder = validateRemoteWorkspace(entry.cwd, this.options.homeDirectory, this.platform)
+    } catch {
+      throw new Error(remoteConversationErrors.folderNotAllowed)
+    }
+    await this.options.store.updateSettings((settings) => {
+      const list = remoteWorkspaceList(settings)
+      if (!list.includes(folder)) {
+        if (list.length >= maxRemoteWorkspaces) throw new Error(workspaceListFullMessage)
+        settings.workspaceDirectories = [...list, folder]
+      } else {
+        settings.workspaceDirectories = list
+      }
+      settings.workspaceDirectory = folder
+      settings.conversation = { threadId: entry.threadId, title: entry.title, folder, updatedAt: entry.updatedAt }
+    })
+    // 不算「丢了」：下一句接着选的这段，不用再说「这是新对话」。
+    for (const id of remoteChannelIds) {
+      this.startOverThread(this.runtimes[id])
+      // 这段对话在别的文件夹里，就是换了文件夹（M06）。
+      if (folder !== before.workspaceDirectory) this.leaveFolderWork(this.runtimes[id])
+    }
+    this.options.log('info', 'remote.conversation-chosen', { from: 'computer', conversation: 'existing' })
+    return conversationSwitchedFromComputerMessage(entry.title)
+  }
+
+  /** 「手机端的对话」回到新对话（手机上发「新对话」、换了文件夹）。 */
+  private async forgetChosenConversation(): Promise<void> {
+    const settings = await this.options.store.readSettings()
+    if (!settings.conversation) return
+    await this.options.store.updateSettings((next) => { delete next.conversation })
+  }
+
+  /** 换了对话：这份不接着用了，下一句照新选的来；不是意外丢的，不用说「前面的记不得了」。 */
+  private startOverThread(runtime: ChannelRuntime): void {
+    runtime.threadId = null
+    runtime.threadLost = false
+  }
+
+  /** 给开着的手机都说一句（电脑页上换了对话）；发不出去就算了，最多等 shutdownSendTimeoutMs。 */
+  private async tellPhones(text: string): Promise<void> {
+    const sends = remoteChannelIds.map(async (id) => {
+      const runtime = this.runtimes[id]
+      if (!runtime.enabled || !runtime.adapter) return
+      const peer = runtime.peer ?? (await this.boundPeer(id))
+      if (!peer) return
+      const replyContext = runtime.peer?.userId === peer.userId ? runtime.replyContext : null
+      await this.sendText(runtime, text, peer, replyContext)
+    })
+    await Promise.race([Promise.all(sends), new Promise((resolve) => setTimeout(resolve, shutdownSendTimeoutMs).unref?.())])
+  }
+
+  /**
+   * 读对话列表用的 Codex：遥控开着就用（或起）它那一份；关着就临时起一份，读完就停（登记在 retiringClients 里，
+   * 装、卸 Codex 前照样等它退出）。这份临时的只发 thread/list，Codex 要是反过来问什么一律不答。
+   */
+  private async withListingCodex<T>(read: (client: CodexAppServerClient, version: string | null) => Promise<T>): Promise<T> {
+    const unavailable = this.options.inspectAvailability()
+    if (unavailable) throw new Error(unavailable)
+    if (this.codexStarting) await this.codexStarting.catch(() => undefined)
+    if (this.codex?.running) return read(this.codex, this.codexVersion)
+    // 遥控开着就起那一份，手机上下一句接着用，不另起一份。
+    if (this.hasEnabledChannel()) {
+      const client = await this.ensureCodex()
+      return read(client, this.codexVersion)
+    }
+    const client = new CodexAppServerClient({
+      spawn: () => this.options.spawnCodex(),
+      clientVersion: this.options.appVersion,
+      log: (level, event, detail) => this.options.log(level, `remote.listing-${event}`, detail),
+    })
+    this.retiringClients.add(client)
+    void client.whenExited().then(() => { this.retiringClients.delete(client) })
+    try {
+      const initialize = await client.start({
+        onNotification: () => undefined,
+        onServerRequest: () => Promise.reject(new AppServerMethodError(-32601, 'not supported by Xingmang remote control')),
+        onExit: () => undefined,
+      })
+      this.listedVersion = readCodexVersion(initialize)
+      return await read(client, this.listedVersion)
+    } finally {
+      await client.stop()
+    }
+  }
+
+  /** 本机 Codex 最近的对话，最新的在前；limit 是最多要几段（拿回来以后还会滤掉一些）。 */
+  private async readConversations(client: CodexAppServerClient, limit: number): Promise<ListedConversation[]> {
+    const result = await client.request('thread/list', {
+      limit,
+      sortKey: 'updated_at',
+      sortDirection: 'desc',
+      // 桌面端、命令行里人自己聊的；codex exec 一次性跑的、Codex 自己分出去的子任务不算。
+      sourceKinds: ['cli', 'vscode', 'appServer'],
+    })
+    return readListedConversations(result)
   }
 
   /**
@@ -1401,7 +1937,7 @@ export class CodexRemoteService {
 
   async startPairing(channel: RemoteChannelId): Promise<CodexRemoteSnapshot> {
     const runtime = this.runtimes[channel]
-    if (!runtime.enabled) throw new Error('先打开这个渠道，再开始配对。')
+    if (!runtime.enabled) throw new Error('请先开启该渠道，再开始配对。')
     this.clearPairing(runtime)
     runtime.pairingLocked = false
     // 到点自己收掉，界面上的配对码跟着消失，不用界面自己掐表。
@@ -1446,7 +1982,7 @@ export class CodexRemoteService {
       if (outcome === 'stopped') await this.sendText(runtime, remoteMessages.interrupted)
     }
     const snapshot = await this.emit()
-    if (stillRunning) throw new Error('还没停下来，Codex 还在处理。可以过一会儿再点一次「停下这一轮」。')
+    if (stillRunning) throw new Error('Codex 仍在处理，尚未停止。请稍后再次点击「停止本轮」。')
     return snapshot
   }
 
@@ -1503,7 +2039,9 @@ export class CodexRemoteService {
   ): Promise<CodexRemoteSnapshot> {
     const runtime = this.runtimes[channel]
     const before = (await this.options.store.readSettings()).channels[channel]
-    const sameAccount = value !== null && accountLabel !== null && before?.accountLabel === accountLabel
+    // 退出登录以后凭据是空的：这时再登同一个账号是重新登录，不接着用盘上可能没清掉的那个绑定（M21）。
+    const loggedIn = (await this.options.store.readCredential(channel)) !== null
+    const sameAccount = value !== null && accountLabel !== null && loggedIn && before?.accountLabel === accountLabel
     const verifiedPeer = value !== null ? options.verifiedPeerUserId ?? null : null
     const keepsPeer = sameAccount && (verifiedPeer === null || !before?.boundPeer || before.boundPeer.userId === verifiedPeer)
     // 换了机器人重新扫码、过了数字的还是原来绑着的那个人（YR-9）：账号字样变了，这次连接里的对话照旧清掉，
@@ -1524,13 +2062,22 @@ export class CodexRemoteService {
       removeFailure = error
       this.options.log('warn', 'remote.credential-remove-failed', { channel })
     }
-    await this.options.store.updateSettings((settings) => {
-      const stored = settings.channels[channel] ?? emptyChannelSettings()
-      if (!removeFailure) stored.accountLabel = value === null ? null : accountLabel
-      if (!keepsPeer && !rebindsSamePeer) stored.boundPeer = null
-      if (verifiedPeer && stored.boundPeer?.userId !== verifiedPeer) stored.boundPeer = { userId: verifiedPeer, boundAt: this.now() }
-      settings.channels[channel] = stored
-    })
+    // 退出登录时设置写不进去（盘满、文件一时被占，M21）：跟凭据删不掉一样，停渠道照做再报错。不然渠道带着
+    // 内存里的凭据照样开着，手机发来的话还会执行。
+    let settingsFailure: unknown = null
+    try {
+      await this.options.store.updateSettings((settings) => {
+        const stored = settings.channels[channel] ?? emptyChannelSettings()
+        if (!removeFailure) stored.accountLabel = value === null ? null : accountLabel
+        if (!keepsPeer && !rebindsSamePeer) stored.boundPeer = null
+        if (verifiedPeer && stored.boundPeer?.userId !== verifiedPeer) stored.boundPeer = { userId: verifiedPeer, boundAt: this.now() }
+        settings.channels[channel] = stored
+      })
+    } catch (error) {
+      if (value !== null) throw error
+      settingsFailure = error
+      this.options.log('warn', 'remote.logout-settings-failed', { channel })
+    }
     if (verifiedPeer) {
       // 已经绑好了人：电脑上挂着的配对码作废，免得别人再拿它换掉。
       this.clearPairing(runtime)
@@ -1545,10 +2092,11 @@ export class CodexRemoteService {
         await this.startChannel(runtime)
       }
     }
-    if (removeFailure) {
+    const failure = removeFailure ?? settingsFailure
+    if (failure) {
       // 报错的调用拿不到返回的快照，界面靠 state-changed 跟上已经解绑、停掉的样子。
       await this.emit()
-      throw removeFailure
+      throw failure
     }
     return this.emit()
   }
@@ -1651,6 +2199,10 @@ export class CodexRemoteService {
 
   private async emit(): Promise<CodexRemoteSnapshot> {
     const snapshot = await this.snapshot()
+    // 版本号按开始的先后定（M15），先开始的可能后读完：比已经推出去的旧，就不再推。托盘、防睡眠拿到哪份信哪份，
+    // 不像页面会比版本号。
+    if (snapshot.revision < this.emittedRevision) return snapshot
+    this.emittedRevision = snapshot.revision
     try {
       this.options.onStateChanged?.(snapshot)
     } catch {
@@ -1689,6 +2241,9 @@ export class CodexRemoteService {
     runtime.startedAt = this.now()
     runtime.staleNoticeAt = 0
     runtime.lastPrompt = null
+    runtime.lastPromptLeftBehind = false
+    runtime.conversationChoices = null
+    runtime.folderChoices = null
     this.dropImages(runtime)
     await this.sweepImagesOnce()
     runtime.inboundSeen = 'none'
@@ -1723,7 +2278,7 @@ export class CodexRemoteService {
       })
     } catch (error) {
       if (runtime.adapter === adapter) {
-        runtime.status = { state: 'error', message: errorMessage(error, '渠道没能连上。'), halted: true }
+        runtime.status = { state: 'error', message: errorMessage(error, '渠道未能建立连接。'), halted: true }
       }
       this.options.log('warn', 'remote.channel-start-failed', { channel: runtime.id })
     }
@@ -1734,11 +2289,14 @@ export class CodexRemoteService {
     const adapter = runtime.adapter
     runtime.adapter = null
     runtime.status = { state: 'stopped' }
-    if (!adapter) return
+    if (adapter) await this.stopDetachedAdapter(runtime.id, adapter)
+  }
+
+  private async stopDetachedAdapter(channel: RemoteChannelId, adapter: RemoteChannelAdapter): Promise<void> {
     try {
       await adapter.stop()
     } catch {
-      this.options.log('warn', 'remote.channel-stop-failed', { channel: runtime.id })
+      this.options.log('warn', 'remote.channel-stop-failed', { channel })
     }
   }
 
@@ -1754,20 +2312,30 @@ export class CodexRemoteService {
     if (runtime.idleTimer) clearTimeout(runtime.idleTimer)
     runtime.idleTimer = null
     await this.abandonTurn(runtime)
-    if (wasEnabled && farewell && runtime.adapter) {
-      const peer = runtime.peer ?? (await this.boundPeer(runtime.id))
-      if (peer) {
-        const sent = Promise.resolve(farewell).then((text) => this.sendText(runtime, text, peer))
-        await Promise.race([sent, new Promise((resolve) => setTimeout(resolve, shutdownSendTimeoutMs).unref?.())])
-      }
-    }
-    await this.stopAdapter(runtime)
+    // 关了就一条普通消息都不再发（M14）：连接当场摘下，之后谁想发都找不到它；排在发件队里还没轮到的作废；
+    // 已经交给连接、正等着重发的也不再发。道别那句不进发件队，不用等前面那些，直接交给要关的这份连接。
+    // 道别发完或者到点以后再停连接；这一会儿电脑上又打开了，开的是新的一份，这里只停旧的、不碰新的。
+    const adapter = runtime.adapter
+    runtime.adapter = null
+    runtime.status = { state: 'stopped' }
+    runtime.outboxEpoch += 1
+    runtime.outbox = Promise.resolve()
+    adapter?.cancelPendingSends?.()
+    const peer = wasEnabled && farewell && adapter ? runtime.peer ?? (await this.boundPeer(runtime.id)) : null
+    const replyContext = runtime.replyContext
     runtime.peer = null
     runtime.replyContext = undefined
     runtime.undeliveredAnswer = null
     runtime.answerResend = null
     this.dropThread(runtime)
     this.dropImages(runtime)
+    if (adapter && farewell && peer) {
+      const sent = Promise.resolve(farewell).then((text) => this.sendFarewell(runtime.id, adapter, text, peer, replyContext))
+      await Promise.race([sent, new Promise((resolve) => setTimeout(resolve, shutdownSendTimeoutMs).unref?.())])
+      // 到点还没发出去的道别也到此为止：不然它晚几秒补发出去，排在这之后又打开时那句「已打开」后面，手机上看着像又关了。
+      adapter.cancelPendingSends?.()
+    }
+    if (adapter) await this.stopDetachedAdapter(runtime.id, adapter)
     if (wasEnabled) this.options.log('info', 'remote.channel-stopped', { channel: runtime.id })
     if (!remoteChannelIds.some((id) => this.runtimes[id].enabled)) {
       this.codexStartFailed = false
@@ -1804,6 +2372,9 @@ export class CodexRemoteService {
     runtime.replyContext = undefined
     runtime.threadId = null
     runtime.lastPrompt = null
+    runtime.lastPromptLeftBehind = false
+    runtime.conversationChoices = null
+    runtime.folderChoices = null
     runtime.undeliveredAnswer = null
     runtime.answerResend = null
     this.dropImages(runtime)
@@ -1899,6 +2470,31 @@ export class CodexRemoteService {
         this.options.log('warn', 'remote.interrupt-failed', { channel: runtime.id })
       })
     }
+  }
+
+  private abandonTurnStart(runtime: ChannelRuntime, threadId: string): void {
+    this.options.log('warn', 'remote.turn-start-timeout', { channel: runtime.id })
+    this.abandonedTurnThreads.add(threadId)
+    if (this.abandonedTurnThreads.size > maxAbandonedTurnThreads) {
+      const oldest = this.abandonedTurnThreads.values().next().value
+      if (oldest !== undefined) this.abandonedTurnThreads.delete(oldest)
+    }
+  }
+
+  /**
+   * 放弃了的那份对话里冒出来的一轮（M02）：拿通知里的编号补一次打断，只补一次；成不成都不再管这份对话。
+   * 这份对话已经没有哪个渠道接着用（dropThread），它的通知本来就没人认。
+   */
+  private interruptAbandonedTurn(params: Record<string, unknown>): void {
+    const threadId = stringField(params.threadId)
+    if (!threadId || !this.abandonedTurnThreads.has(threadId) || this.runtimeByThread(threadId)) return
+    const turnId = stringField(params.turnId) ?? (isRecord(params.turn) ? stringField(params.turn.id) : null)
+    if (!turnId) return
+    this.abandonedTurnThreads.delete(threadId)
+    this.options.log('warn', 'remote.late-turn-interrupted')
+    void this.codex?.request('turn/interrupt', { threadId, turnId }, 10_000).catch(() => {
+      this.options.log('warn', 'remote.interrupt-failed')
+    })
   }
 
   /** 停掉、做完的这一轮记下编号：它迟到的审批、通知都不认（belongsToOtherTurn）。 */
@@ -2053,6 +2649,25 @@ export class CodexRemoteService {
     return { secrets: this.secrets, homeDirectory: this.options.homeDirectory, platform: this.platform }
   }
 
+  /**
+   * 排进这个渠道的发件队，一条发完（或失败）才轮到下一条。轮到时遥控已经关过（M14），就不发了，按失败交回。
+   */
+  private enqueueOutbound<T>(runtime: ChannelRuntime, send: () => Promise<T>): Promise<T> {
+    const epoch = runtime.outboxEpoch
+    const next = runtime.outbox.then(() => {
+      if (runtime.outboxEpoch !== epoch) throw new RemoteSendDroppedError()
+      return send()
+    })
+    runtime.outbox = next.then(() => undefined, () => undefined)
+    return next
+  }
+
+  private noteSendFailed(channel: RemoteChannelId, kind: RemoteOutbound['kind'], error: unknown): never {
+    if (error instanceof RemoteSendDroppedError) this.options.log('info', 'remote.send-dropped', { channel, kind })
+    else this.options.log('warn', 'remote.send-failed', { channel, kind })
+    throw new Error('send failed')
+  }
+
   /** replyContext 传 null 是不带平台句柄：回的不是绑定的人时，不能把他的句柄拿给别人用。 */
   private deliver(
     runtime: ChannelRuntime,
@@ -2062,12 +2677,8 @@ export class CodexRemoteService {
   ): Promise<void> {
     const adapter = runtime.adapter
     if (!adapter) return Promise.resolve()
-    const next = runtime.outbox.then(() => adapter.send(peer, message, replyContext ?? undefined))
-    runtime.outbox = next.catch(() => undefined)
-    return next.catch(() => {
-      this.options.log('warn', 'remote.send-failed', { channel: runtime.id, kind: message.kind })
-      throw new Error('send failed')
-    })
+    return this.enqueueOutbound(runtime, () => adapter.send(peer, message, replyContext ?? undefined))
+      .catch((error: unknown) => this.noteSendFailed(runtime.id, message.kind, error))
   }
 
   /** 审批卡走能改样子的那条路（YK-8），跟文字排在同一条发件队里，交回卡片编号。 */
@@ -2077,12 +2688,8 @@ export class CodexRemoteService {
     peer: RemotePeer,
     message: RemoteOutboundApproval,
   ): Promise<string> {
-    const next = runtime.outbox.then(() => adapter.sendApproval(peer, message))
-    runtime.outbox = next.then(() => undefined, () => undefined)
-    return next.catch(() => {
-      this.options.log('warn', 'remote.send-failed', { channel: runtime.id, kind: message.kind })
-      throw new Error('send failed')
-    })
+    return this.enqueueOutbound(runtime, () => adapter.sendApproval(peer, message))
+      .catch((error: unknown) => this.noteSendFailed(runtime.id, message.kind, error))
   }
 
   /**
@@ -2125,6 +2732,28 @@ export class CodexRemoteService {
       }
     }
     return true
+  }
+
+  /**
+   * 关遥控那句道别（M14）：这时连接已经从渠道上摘下，发件队也清过，直接交给要关的这份连接，不排在关之前那些后面。
+   */
+  private async sendFarewell(
+    channel: RemoteChannelId,
+    adapter: RemoteChannelAdapter,
+    text: string,
+    peer: RemotePeer,
+    replyContext: string | undefined,
+  ): Promise<void> {
+    await this.refreshSecrets()
+    const chunks = splitRemoteText(redactRemoteText(text, this.redaction()), adapter.capabilities.maxTextLength, maxReplyChunks)
+    for (const chunk of chunks) {
+      try {
+        await adapter.send(peer, { kind: 'text', text: chunk }, replyContext)
+      } catch {
+        this.options.log('warn', 'remote.send-failed', { channel, kind: 'text' })
+        return
+      }
+    }
   }
 
   /**
@@ -2231,12 +2860,16 @@ export class CodexRemoteService {
     let text: string
     // 跟这句话一起发来、刚攒上的图（M05）：这句话没被收下时连它们一起退回。
     let incoming: readonly string[] = []
+    // 这条带的图一张都没收下（M04）：是要做的事就先不交给 Codex。收不了图的（没配存图的地方）照旧只回不支持那句。
+    let imagesMissed = false
     if (message.kind === 'image') {
+      const canReceive = Boolean(runtime.adapter?.fetchImage && this.options.imageStore)
       const received = await this.receiveImages(runtime, message)
       if (!received) return
       // 图和字一起发来的（飞书富文本、微信图文）：图已经攒上，字照常当一句话处理，是要做的事就带着图交出去。
       if (!message.text?.trim()) return
       incoming = received
+      imagesMissed = canReceive && message.images.length > 0 && received.length === 0
       text = message.text
     } else {
       text = message.text
@@ -2250,10 +2883,16 @@ export class CodexRemoteService {
         await this.sendText(runtime, await this.statusReply(runtime))
         return
       case 'folders':
-        await this.sendText(runtime, await this.workspaceListReply())
+        await this.sendText(runtime, await this.workspaceListReply(runtime))
         return
       case 'use-folder':
         await this.useWorkspaceFromPhone(runtime, command.index)
+        return
+      case 'conversations':
+        await this.sendText(runtime, await this.conversationListReply(runtime))
+        return
+      case 'use-conversation':
+        await this.useConversationFromPhone(runtime, command.index)
         return
       case 'retry':
         // 上一句其实做完了，只是回答刚才没送到、这会儿才补发（M03）：不让 Codex 再做一遍，真要重做就再发一次「重试」。
@@ -2263,7 +2902,7 @@ export class CodexRemoteService {
           return
         }
         if (!runtime.lastPrompt) {
-          await this.sendText(runtime, remoteMessages.nothingToRetry)
+          await this.sendText(runtime, runtime.lastPromptLeftBehind ? remoteMessages.retryAfterFolderSwitch : remoteMessages.nothingToRetry)
           return
         }
         await this.runPrompt(runtime, runtime.lastPrompt, true, incoming)
@@ -2286,6 +2925,8 @@ export class CodexRemoteService {
         runtime.threadId = null
         // 是他自己要的新对话，下次不用再提醒「前面的记不得了」。
         runtime.threadLost = false
+        // 「手机端的对话」也回到新对话：不然下一句又接回电脑上选的那段。
+        await this.forgetChosenConversation()
         // 攒着还没用的图一起扔掉（YF-14）；上一句带过的留着给「重试」。
         this.releaseImages(runtime.pendingImages)
         runtime.pendingImages = []
@@ -2299,6 +2940,10 @@ export class CodexRemoteService {
         await this.answerApproval(runtime, command.decision, command.approvalId)
         return
       case 'prompt':
+        if (imagesMissed) {
+          await this.sendText(runtime, remoteMessages.imagesMissedPromptHeld)
+          return
+        }
         await this.runPrompt(runtime, command.text, false, incoming)
     }
   }
@@ -2569,11 +3214,13 @@ export class CodexRemoteService {
     this.emitSoon()
   }
 
-  /** 手机上发「文件夹」（YF-19）。 */
-  private async workspaceListReply(): Promise<string> {
+  /** 手机上发「文件夹」（YF-19）。列出来的记在 folderChoices 上，「文件夹 N」照这份认（M18）。 */
+  private async workspaceListReply(runtime: ChannelRuntime): Promise<string> {
     const settings = await this.options.store.readSettings()
+    const list = remoteWorkspaceList(settings)
+    runtime.folderChoices = list
     const shown = (folder: string) => remoteDisplayPath(folder, this.options.homeDirectory, this.platform)
-    return workspaceListMessage(remoteWorkspaceList(settings).map(shown), settings.workspaceDirectory ? shown(settings.workspaceDirectory) : null)
+    return workspaceListMessage(list.map(shown), settings.workspaceDirectory ? shown(settings.workspaceDirectory) : null)
   }
 
   /**
@@ -2583,9 +3230,14 @@ export class CodexRemoteService {
   private async useWorkspaceFromPhone(runtime: ChannelRuntime, index: number): Promise<void> {
     const settings = await this.options.store.readSettings()
     const list = remoteWorkspaceList(settings)
-    const target = list[index - 1]
+    // 按手机上看到的那份单子取第 N 个（M18）：列过以后电脑上增删了，第 N 个就不是他看到的那个了。
+    const target = (runtime.folderChoices ?? list)[index - 1]
     if (index < 1 || !target) {
       await this.sendText(runtime, workspaceMissingMessage(index))
+      return
+    }
+    if (!list.includes(target)) {
+      await this.sendText(runtime, remoteMessages.folderListChanged)
       return
     }
     const shown = remoteDisplayPath(target, this.options.homeDirectory, this.platform)
@@ -2593,14 +3245,23 @@ export class CodexRemoteService {
       await this.sendText(runtime, workspaceAlreadyInUseMessage(shown))
       return
     }
-    if (remoteChannelIds.some((id) => this.runtimes[id].turn)) {
+    // 换文件夹会丢掉攒着的图（M06），先记下有没有，换完好告诉他。
+    const hadImages = runtime.pendingImages.length > 0
+    const switched = await this.switchingFolder(async () => {
+      if (remoteChannelIds.some((id) => this.runtimes[id].turn)) return 'busy'
+      try {
+        validateRemoteWorkspace(target, this.options.homeDirectory, this.platform)
+        await this.switchWorkspace(target)
+      } catch {
+        return 'unusable'
+      }
+      return 'switched'
+    })
+    if (switched === 'busy') {
       await this.sendText(runtime, remoteMessages.workspaceBusy)
       return
     }
-    try {
-      validateRemoteWorkspace(target, this.options.homeDirectory, this.platform)
-      await this.switchWorkspace(target)
-    } catch {
+    if (switched === 'unusable') {
       this.options.log('warn', 'remote.workspace-unusable', { channel: runtime.id })
       await this.sendText(runtime, workspaceUnusableMessage(shown))
       return
@@ -2608,8 +3269,187 @@ export class CodexRemoteService {
     // 手机上已经说了「从新对话开始」，下一句不用再提醒「前面的记不得了」。
     runtime.threadLost = false
     this.options.log('info', 'remote.workspace-switched', { channel: runtime.id, from: 'phone' })
-    await this.sendText(runtime, workspaceSwitchedMessage(shown))
+    const reply = workspaceSwitchedMessage(shown)
+    await this.sendText(runtime, hadImages ? `${reply}\n${remoteMessages.pendingImagesDroppedOnFolderSwitch}` : reply)
     this.emitSoon()
+  }
+
+  /**
+   * 手机上发「对话」（接对话第 18、19 句）：只列电脑上加过的文件夹里的，新的文件夹只能在电脑上选。列出来的记在
+   * conversationChoices 上，「对话 N」照这个次序认。
+   */
+  private async conversationListReply(runtime: ChannelRuntime): Promise<string> {
+    let client: CodexAppServerClient
+    try {
+      client = await this.ensureCodex()
+    } catch {
+      return remoteMessages.codexUnavailable
+    }
+    if (!this.resumeAvailable(this.codexVersion)) return remoteMessages.conversationUnsupported
+    let choices: ListedConversation[]
+    try {
+      choices = await this.phoneConversations(client)
+    } catch {
+      this.options.log('warn', 'remote.conversations-unreadable', { channel: runtime.id })
+      return remoteMessages.conversationResumeFailed
+    }
+    runtime.conversationChoices = choices
+    const current = await this.currentConversationId(runtime)
+    return conversationListMessage(choices.map((entry) => ({
+      title: entry.title,
+      folderName: remoteFolderName(entry.cwd, this.platform),
+      updatedAt: entry.updatedAt,
+      current: entry.threadId === current,
+    })))
+  }
+
+  private async phoneConversations(client: CodexAppServerClient): Promise<ListedConversation[]> {
+    const folders = remoteWorkspaceList(await this.options.store.readSettings())
+    const listed = await this.readConversations(client, phoneConversationScan)
+    return listed.filter((entry) => folders.some((folder) => sameRemoteFolder(entry.cwd, folder, this.platform))).slice(0, phoneConversationLimit)
+  }
+
+  /** 这个渠道现在在哪段对话里：开着的那份，没开就是电脑页上选的那段；都没有（新对话）是 null。 */
+  private async currentConversationId(runtime: ChannelRuntime): Promise<string | null> {
+    if (runtime.threadId) return runtime.threadId
+    return resolveChosenConversation(await this.options.store.readSettings())?.threadId ?? null
+  }
+
+  /**
+   * 手机上发「对话 N」（接对话第 20~27 句）：当场接上那段（thread/resume），接不上就不换；接上了它所在的文件夹换成
+   * 正在用的，「手机端的对话」也记成它，电脑页上跟着变。Codex 正在处理消息时不换（含别的渠道）。
+   */
+  private async useConversationFromPhone(runtime: ChannelRuntime, index: number): Promise<void> {
+    if (remoteChannelIds.some((id) => this.runtimes[id].turn)) {
+      await this.sendText(runtime, remoteMessages.conversationBusy)
+      return
+    }
+    let client: CodexAppServerClient
+    try {
+      client = await this.ensureCodex()
+    } catch {
+      await this.sendText(runtime, remoteMessages.codexUnavailable)
+      return
+    }
+    if (!this.resumeAvailable(this.codexVersion)) {
+      await this.sendText(runtime, remoteMessages.conversationUnsupported)
+      return
+    }
+    let choices = runtime.conversationChoices
+    if (!choices) {
+      try {
+        choices = await this.phoneConversations(client)
+      } catch {
+        await this.sendText(runtime, remoteMessages.conversationResumeFailed)
+        return
+      }
+      runtime.conversationChoices = choices
+    }
+    const target = choices[index - 1]
+    if (index < 1 || !target) {
+      await this.sendText(runtime, conversationMissingMessage(index))
+      return
+    }
+    if (target.threadId === (await this.currentConversationId(runtime))) {
+      await this.sendText(runtime, remoteMessages.conversationAlreadyCurrent)
+      return
+    }
+    const settings = await this.options.store.readSettings()
+    const folder = remoteWorkspaceList(settings).find((entry) => sameRemoteFolder(entry, target.cwd, this.platform))
+    const wantedPermission: RemotePermission = settings.permission ?? 'default'
+    let lowered: RemotePermission | null
+    try {
+      if (!folder) throw new Error('folder no longer added')
+      validateRemoteWorkspace(folder, this.options.homeDirectory, this.platform)
+      lowered = await this.resumeConversation(client, runtime, target.threadId, folder, wantedPermission)
+    } catch (error) {
+      // 规矩套不上（这一版 Codex 不支持）照实说，别让人「稍后重试」；别的接不上照旧。
+      if (error instanceof RemoteConversationError) {
+        await this.sendText(runtime, error.reply)
+        return
+      }
+      this.options.log('warn', 'remote.conversation-resume-failed', { channel: runtime.id, from: 'phone' })
+      await this.sendText(runtime, remoteMessages.conversationResumeFailed)
+      return
+    }
+    // 接的这一会儿别的渠道开始了一轮：不在它底下换文件夹，这次不换。
+    if (remoteChannelIds.some((id) => this.runtimes[id].turn)) {
+      this.startOverThread(runtime)
+      await this.sendText(runtime, remoteMessages.conversationBusy)
+      return
+    }
+    await this.options.store.updateSettings((next) => {
+      next.workspaceDirectories = remoteWorkspaceList(next)
+      next.workspaceDirectory = folder
+      next.conversation = { threadId: target.threadId, title: target.title, folder, updatedAt: target.updatedAt }
+    })
+    // 这段对话在别的文件夹里，就是换了文件夹（M06）：跟手机上「文件夹 N」一样清掉没用上的图，说一声。
+    const folderChanged = folder !== settings.workspaceDirectory
+    const droppedImages = folderChanged ? this.leaveFolderWork(runtime) : 0
+    for (const id of remoteChannelIds) {
+      if (id === runtime.id) continue
+      this.startOverThread(this.runtimes[id])
+      if (folderChanged) this.leaveFolderWork(this.runtimes[id])
+    }
+    this.options.log('info', 'remote.conversation-chosen', { channel: runtime.id, from: 'phone', lowered: lowered ?? 'no' })
+    const switched = conversationSwitchedMessage(target.title, lowered)
+    await this.sendText(runtime, droppedImages > 0 ? `${switched}\n${remoteMessages.pendingImagesDroppedOnFolderSwitch}` : switched)
+    this.emitSoon()
+  }
+
+  /**
+   * 在这份 Codex 里接上电脑上已有的那段对话（thread/resume），套上遥控的规矩并核过（applyRemoteRules），记到这个渠道上：
+   * 原对话的权限在手机这一档里面就照它的，超出就记成 exceeds，下一句的 turn/start 降下来。回的是降到的那一档，没降是 null。
+   * 接不上、Codex 答回来的对话不在这个文件夹里都抛错，规矩套不上抛 RemoteConversationError；这个渠道原来那份对话都不动。
+   */
+  private async resumeConversation(client: CodexAppServerClient, runtime: ChannelRuntime, threadId: string, workspace: string, permission: RemotePermission): Promise<RemotePermission | null> {
+    // 读不出配了哪些外部工具就不接：宁可这一条做不了，也不让手机用上没关掉的工具（同 thread/start）。
+    const configRead = await client.request('config/read', { cwd: workspace, includeLayers: true })
+    const params = buildThreadResumeParams(threadId, buildRemoteMcpServerOverrides(configRead))
+    const resumed = readResumedThread(await client.request('thread/resume', params))
+    if (!resumed || resumed.threadId !== threadId) throw new Error('Codex 没有接上这段对话')
+    if (!sameRemoteFolder(resumed.cwd, workspace, this.platform)) throw new Error('这段对话不在这个文件夹里')
+    await this.applyRemoteRules(client, params, resumed)
+    const fits = resumedPermissionFits(resumed, permission, workspace, this.platform)
+    runtime.threadId = threadId
+    // null = 不另选型号：照原对话的；「手机端使用的模型」单独选了的，下一句照常带上（turnModel）。
+    runtime.threadModel = null
+    runtime.threadPermission = fits ? permission : 'exceeds'
+    runtime.threadLost = false
+    return fits ? null : permission
+  }
+
+  /**
+   * 给接上的对话套上遥控的规矩，再问 Codex 一遍真套上了没有（0.2.25 第三轮复查第 4 条）。规矩靠的是 Codex 的试验字段
+   * collaborationMode，哪一版把它改名、去掉了，Codex 不报错，只会悄悄不认，所以不按版本号放行，每次都当场核：
+   * 先用 thread/settings/update 写进这份对话，再接一次（同一份 Codex 里接的就是开着的这份，不重读记录），看 Codex
+   * 答回来的 collaborationMode 是不是这一段。不是，或者 Codex 明着不认这个请求，就是这一版接不了：手机上的话一句都
+   * 不交给它，记下这一版，之后列对话、选对话都直接说不支持。等不到回执、Codex 停了这类一时的错照原样抛，按「接不上」说。
+   * Codex 0.169.0 和 0.171.0 在沙箱里实测过：写进去以后再接答回来的就是这一段，下一句发给模型的请求里也带着它，
+   * 换了型号也还在；字段名写错时 Codex 照样回成功，再接答回来的没有这一段。
+   */
+  private async applyRemoteRules(client: CodexAppServerClient, params: Record<string, unknown>, resumed: ResumedThread): Promise<void> {
+    try {
+      await client.request('thread/settings/update', {
+        threadId: resumed.threadId,
+        collaborationMode: buildRemoteCollaborationMode(resumed.model, resumed.reasoningEffort),
+      })
+    } catch (error) {
+      if (codexRejectedRequest(error)) throw this.remoteRulesUnconfirmed('rejected')
+      throw error
+    }
+    if (!remoteRulesInEffect(await client.request('thread/resume', params))) throw this.remoteRulesUnconfirmed('not-in-effect')
+  }
+
+  private remoteRulesUnconfirmed(reason: 'rejected' | 'not-in-effect'): RemoteConversationError {
+    this.resumeUnconfirmedVersion = this.codexVersion
+    this.options.log('warn', 'remote.conversation-rules-unconfirmed', { version: this.codexVersion ?? 'unknown', reason })
+    return new RemoteConversationError(remoteMessages.conversationUnsupported)
+  }
+
+  /** 这一版 Codex 能不能接已有对话：不早于 0.169，而且这次开着星芒时没核出它套不上规矩（applyRemoteRules）。 */
+  private resumeAvailable(version: string | null): boolean {
+    return codexSupportsResume(version) && version !== this.resumeUnconfirmedVersion
   }
 
   /** 手机上发「状态」回的那几行（YF-18）。 */
@@ -2725,13 +3565,14 @@ export class CodexRemoteService {
         return
       }
       // 第一张卡跟文字排在同一条发件队里：排在「收到」后面、最后的回答前面。
-      const sent = runtime.outbox.then(() => adapter.sendProgress(peer, card))
-      runtime.outbox = sent.then(() => undefined, () => undefined)
-      progress.handle = await sent
+      progress.handle = await this.enqueueOutbound(runtime, () => adapter.sendProgress(peer, card))
     })
   }
 
-  /** 这一轮有了结果（YF-15）：不再发「正在处理」；发过卡的，最后更新成做完了、停了或没做完，按钮去掉。 */
+  /**
+   * 这一轮有了结果（YF-15）：不再发「正在处理」；发过卡的，最后更新成做完了、停了或没做完，按钮去掉。这次没改成
+   * 隔一会儿再改（M17，progressFinalRetryMs）；最后的回答是另发的一条，不等这张卡。
+   */
   private endProgress(runtime: ChannelRuntime, turn: TurnState, state: RemoteProgressCard['state']): void {
     const progress = turn.progress
     if (progress.ended) return
@@ -2741,9 +3582,22 @@ export class CodexRemoteService {
     const adapter = runtime.adapter
     if (!progressCards(adapter)) return
     void this.queueProgress(runtime, turn, async () => {
-      if (!progress.handle) return
-      await this.refreshSecrets()
-      await adapter.updateProgress(progress.handle, this.progressCard(turn, state))
+      const handle = progress.handle
+      if (!handle) return
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          await this.refreshSecrets()
+          await adapter.updateProgress(handle, this.progressCard(turn, state))
+          return
+        } catch (error) {
+          const wait = progressFinalRetryMs[attempt]
+          // 渠道关了或换了连接：这张卡改不了了，也不用再试。
+          if (wait === undefined || runtime.adapter !== adapter) throw error
+          this.options.log('warn', 'remote.progress-final-retry', { channel: runtime.id, attempt: attempt + 1 })
+          await new Promise((resolve) => setTimeout(resolve, wait).unref?.())
+          if (runtime.adapter !== adapter) return
+        }
+      }
     })
   }
 
@@ -2769,7 +3623,14 @@ export class CodexRemoteService {
       await this.sendText(runtime, remoteMessages.busy)
       return
     }
-    const workspace = (await this.options.store.readSettings()).workspaceDirectory
+    let settings = await this.options.store.readSettings()
+    // 电脑上或别的渠道正在换文件夹、换对话（M07）：等换完、按换好的来。查和开这一轮之间没有 await，换的那边
+    // 也是查过没有正在做的才登记，两边不会都以为对方不在。
+    while (this.folderSwitches.size > 0) {
+      await Promise.all(this.folderSwitches)
+      settings = await this.options.store.readSettings()
+    }
+    const workspace = settings.workspaceDirectory
     if (!workspace) {
       this.returnIncomingImages(runtime, incoming)
       await this.sendText(runtime, remoteMessages.codexUnavailable)
@@ -2792,6 +3653,7 @@ export class CodexRemoteService {
     }
     runtime.turn = turn
     runtime.lastPrompt = text
+    runtime.lastPromptLeftBehind = false
     // 又交给 Codex 一句了（M03）：还没补发成的那条回答不再是「上一条」的，「重试」照常重做这一句。
     if (runtime.undeliveredAnswer) runtime.undeliveredAnswer.latest = false
     const images = retry ? [...runtime.lastPromptImages] : [...runtime.pendingImages]
@@ -2804,9 +3666,11 @@ export class CodexRemoteService {
     this.noteTurnProgress(runtime)
     this.emitSoon()
     // 原来的对话丢了（不是他自己发的「新对话」），这一条会从新对话开始：收到那句前面先说一声（D66 / YKS-16）。
+    // 电脑页上选了已有对话的会接回那段，不是新对话。
+    const startsOver = runtime.threadId === null && runtime.threadLost && !resolveChosenConversation(settings)
     const received = [
       ...(retry ? [retryMessage(text)] : []),
-      ...(runtime.threadId === null && runtime.threadLost ? [remoteMessages.threadReset] : []),
+      ...(startsOver ? [remoteMessages.threadReset] : []),
       receivedMessage(images.length),
     ].join('\n')
     await this.sendText(runtime, received)
@@ -2852,24 +3716,58 @@ export class CodexRemoteService {
     // 起 Codex、开对话都要等，每等完一次都看看这一轮还要不要（#1407 P3-1）：话一交给 Codex 就开始扣钱，
     // 只读命令也会先跑，事后再补一次打断已经晚了。
     if (!this.turnStillWanted(runtime, turn)) return
+    // 交了 turn/start 还没等到回执的那份对话（M02）：没等到就放弃时要记下它。
+    let awaitingTurnStart: string | null = null
     try {
-      if (!runtime.threadId) {
+      const settings = await this.options.store.readSettings()
+      const wantedModel = settings.model ?? null
+      const wantedPermission: RemotePermission = settings.permission ?? 'default'
+      const chosen = runtime.threadId ? null : resolveChosenConversation(settings)
+      if (chosen) {
+        // 电脑页上选了接着已有的那段（或 Codex 停过、这份对话丢了）：先接上它，接不上这一条就不做，不悄悄换成新对话。
+        if (!this.resumeAvailable(this.codexVersion)) throw new RemoteConversationError(remoteMessages.conversationUnsupported)
+        try {
+          await this.resumeConversation(client, runtime, chosen.threadId, workspace, wantedPermission)
+        } catch (error) {
+          // 规矩套不上：这一版不支持，照实说（applyRemoteRules 已记了日志）。
+          if (error instanceof RemoteConversationError) throw error
+          if (runtime.turn === turn) this.options.log('warn', 'remote.conversation-resume-failed', { channel: runtime.id, from: 'message' })
+          throw new RemoteConversationError(remoteMessages.conversationResumeFailed, error)
+        }
+        if (!this.turnStillWanted(runtime, turn)) return
+      } else if (!runtime.threadId) {
         // 读不出配了哪些外部工具就不开对话：宁可这一条做不了，也不让手机用上没关掉的工具。
         const configRead = await client.request('config/read', { cwd: workspace, includeLayers: true })
         if (!this.turnStillWanted(runtime, turn)) return
-        const started = await client.request('thread/start', buildThreadStartParams(workspace, buildRemoteMcpServerOverrides(configRead)))
+        const started = await client.request('thread/start', buildThreadStartParams(workspace, buildRemoteMcpServerOverrides(configRead), wantedModel, wantedPermission))
         const thread = isRecord(started) && isRecord(started.thread) ? stringField(started.thread.id) : null
-        if (!thread) throw new Error('Codex 没有开出新对话')
+        if (!thread) throw new Error('Codex 未能开启新对话')
         if (!this.turnStillWanted(runtime, turn)) return
+        const exceeds = isRecord(started) && startedSandboxExceeds(started.sandbox, wantedPermission, workspace, this.platform)
+        if (exceeds) this.options.log('warn', 'remote.thread-start-sandbox-wider', { channel: runtime.id })
         runtime.threadId = thread
+        runtime.threadModel = wantedModel
+        runtime.threadPermission = exceeds ? 'exceeds' : wantedPermission
         runtime.threadLost = false
       }
       const threadId = runtime.threadId
+      const model = await this.turnModel(client, runtime, workspace, wantedModel)
+      if (!this.turnStillWanted(runtime, turn)) return
+      // 开着的对话中途换了「权限」、接着的已有对话原来超出这一档、新开的对话比这一档宽：这一句起照手机这档，Codex 会一直用到这份对话结束。
+      const permissionChanged = wantedPermission !== runtime.threadPermission
+      awaitingTurnStart = threadId
       const result = await client.request('turn/start', {
         threadId,
         // 图只给这里存的路径（YF-14），Codex 的 localImage 自己读文件。
         input: [{ type: 'text', text, text_elements: [] }, ...images.map((image) => ({ type: 'localImage', path: image }))],
+        ...(model ? { model } : {}),
+        ...(permissionChanged ? { approvalPolicy: remoteApprovalPolicy, approvalsReviewer: 'user', sandboxPolicy: buildRemoteSandboxPolicy(wantedPermission) } : {}),
       })
+      awaitingTurnStart = null
+      if (runtime.threadId === threadId) {
+        runtime.threadModel = wantedModel
+        runtime.threadPermission = wantedPermission
+      }
       const turnId = isRecord(result) && isRecord(result.turn) ? stringField(result.turn.id) : null
       if (turnId && this.turnStillWanted(runtime, turn)) turn.id = turnId
       else if (turnId) {
@@ -2879,14 +3777,35 @@ export class CodexRemoteService {
       }
       this.emitSoon()
     } catch (error) {
+      if (awaitingTurnStart && error instanceof AppServerTimeoutError) this.abandonTurnStart(runtime, awaitingTurnStart)
       if (runtime.turn !== turn) return
       this.clearTurn(runtime)
       this.dropThread(runtime)
+      if (error instanceof RemoteConversationError) {
+        // 接不上电脑页上选的那段（第 26、27 句）：Codex 的原话不上手机，「最近一次」那行跟手机上收到的一样。
+        this.settleTurn(runtime, turn, 'failed', error.reply)
+        await this.sendText(runtime, error.reply)
+        this.emitSoon()
+        return
+      }
       const { reply, reason } = this.turnFailureReply(runtime, 'remote.turn-start-failed', { message: errorMessage(error, '') || null, additionalDetails: null, codexErrorInfo: undefined })
       this.settleTurn(runtime, turn, 'failed', reason)
       await this.sendText(runtime, reply)
       this.emitSoon()
     }
+  }
+
+  /**
+   * 开着的对话中途改了「手机端使用的模型」：这一句的 turn/start 要带的 model；不用改是 null。
+   * Codex 把 turn/start 里的 model 一直用到这份对话结束，所以改回「与电脑端相同」时也得明着带上电脑上那个
+   * （config/read 读生效配置），不然还用着之前单独选的。读不出来就先接着用，记一笔，下次开新对话时自然回到电脑上的。
+   */
+  private async turnModel(client: CodexAppServerClient, runtime: ChannelRuntime, workspace: string, wanted: string | null): Promise<string | null> {
+    if (wanted === runtime.threadModel) return null
+    if (wanted) return wanted
+    const computer = configuredCodexModel(await client.request('config/read', { cwd: workspace }).catch(() => null))
+    if (!computer) this.options.log('warn', 'remote.model-follow-unread', { channel: runtime.id })
+    return computer
   }
 
   /**
@@ -2914,8 +3833,9 @@ export class CodexRemoteService {
           clientVersion: this.options.appVersion,
           log: (level, event, detail) => this.options.log(level, `remote.${event}`, detail),
         })
+        let initialize: unknown
         try {
-          await client.start({
+          initialize = await client.start({
             onNotification: (method, params) => this.onNotification(method, params),
             onServerRequest: (method, params) => this.onServerRequest(method, params),
             onExit: (detail) => this.onCodexExit(client, detail),
@@ -2931,9 +3851,10 @@ export class CodexRemoteService {
         if (this.disposed || !this.hasEnabledChannel()) {
           this.options.log('info', 'remote.codex-start-abandoned')
           await this.retireClient(client)
-          throw new Error('手机遥控已经关了')
+          throw new Error('遥控已关闭')
         }
         this.codex = client
+        this.codexVersion = readCodexVersion(initialize)
         if (this.codexStartFailed) {
           this.codexStartFailed = false
           this.emitSoon()
@@ -2999,6 +3920,7 @@ export class CodexRemoteService {
   private onNotification(method: string, params: unknown): void {
     if (!isRecord(params)) return
     const runtime = this.runtimeByThread(params.threadId)
+    if (!runtime && this.abandonedTurnThreads.size > 0) this.interruptAbandonedTurn(params)
     // 停掉的上一轮迟到的通知：不算这一轮的动静，它的回答、报错、结束也都不往这一轮上记。
     if (runtime?.turn && belongsToOtherTurn(runtime.turn.id, runtime.retiredTurnIds, params.turnId)) return
     // 这一轮的任何通知都算有动静（item/agentMessage/delta 这类不另处理的也算）。

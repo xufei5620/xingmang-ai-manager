@@ -396,3 +396,277 @@ describe('CanvasProjectAssetManager', () => {
     await expect(listed('trash')).resolves.toEqual([])
   })
 })
+
+describe('the account-wide library the main window lists (融合第 5 步)', () => {
+  let serial = 0
+  /** Like context(), but every stored file gets an id of its own, across all folders of a test. */
+  function distinct(outputRoot: string) {
+    const randomBytes = (size: number) => Buffer.alloc(size, (serial = serial % 250 + 1))
+    return createCanvasProjectAssetContext(
+      new AiAssetStore({ outputRoot, now, randomBytes }),
+      new AiVideoAssetStore({ outputRoot, now, randomBytes }),
+      new AiAudioAssetStore({ outputRoot, now }),
+      new AiAssetMetadataStore({ outputRoot, now }),
+      async () => undefined,
+    )
+  }
+  function localPng(width: number): Buffer {
+    const bytes = Buffer.alloc(24)
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes)
+    bytes.write('IHDR', 12, 'ascii')
+    bytes.writeUInt32BE(width, 16)
+    bytes.writeUInt32BE(3, 20)
+    return bytes
+  }
+  const ids = (page: { items: readonly { assetId: string }[] }) => page.items.map((item) => item.assetId).sort()
+
+  it('lists the account library together with what each unarchived project made in its own folder', async () => {
+    const projects = new CanvasProjectStore(temporaryRoot('xingmang-library-projects-'))
+    const workspace = temporaryRoot('xingmang-library-workspace-')
+    const shelvedWorkspace = temporaryRoot('xingmang-library-shelved-')
+    const globalContext = distinct(temporaryRoot('xingmang-library-global-'))
+    const manager = new CanvasProjectAssetManager({ projects, global: globalContext, create: distinct })
+    const project = (await projects.create(7, '双十一主图', workspace)).project
+    const shelved = (await projects.create(7, '收起来的', shelvedWorkspace)).project
+
+    const chatImage = await globalContext.images.storeBase64(7, png)
+    const made = await manager.storeBase64(7, png, { projectId: project.id, prompt: '一只橘猫' })
+    const clip = await manager.storeMp4(7, mp4(), { taskId: 'video_library', projectId: project.id, prompt: '海边日落' })
+    const folder = await manager.forProject(7, project.id)
+    // What the canvas does for a picked or dropped file: a material, not a work.
+    const imported = await folder.images.storeLocalBytes(7, localPng(2))
+    await folder.media.setSource(7, imported.assetId, 'imported')
+    const binned = await manager.storeBase64(7, png, { projectId: project.id })
+    await folder.media.softDelete(7, binned.assetId)
+    const inShelved = await manager.storeBase64(7, png, { projectId: shelved.id })
+    await projects.setArchived(7, shelved.id, true)
+
+    const page = await manager.listLibrary(7)
+    expect(ids(page)).toEqual([chatImage.assetId, made.assetId, clip.assetId].sort())
+    expect(page.counts).toEqual({ image: 2, video: 1, film: 0 })
+    const origin = { projectId: project.id, projectName: '双十一主图' }
+    expect(page.items.find((item) => item.assetId === chatImage.assetId)).not.toHaveProperty('canvas')
+    expect(page.items.find((item) => item.assetId === made.assetId)).toMatchObject({ mediaType: 'image', prompt: '一只橘猫', canvas: origin })
+    expect(page.items.find((item) => item.assetId === clip.assetId)).toMatchObject({ mediaType: 'video', prompt: '海边日落', canvas: origin })
+    expect(JSON.stringify(page)).not.toContain(path.basename(workspace))
+    expect(ids(page)).not.toContain(inShelved.assetId)
+
+    // One project on its own, by its name in the search, and by kind.
+    expect(ids(await manager.listLibrary(7, { canvasProjectId: project.id }))).toEqual([made.assetId, clip.assetId].sort())
+    expect(ids(await manager.listLibrary(7, { search: '双十一' }))).toEqual([made.assetId, clip.assetId].sort())
+    expect(ids(await manager.listLibrary(7, { kind: 'film', filmAssetIds: [clip.assetId, made.assetId] }))).toEqual([clip.assetId])
+    // An archived project, a project of nobody and another account list nothing; a malformed id is refused.
+    await expect(manager.listLibrary(7, { canvasProjectId: shelved.id })).resolves.toMatchObject({ items: [], total: 0 })
+    await expect(manager.listLibrary(7, { canvasProjectId: '99999999-9999-4999-8999-999999999999' })).resolves.toMatchObject({ items: [], total: 0 })
+    await expect(manager.listLibrary(8)).resolves.toMatchObject({ items: [], total: 0 })
+    await expect(manager.listLibrary(8, { canvasProjectId: project.id })).resolves.toMatchObject({ items: [], total: 0 })
+    await expect(manager.listLibrary(7, { canvasProjectId: '../../etc/passwd' })).rejects.toThrow('画布项目标识无效')
+    await expect(manager.listLibrary(7, { limit: 61 })).rejects.toThrow('AI 素材分页数量无效')
+    await expect(manager.listLibrary(0)).rejects.toThrow('画布项目账号标识无效')
+  })
+
+  it('marks what a project without a folder holds, and calls only what was generated its own work', async () => {
+    const legacyId = '11111111-1111-4111-8111-111111111111'
+    const otherId = '22222222-2222-4222-8222-222222222222'
+    const globalContext = distinct(temporaryRoot('xingmang-library-legacy-global-'))
+    const sources = [
+      { id: legacyId, name: '旧项目', workspaceStatus: 'legacy' as const, assetIds: [] as string[] },
+      { id: otherId, name: '后来的', workspaceStatus: 'legacy' as const, assetIds: [] as string[] },
+    ]
+    const manager = new CanvasProjectAssetManager({
+      projects: { list: vi.fn(async () => []), getUsableWorkspaceDirectory: vi.fn(async () => null), listLibrarySources: vi.fn(async () => sources) },
+      global: globalContext,
+      create: distinct,
+    })
+    const generated = await manager.storeBase64(7, png, { projectId: legacyId, prompt: '一只橘猫' })
+    const chatImage = await globalContext.images.storeBase64(7, png)
+    const untouched = await globalContext.images.storeBase64(7, png)
+    sources[0]!.assetIds = [generated.assetId, chatImage.assetId, 'z'.repeat(43)]
+    // The first project in the list keeps the asset when two hold it.
+    sources[1]!.assetIds = [generated.assetId]
+
+    const page = await manager.listLibrary(7)
+    expect(ids(page)).toEqual([generated.assetId, chatImage.assetId, untouched.assetId].sort())
+    expect(page.items.find((item) => item.assetId === generated.assetId)?.canvas).toEqual({ projectId: legacyId, projectName: '旧项目' })
+    expect(page.items.find((item) => item.assetId === chatImage.assetId)?.canvas).toEqual({ projectId: legacyId, projectName: '旧项目', used: true })
+    expect(page.items.find((item) => item.assetId === untouched.assetId)).not.toHaveProperty('canvas')
+
+    expect(ids(await manager.listLibrary(7, { canvasProjectId: legacyId }))).toEqual([generated.assetId])
+    expect(ids(await manager.listLibrary(7, { canvasProjectId: otherId }))).toEqual([generated.assetId])
+  })
+
+  it('lists a copied asset once, lists nothing for a folder that cannot be reached, and never fails the page', async () => {
+    const firstId = '11111111-1111-4111-8111-111111111111'
+    const copyId = '22222222-2222-4222-8222-222222222222'
+    const goneId = '33333333-3333-4333-8333-333333333333'
+    const brokenId = '44444444-4444-4444-8444-444444444444'
+    const firstWorkspace = temporaryRoot('xingmang-library-first-')
+    const copyWorkspace = temporaryRoot('xingmang-library-copy-')
+    const globalContext = distinct(temporaryRoot('xingmang-library-copy-global-'))
+    const listLibrarySources = vi.fn(async () => [
+      { id: copyId, name: '副本', workspaceStatus: 'ready' as const, assetIds: [] },
+      { id: firstId, name: '原项目', workspaceStatus: 'ready' as const, assetIds: [] },
+      { id: goneId, name: '文件夹不在了', workspaceStatus: 'missing' as const, assetIds: [] },
+      { id: brokenId, name: '读不了', workspaceStatus: 'ready' as const, assetIds: [] },
+    ])
+    const manager = new CanvasProjectAssetManager({
+      projects: {
+        list: vi.fn(async () => []),
+        getUsableWorkspaceDirectory: vi.fn(async (_userId: number, projectId: string) => {
+          if (projectId === firstId) return firstWorkspace
+          if (projectId === copyId) return copyWorkspace
+          throw new Error('画布项目工作文件夹不存在')
+        }),
+        listLibrarySources,
+      },
+      global: globalContext,
+      create: distinct,
+    })
+    const original = await manager.storeBase64(7, png, { projectId: firstId })
+    // A copied project keeps the ids of what it copied.
+    fs.cpSync(path.join(firstWorkspace, 'assets'), path.join(copyWorkspace, 'assets'), { recursive: true })
+
+    const page = await manager.listLibrary(7)
+    expect(ids(page)).toEqual([original.assetId])
+    expect(page.total).toBe(1)
+    await expect(manager.listLibrary(7, { canvasProjectId: goneId })).resolves.toMatchObject({ total: 0 })
+    await expect(manager.listLibrary(7, { canvasProjectId: brokenId })).resolves.toMatchObject({ total: 0 })
+
+    // Without a project list the account library still lists.
+    const chatImage = await globalContext.images.storeBase64(7, png)
+    const failing = new CanvasProjectAssetManager({
+      projects: { list: vi.fn(async () => []), getUsableWorkspaceDirectory: vi.fn(async () => null), listLibrarySources: vi.fn(async () => { throw new Error('disk') }) },
+      global: globalContext,
+      create: distinct,
+    })
+    expect(ids(await failing.listLibrary(7))).toEqual([chatImage.assetId])
+    const plain = new CanvasProjectAssetManager({ projects: { list: vi.fn(async () => []), getUsableWorkspaceDirectory: vi.fn(async () => null) }, global: globalContext, create: distinct })
+    expect(ids(await plain.listLibrary(7))).toEqual([chatImage.assetId])
+  })
+
+  it('reads the project list and each folder at most once in five seconds, and shows a new work at once', async () => {
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const workspace = temporaryRoot('xingmang-library-snapshot-')
+    let clock = 1_000_000
+    const listLibrarySources = vi.fn(async () => [{ id: projectId, name: '项目', workspaceStatus: 'ready' as const, assetIds: [] }])
+    const manager = new CanvasProjectAssetManager({
+      projects: { list: vi.fn(async () => []), getUsableWorkspaceDirectory: vi.fn(async () => workspace), listLibrarySources },
+      global: distinct(temporaryRoot('xingmang-library-snapshot-global-')),
+      create: distinct,
+      now: () => clock,
+    })
+    const first = await manager.storeBase64(7, png, { projectId })
+    expect(ids(await manager.listLibrary(7))).toEqual([first.assetId])
+    expect(listLibrarySources).toHaveBeenCalledOnce()
+
+    // What the manager stores itself is listed straight away.
+    const second = await manager.storeBase64(7, png, { projectId })
+    const clip = await manager.storeMp4(7, mp4(), { taskId: 'video_snapshot', projectId })
+    expect(ids(await manager.listLibrary(7))).toEqual([first.assetId, second.assetId, clip.assetId].sort())
+
+    // A file that reached the folder some other way shows after the snapshot ages out.
+    const folder = await manager.forProject(7, projectId)
+    const aside = await folder.images.storeBase64(7, png)
+    clock += 4_999
+    expect(ids(await manager.listLibrary(7))).not.toContain(aside.assetId)
+    expect(listLibrarySources).toHaveBeenCalledOnce()
+    clock += 1
+    expect(ids(await manager.listLibrary(7))).toContain(aside.assetId)
+    expect(listLibrarySources).toHaveBeenCalledTimes(2)
+    // A clock that went backwards does not keep an old snapshot alive.
+    clock -= 60_000
+    await manager.listLibrary(7)
+    expect(listLibrarySources).toHaveBeenCalledTimes(3)
+  })
+
+  it('names, for the migration, the folders and the works the library lists from each and nothing else', async () => {
+    const firstId = '11111111-1111-4111-8111-111111111111'
+    const copyId = '22222222-2222-4222-8222-222222222222'
+    const goneId = '33333333-3333-4333-8333-333333333333'
+    const legacyId = '44444444-4444-4444-8444-444444444444'
+    const firstWorkspace = temporaryRoot('xingmang-folders-first-')
+    const copyWorkspace = temporaryRoot('xingmang-folders-copy-')
+    const globalContext = distinct(temporaryRoot('xingmang-folders-global-'))
+    const sources = [
+      { id: copyId, name: '副本', workspaceStatus: 'ready' as const, assetIds: [] as string[] },
+      { id: firstId, name: '原项目', workspaceStatus: 'ready' as const, assetIds: [] as string[] },
+      { id: goneId, name: '文件夹不在了', workspaceStatus: 'missing' as const, assetIds: [] as string[] },
+      { id: legacyId, name: '旧项目', workspaceStatus: 'legacy' as const, assetIds: [] as string[] },
+    ]
+    const workspaces: Record<string, string> = { [firstId]: firstWorkspace, [copyId]: copyWorkspace }
+    const manager = new CanvasProjectAssetManager({
+      realmId: 'api-account',
+      projects: {
+        list: vi.fn(async () => []),
+        getUsableWorkspaceDirectory: vi.fn(async (_userId: number, projectId: string) => {
+          if (workspaces[projectId]) return workspaces[projectId]
+          if (projectId === legacyId) return null
+          throw new Error('画布项目工作文件夹不存在')
+        }),
+        listLibrarySources: vi.fn(async () => sources),
+      },
+      global: globalContext,
+      create: distinct,
+    })
+    const chatImage = await globalContext.images.storeBase64(7, png)
+    const inLegacy = await manager.storeBase64(7, png, { projectId: legacyId })
+    sources[3]!.assetIds = [inLegacy.assetId]
+    const original = await manager.storeBase64(7, png, { projectId: firstId, prompt: '一只橘猫' })
+    // A copied project keeps the ids of what it copied; the copy also made one of its own.
+    fs.cpSync(path.join(firstWorkspace, 'assets'), path.join(copyWorkspace, 'assets'), { recursive: true })
+    const ownCopyWork = await manager.storeMp4(7, mp4(), { taskId: 'video_folders', projectId: copyId })
+    const material = await (await manager.forProject(7, copyId)).images.storeLocalBytes(7, localPng(3))
+    await (await manager.forProject(7, copyId)).media.setSource(7, material.assetId, 'imported')
+
+    const folders = await manager.listLibraryFolders(7)
+    const page = await manager.listLibrary(7)
+    // The account library's own works, the folderless project's among them, plus what each folder lists: the page, exactly.
+    expect([chatImage.assetId, inLegacy.assetId, ...folders.flatMap((folder) => folder.assetIds)].sort()).toEqual(page.items.map((item) => item.assetId).sort())
+    expect(folders.map((folder) => folder.outputRoot).sort()).toEqual([
+      path.join(copyWorkspace, 'assets', 'realms', 'api-account'),
+      path.join(firstWorkspace, 'assets', 'realms', 'api-account'),
+    ].sort())
+    // The same work in two folders is named once; the copy's own work, from the copy.
+    expect(folders.flatMap((folder) => folder.assetIds).sort()).toEqual([original.assetId, ownCopyWork.assetId].sort())
+    const copyFolder = folders.find((folder) => folder.outputRoot.startsWith(copyWorkspace))!
+    expect(copyFolder.assetIds).toContain(ownCopyWork.assetId)
+    expect(copyFolder.assetIds).not.toContain(material.assetId)
+    const holder = folders.find((folder) => folder.assetIds.includes(original.assetId))!
+    expect((await holder.metadata.getAll(7))[original.assetId]).toMatchObject({ source: 'generated', prompt: '一只橘猫' })
+
+    await expect(manager.listLibraryFolders(8)).resolves.toEqual([])
+    await expect(manager.listLibraryFolders(0)).rejects.toThrow('画布项目账号标识无效')
+  })
+})
+
+describe('holderOf', () => {
+  it('answers with the place that holds a picture or video, and with the account library when none does', async () => {
+    const projects = new CanvasProjectStore(temporaryRoot('xingmang-holder-projects-'))
+    const workspace = temporaryRoot('xingmang-holder-workspace-')
+    const globalRoot = temporaryRoot('xingmang-holder-global-')
+    const globalContext = context(globalRoot, 2)
+    const manager = new CanvasProjectAssetManager({ projects, global: globalContext, create: (outputRoot) => context(outputRoot, 3) })
+    const project = (await projects.create(7, '项目', workspace)).project
+    const chatImage = await globalContext.images.storeBase64(7, png)
+    const made = await manager.storeBase64(7, png, { projectId: project.id })
+    const clip = await manager.storeMp4(7, mp4(), { taskId: 'video_holder', projectId: project.id })
+
+    await expect(manager.holderOf(7, 'image', chatImage.assetId)).resolves.toBe(globalContext)
+    const folder = await manager.holderOf(7, 'image', made.assetId)
+    expect(folder).not.toBe(globalContext)
+    await expect(folder.images.resolveOwnedFilePath(7, made.assetId)).resolves.toContain(workspace)
+    await expect((await manager.holderOf(7, 'video', clip.assetId)).videos.resolveOwnedFilePath(7, clip.assetId)).resolves.toContain(workspace)
+    // A fresh manager has remembered nothing and still finds the folder.
+    const fresh = new CanvasProjectAssetManager({ projects, global: globalContext, create: (outputRoot) => context(outputRoot, 3) })
+    await expect((await fresh.holderOf(7, 'image', made.assetId)).images.readOwned(7, made.assetId)).resolves.toMatchObject({ asset: { assetId: made.assetId } })
+
+    // Nobody's asset, the wrong kind and another account get the account library, whose own read then refuses.
+    for (const holder of [
+      await manager.holderOf(7, 'image', 'z'.repeat(43)),
+      await manager.holderOf(7, 'video', made.assetId),
+      await manager.holderOf(8, 'image', made.assetId),
+    ]) expect(holder).toBe(globalContext)
+    await expect(globalContext.images.readOwned(8, made.assetId)).rejects.toThrow(missingAiAssetMessages.image)
+    await expect(manager.holderOf(0, 'image', made.assetId)).rejects.toThrow('画布项目账号标识无效')
+  })
+})

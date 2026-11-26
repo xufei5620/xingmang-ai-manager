@@ -47,6 +47,16 @@ export interface WeekSpend {
   days: Array<WeekSpendDay & { quota: number }>
 }
 
+/**
+ * 两次查回来的柱子画出来一样：同一个账号、同样几天、每天花的一样。今天那一根的 end 每次查都是「现在」，
+ * 不算在内。一样就留着手上那一份，首页不用跟着余额刷新重画（R8）。
+ */
+export function sameWeekSpend(a: WeekSpend | null, b: WeekSpend | null): boolean {
+  if (a === b) return true
+  if (!a || !b || a.scope !== b.scope || a.days.length !== b.days.length) return false
+  return a.days.every((day, index) => day.start === b.days[index].start && day.quota === b.days[index].quota)
+}
+
 /** 和余额卡上的用量同一个有效期：一分钟内回首页不再问后台。 */
 export const weekSpendTtlMs = 60_000
 
@@ -138,7 +148,7 @@ export function createWeekSpendLoader(
       // 不会把新账号的数交回来、再记到上一个账号名下（D11）。
       const data = await bridge.getAccountDashboard({ startTimestamp: Math.floor(day.start / 1000), endTimestamp: Math.floor(day.end / 1000) }, scope)
       // 只给全部累计、不分时段的后台画不出每天一根柱子。
-      if (data.coverage === 'all-time-summary') throw new Error('这个账号读不出每天的花费')
+      if (data.coverage === 'all-time-summary') throw new Error('该账号无法获取每日花费')
       // 查到一天就存一天：同一趟里别的天没查成，查成的这几天下次也不用再问。
       if (!today && askedAt.getTime() - (day.end + 1000) >= weekSpendSettleMs) {
         settled.set(day.start, data.quota)

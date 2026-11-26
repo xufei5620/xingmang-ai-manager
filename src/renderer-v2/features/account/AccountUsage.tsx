@@ -168,10 +168,10 @@ function UsageDashboard({
     return (
       <section className="v2-acct-card v2-usage-stat">
         <span className="v2-acct-muted">{title}</span>
-        <strong className={`v2-usage-stat-value${gold ? ' is-gold' : ''}`} title={value === undefined && failed ? '暂时没有读到' : undefined}>
+        <strong className={`v2-usage-stat-value${gold ? ' is-gold' : ''}`} title={value === undefined && failed ? '暂未获取' : undefined}>
           {value ?? (failed ? '—' : <PlaceholderBar width="4em" />)}
         </strong>
-        {value === undefined && failed ? <small>暂时没有读到</small> : small && <small>{small}</small>}
+        {value === undefined && failed ? <small>暂未获取</small> : small && <small>{small}</small>}
       </section>
     )
   }
@@ -186,13 +186,13 @@ function UsageDashboard({
       ) : (
         <section className="v2-acct-well v2-usage-summary-only">
           <strong>只有累计数</strong>
-          <span className="v2-acct-muted">这个账号只提供从开始到现在的累计用量。</span>
+          <span className="v2-acct-muted">该账号仅提供累计用量。</span>
         </section>
       )}
       {failed && (
         <Notice
           tone="bad"
-          title="当前账号的用量暂时没有读到"
+          title="当前账号用量获取失败"
           body={<FailureReason error={dashboard.error} detail={dashboard.detail} />}
           testId="dashboard-error"
           actions={
@@ -215,14 +215,14 @@ function UsageDashboard({
               <SpendChart bars={data.bars} balance={balance} />
             ) : failed ? (
               <div className="v2-business-chart-empty v2-usage-chart-empty" data-testid="dashboard-trend-error">
-                <p>花费趋势暂时没有读到</p>
+                <p>花费趋势获取失败</p>
                 <Button size="sm" icon={RefreshCw} onClick={() => void dashboard.reload()}>
                   重新加载
                 </Button>
               </div>
             ) : (
               <div className="v2-business-chart-empty v2-usage-chart-empty">
-                <p>{dashboard.loading ? '正在读取用量…' : '这个时间段还没有用量'}</p>
+                <p>{dashboard.loading ? '正在读取用量…' : '该时间段暂无用量'}</p>
               </div>
             )}
           </section>
@@ -266,7 +266,7 @@ function ViewSwitch({ view, views, onChange }: { view: UsageView; views: readonl
   )
 }
 
-const priceListUnreadable = '价格表暂时读不到，稍后再试。不影响使用。'
+const priceListUnreadable = '价格表暂时无法获取，请稍后重试，不影响使用。'
 
 /**
  * 价格表（Fable 第二轮 Q3）：这个账号能用的模型在各分组的价，已经乘上分组倍率。头一回切到这一段才去读，
@@ -307,7 +307,7 @@ function AccountPrices({ api, refreshRequest, switcher }: { api: V2Bridge; refre
       {!unreadable && rows.length > 0 && (
         <p className="v2-usage-price-note" data-testid="account-prices-note">
           已经算上分组的倍数。实际扣多少以用量账单为准。
-          {rows.some((row) => row.kind === 'tiered') && '分档计价的，用过以后在调用明细里点开那一次，能看到每一档的价格。'}
+          {rows.some((row) => row.kind === 'tiered') && '分档计价的模型，可在调用明细中展开对应记录查看各档价格。'}
         </p>
       )}
     </>

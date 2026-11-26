@@ -71,6 +71,13 @@ export type SeededToolDefault = typeof seededToolDefaultIds[number]
 export interface AppSettings {
   version: 2
   workspace: string
+  /**
+   * 设置页「项目文件夹」那一行最近一次点「更换」选定 workspace 的时刻（毫秒，0.2.25 总单 Q1）。首页「打开」拿它
+   * 跟这个工具最近一条对话的时间比：设置页换得更晚，就先进换的这个；之后又在别的文件夹里用过这个工具，以那次为准。
+   * 只有 settings:save 带着 workspaceChosen 时由主进程记上；workspace 被别处（首页「选择其他文件夹…」、新建项目
+   * 文件夹）换成另一个文件夹就去掉，它说的已经不是现在这个了。缺省 = 旧行为：首页先看各工具自己的对话记录。
+   */
+  workspaceChosenAt?: number
   theme: AppTheme
   checkUpdatesOnStartup: boolean
   runDiagnosticsOnStartup: boolean
@@ -104,7 +111,7 @@ export interface AppSettings {
   /** IPC runtime snapshot only: 工具线路这会儿要给客户看的状态。 */
   readonly relayToolRouteStatus?: RelayToolRouteStatus
   /**
-   * 「换线路后提醒我重开工具」。缺省 = 开，和 crashReporting 一样只把客户亲手关掉的 false 落盘。
+   * 「切换线路后提醒重新打开工具」。缺省 = 开，和 crashReporting 一样只把客户亲手关掉的 false 落盘。
    * 关掉以后只在首页标「需重开生效」（xm 三线路 C10）。
    */
   toolRouteRestartHints?: boolean
@@ -136,7 +143,7 @@ export interface AppSettings {
    */
   alwaysInstallLatestCli?: boolean
   /**
-   * 设置里「只让 Claude Code 改项目文件夹里的文件」（Fable 第二轮 Q6）。缺省 = 关，不改老客户的习惯。
+   * 设置里「仅允许 Claude Code 修改项目文件夹内的文件」（Fable 第二轮 Q6）。缺省 = 关，不改老客户的习惯。
    * 只经 config:set-claude-write-boundary 改（它同时对齐 Claude Code 的配置），settings:save 不收这一项。
    */
   claudeWritesInsideProject?: boolean
@@ -145,6 +152,12 @@ export interface AppSettings {
    * 只经 config:set-claude-commit-attribution 改（它同时对齐 Claude Code 的配置），settings:save 不收这一项。
    */
   claudeHidesCommitAttribution?: boolean
+  /**
+   * 设置里「给 AI 的长期嘱咐」（总单 Q4 C5）：上次保存的那段话，写进三家工具全局说明里星芒那一段
+   * （standing-instructions.ts）。缺省 = 没写过。只经 config:save-standing-instructions 改（它同时写那三份文件），
+   * settings:save 不收这一项。
+   */
+  standingInstructions?: string
   /**
    * 切回官方账号时问过客户「要不要让官方 Claude Code 先问再执行？」（Fable 复查第一轮 3）。只问一次，点哪个都算问过，
    * 只落 true。只经 config:answer-claude-command-confirmation 记，settings:save 不收这一项。
@@ -192,7 +205,7 @@ export interface AppSettings {
    */
   autoUpdate?: boolean
   /**
-   * 「用显卡加速显示」。缺省 = 开启，和 crashReporting 一样只把用户亲手关掉的 false
+   * 「使用显卡加速显示」。缺省 = 开启，和 crashReporting 一样只把用户亲手关掉的 false
    * 落盘。主进程在 ready 之前读它，改了要重开软件才生效。
    */
   hardwareAcceleration?: boolean
@@ -254,6 +267,13 @@ export interface AppSettings {
 export interface AppSettingsUpdate {
   version: 2
   workspace?: string
+  /**
+   * settings:save 入参：这次的 workspace 是设置页那一行亲手换的。是哪一刻由主进程定（处理器把它换成
+   * workspaceChosenAt），渲染层给不出时间。不带 workspace 时不算数，本身不落盘。
+   */
+  workspaceChosen?: boolean
+  /** Only the host sets this (see AppSettings.workspaceChosenAt); settings:save never takes it from the renderer. */
+  workspaceChosenAt?: number
   theme?: AppTheme
   checkUpdatesOnStartup?: boolean
   runDiagnosticsOnStartup?: boolean
@@ -266,6 +286,8 @@ export interface AppSettingsUpdate {
   alwaysInstallLatestCli?: boolean
   claudeWritesInsideProject?: boolean
   claudeHidesCommitAttribution?: boolean
+  /** '' 清空。只由 config:save-standing-instructions 带，settings:save 的解析不收。 */
+  standingInstructions?: string
   /** true is sticky and false is ignored, like trayHintShown. */
   claudeCommandConfirmationAnswered?: boolean
   crashReporting?: boolean
@@ -307,6 +329,43 @@ export interface AppSettingsWriteHooks {
 }
 
 const writeQueues = new Map<string, Promise<void>>()
+
+/**
+ * settings.json 每换成一份新内容就在这里说一声。主窗口的界面缩放以前靠每 0.5 秒 stat 一次这个文件
+ * 来发现变化（platform/renderer-v2.ts，0.2.24 性能深查 R5），缩到托盘也照跑；能写这个文件的只有本进程
+ * 里下面这几个函数，换完直接通知就够了。内容没变不写，也就不通知。
+ */
+const settingsWriteListeners = new Map<string, Set<() => void>>()
+
+function settingsFileKey(filePath: string): string {
+  return path.resolve(filePath).toLowerCase()
+}
+
+/** 订阅这份设置文件被换成新内容；返回退订函数。监听器抛错不影响那次写入。 */
+export function onAppSettingsWritten(filePath: string, listener: () => void): () => void {
+  const key = settingsFileKey(filePath)
+  const listeners = settingsWriteListeners.get(key) ?? new Set<() => void>()
+  listeners.add(listener)
+  settingsWriteListeners.set(key, listeners)
+  return () => {
+    const current = settingsWriteListeners.get(key)
+    if (!current) return
+    current.delete(listener)
+    if (current.size === 0) settingsWriteListeners.delete(key)
+  }
+}
+
+function notifySettingsWritten(filePath: string): void {
+  const listeners = settingsWriteListeners.get(settingsFileKey(filePath))
+  if (!listeners) return
+  for (const listener of [...listeners]) {
+    try {
+      listener()
+    } catch {
+      // The file is already replaced; a listener failing must not turn that write into a rejection.
+    }
+  }
+}
 const MAX_SETTINGS_BYTES = 1024 * 1024
 
 export function defaultAppSettings(homeDirectory = os.homedir()): AppSettings {
@@ -425,9 +484,22 @@ function parseRelayModelsBeforeOfficial(value: unknown): Partial<Record<Provider
   return models
 }
 
+// 手改坏了的（不是字符串、太长）当没写过：设置页那一格空着，三家文件里那一段原样留着，下次保存再换。
+// 上限跟 standing-instructions.ts 的 STANDING_INSTRUCTIONS_MAX_LENGTH 一样；这里不 import 它，免得设置文件
+// 的读写拖上配置写入那一串模块。
+function parseStandingInstructions(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const text = value.trim()
+  return text && [...text].length <= 2000 ? text : undefined
+}
+
 function parseSeededToolDefaults(value: unknown): SeededToolDefault[] {
   if (!Array.isArray(value)) return []
   return seededToolDefaultIds.filter((entry) => value.includes(entry))
+}
+
+function parseWorkspaceChosenAt(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined
 }
 
 function requireWorkspace(value: unknown): string {
@@ -474,9 +546,12 @@ function parseSettingsValue(value: unknown): AppSettings {
   const offeredModelUpgrades = parseOfferedModelUpgrades(value.offeredModelUpgrades)
   const seededToolDefaults = parseSeededToolDefaults(value.seededToolDefaults)
   const relayModelsBeforeOfficial = parseRelayModelsBeforeOfficial(value.relayModelsBeforeOfficial)
+  const standingInstructions = parseStandingInstructions(value.standingInstructions)
+  const workspaceChosenAt = parseWorkspaceChosenAt(value.workspaceChosenAt)
   return {
     version: 2,
     workspace: requireWorkspace(value.workspace),
+    ...(workspaceChosenAt !== undefined ? { workspaceChosenAt } : {}),
     theme: firstAppearance ? 'light' : parseTheme(value.theme),
     checkUpdatesOnStartup: optionalBoolean(value.checkUpdatesOnStartup, true),
     runDiagnosticsOnStartup: optionalBoolean(
@@ -494,6 +569,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(optionalBoolean(value.alwaysInstallLatestCli, false) ? { alwaysInstallLatestCli: true as const } : {}),
     ...(optionalBoolean(value.claudeWritesInsideProject, false) ? { claudeWritesInsideProject: true as const } : {}),
     ...(optionalBoolean(value.claudeHidesCommitAttribution, false) ? { claudeHidesCommitAttribution: true as const } : {}),
+    ...(standingInstructions ? { standingInstructions } : {}),
     ...(value.claudeCommandConfirmationAnswered === true ? { claudeCommandConfirmationAnswered: true as const } : {}),
     // Only the explicit opt-out survives a round trip; anything else (absent,
     // true, a hand-edited string) reads back as "reporting on".
@@ -629,10 +705,33 @@ async function performAtomicSettingsWrite(
       removeIfPresent(backupTemporaryPath),
     ])
   }
+  notifySettingsWritten(filePath)
+}
+
+/**
+ * 磁盘上已经是这份内容就不写，写了返回 true。开机界面会把当前深浅色发一遍（window:set-theme），
+ * 关窗会存一遍窗口位置，多数时候什么都没变，以前也照样走一遍临时文件、fsync、拷 .bak、改名
+ * （0.2.24 性能深查 R4）。C 盘一满、或杀毒软件锁住这个文件，这次白写还会失败，跟开机那次整理
+ * （normalizeAppSettings）想避开的是同一件事，所以两处用同一个口径。
+ */
+async function writeSettingsIfChanged(
+  filePath: string,
+  settings: AppSettings,
+  hooks: AppSettingsWriteHooks,
+): Promise<boolean> {
+  let current: string | null = null
+  try {
+    current = readSafeUtf8FileSync(filePath, '应用设置文件', MAX_SETTINGS_BYTES)
+  } catch {
+    // Unreadable primary: fall through and rewrite it from the effective record.
+  }
+  if (current === settingsContent(settings)) return false
+  await performAtomicSettingsWrite(filePath, settings, hooks)
+  return true
 }
 
 function enqueueSettingsOperation<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
-  const queueKey = path.resolve(filePath).toLowerCase()
+  const queueKey = settingsFileKey(filePath)
   const previous = writeQueues.get(queueKey) ?? Promise.resolve()
   const result = previous.then(operation)
   const tail = result.then(() => undefined, () => undefined)
@@ -672,6 +771,9 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     : update.alwaysInstallLatestCli
   const claudeWritesInsideProject = update.claudeWritesInsideProject ?? base.claudeWritesInsideProject
   const claudeHidesCommitAttribution = update.claudeHidesCommitAttribution ?? base.claudeHidesCommitAttribution
+  const standingInstructions = update.standingInstructions === undefined
+    ? base.standingInstructions
+    : parseStandingInstructions(update.standingInstructions)
   const crashReporting = update.crashReporting ?? base.crashReporting
   // Both sides are re-parsed, unlike the fields above which trust the base:
   // this one decides whether Codex starts with a local debugging port, so an
@@ -695,9 +797,15 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
   const offeredModelUpgrades = parseOfferedModelUpgrades([...(base.offeredModelUpgrades ?? []), ...(update.offeredModelUpgrades ?? [])])
   const seededToolDefaults = parseSeededToolDefaults([...(base.seededToolDefaults ?? []), ...(update.seededToolDefaults ?? [])])
   const relayModelsBeforeOfficial = parseRelayModelsBeforeOfficial({ ...base.relayModelsBeforeOfficial, ...update.relayModelsBeforeOfficial })
+  const workspace = update.workspace ?? base.workspace
+  // 设置页换的那一刻跟着那个文件夹走：别处把 workspace 换成另一个文件夹，这个时刻说的就不是它了（Q1）。
+  // 同一个文件夹再写一遍（老界面存设置时整份带回、首页选择器又选到它）不算换。
+  const workspaceChosenAt = parseWorkspaceChosenAt(update.workspaceChosenAt)
+    ?? (workspace === base.workspace ? base.workspaceChosenAt : undefined)
   return {
     version: 2,
-    workspace: update.workspace ?? base.workspace,
+    workspace,
+    ...(workspaceChosenAt !== undefined ? { workspaceChosenAt } : {}),
     theme: update.theme ?? base.theme,
     checkUpdatesOnStartup: update.checkUpdatesOnStartup ?? base.checkUpdatesOnStartup,
     runDiagnosticsOnStartup: update.runDiagnosticsOnStartup ?? base.runDiagnosticsOnStartup,
@@ -710,6 +818,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(alwaysInstallLatestCli ? { alwaysInstallLatestCli: true as const } : {}),
     ...(claudeWritesInsideProject === true ? { claudeWritesInsideProject: true as const } : {}),
     ...(claudeHidesCommitAttribution === true ? { claudeHidesCommitAttribution: true as const } : {}),
+    ...(standingInstructions ? { standingInstructions } : {}),
     ...(update.claudeCommandConfirmationAnswered === true || base.claudeCommandConfirmationAnswered === true ? { claudeCommandConfirmationAnswered: true as const } : {}),
     ...(crashReporting === false ? { crashReporting: false as const } : {}),
     ...(update.crashReportingNoticeShown === true || base.crashReportingNoticeShown === true ? { crashReportingNoticeShown: true as const } : {}),
@@ -746,7 +855,7 @@ export function updateAppSettings(
   // window.
   return enqueueSettingsOperation(filePath, async () => {
     const merged = mergeAppSettings(readAppSettings(filePath, homeDirectory), update)
-    await performAtomicSettingsWrite(filePath, merged, hooks)
+    await writeSettingsIfChanged(filePath, merged, hooks)
     return merged
   })
 }
@@ -763,15 +872,7 @@ export function normalizeAppSettings(
 ): Promise<{ settings: AppSettings; written: boolean }> {
   return enqueueSettingsOperation(filePath, async () => {
     const settings = mergeAppSettings(readAppSettings(filePath, homeDirectory), { version: 2 })
-    let current: string | null = null
-    try {
-      current = readSafeUtf8FileSync(filePath, '应用设置文件', MAX_SETTINGS_BYTES)
-    } catch {
-      // Unreadable primary: fall through and rewrite it from the effective record.
-    }
-    if (current === settingsContent(settings)) return { settings, written: false }
-    await performAtomicSettingsWrite(filePath, settings, {})
-    return { settings, written: true }
+    return { settings, written: await writeSettingsIfChanged(filePath, settings, {}) }
   })
 }
 

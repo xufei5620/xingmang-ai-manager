@@ -40,7 +40,7 @@ afterEach(() => {
 const integrity = `sha512-${Buffer.alloc(64, 0x37).toString('base64')}`
 const officialRegistry = 'https://registry.npmjs.org'
 const mirrorRegistry = 'https://registry.npmmirror.com'
-const timedOutDetail = '下载太久没有完成，超时中止'
+const timedOutDetail = '下载长时间未完成，已超时中止'
 
 function temporaryDirectory(prefix: string): string {
   const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)))
@@ -692,7 +692,7 @@ describe('a CLI download that stops moving', () => {
       elapsedMs,
     })))
     // The progress line keeps its existing plain sentence; the approved words go to the install log.
-    expect(installProgressLabel(official[0])).toBe('还在下载，已经等了 15 秒。网慢时会久一点，不用管它。')
+    expect(installProgressLabel(official[0])).toBe('仍在下载，已等待 15 秒。网络较慢时耗时会更长，请耐心等待。')
     // A beat every fifteen seconds for up to half an hour stays out of the runtime log.
     expect(fixture.runtimeLog.log.mock.calls.some(([, , , message]) => String(message).startsWith('仍在从'))).toBe(false)
 
@@ -744,7 +744,7 @@ describe('a CLI download that stops moving', () => {
 })
 
 /** 装之前到官方源核对那一步没连上时的整句（Linux 没有加速，下一步说换网络）。 */
-const officialUnreachableMessage = `Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，${officialRegistryUnreachableMarker}。换个网络（比如手机热点）后再试。`
+const officialUnreachableMessage = `Claude Code 安装失败：安装前需先在 npm 官方源核对安装清单，${officialRegistryUnreachableMarker}。请更换网络（如手机热点）后重试。`
 
 // #1057 第5b条：国内没开加速时，到官方源核对依赖这一步常常一点数据也收不到，以前要等满 10 分钟。
 // 同上，只在 macOS / Linux 主机上跑。

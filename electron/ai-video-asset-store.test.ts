@@ -78,7 +78,7 @@ describe('AiVideoAssetStore', () => {
       asset: expect.objectContaining({ mimeType: 'video/mp4', width: 1920, height: 1080, durationSeconds: 5.25 }),
       bytes: mp4(),
     })
-    await expect(store.readOwned(8, asset.assetId)).rejects.toThrow('这段视频已经不在电脑上了')
+    await expect(store.readOwned(8, asset.assetId)).rejects.toThrow('该视频已不在本机')
     await expect(store.listOwned(7)).resolves.toEqual([
       expect.objectContaining({
         assetId: asset.assetId, mediaType: 'video', mimeType: 'video/mp4',
@@ -100,7 +100,7 @@ describe('AiVideoAssetStore', () => {
     expect(sizes).toEqual([whole.length])
     // Selecting nothing (HEAD, an unsatisfiable range) reads nothing past the signature.
     await expect(store.readOwnedRange(7, asset.assetId, () => null)).resolves.toEqual({ asset: { mimeType: 'video/mp4' }, totalBytes: whole.length, bytes: Buffer.alloc(0) })
-    await expect(store.readOwnedRange(8, asset.assetId, () => null)).rejects.toThrow('这段视频已经不在电脑上了')
+    await expect(store.readOwnedRange(8, asset.assetId, () => null)).rejects.toThrow('该视频已不在本机')
     await expect(store.readOwnedRange(7, asset.assetId, (total) => ({ start: 0, end: total }))).rejects.toThrow('读取范围无效')
 
     // A second hard link, or bytes that are not an MP4 any more, are refused exactly like a whole read.
@@ -138,7 +138,7 @@ describe('AiVideoAssetStore', () => {
     failTemporaryFileWrites()
     const error = await store.storeMp4(7, mp4(), { taskId: 'video_full' }).then(() => null, (reason: unknown) => reason)
 
-    expect((error as Error).message).toBe('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
+    expect((error as Error).message).toBe('作品未能存入保存位置，请稍后重试；如持续失败，请联系客服')
     expect(classifyStorageFailure(error)).toBe('disk-full')
     vi.restoreAllMocks()
     // Nothing half-written is left in the dated folder, and the clip lists as not stored.
@@ -254,8 +254,8 @@ describe('AiVideoAssetStore lookup by identifier', () => {
     const lstatSync = vi.spyOn(fs, 'lstatSync')
     try {
       const store = new AiVideoAssetStore({ outputRoot })
-      await expect(store.readOwned(7, 'M'.repeat(43))).rejects.toThrow(/^这段视频已经不在电脑上了，可能被移走或删掉了。$/)
-      await expect(store.resolveOwnedFilePath(7, 'M'.repeat(43))).rejects.toThrow(/^这段视频已经不在电脑上了，可能被移走或删掉了。$/)
+      await expect(store.readOwned(7, 'M'.repeat(43))).rejects.toThrow(/^该视频已不在本机，可能已被移动或删除。$/)
+      await expect(store.resolveOwnedFilePath(7, 'M'.repeat(43))).rejects.toThrow(/^该视频已不在本机，可能已被移动或删除。$/)
       return lstatSync.mock.calls.length
     } finally {
       lstatSync.mockRestore()
@@ -281,8 +281,8 @@ describe('AiVideoAssetStore lookup by identifier', () => {
     fs.rmSync(await store.resolveOwnedFilePath(7, gone.assetId))
 
     // Not a raw ENOENT carrying the file's path.
-    await expect(store.readOwned(7, gone.assetId)).rejects.toThrow(/^这段视频已经不在电脑上了，可能被移走或删掉了。$/)
-    await expect(store.resolveOwnedFilePath(7, gone.assetId)).rejects.toThrow(/^这段视频已经不在电脑上了，可能被移走或删掉了。$/)
+    await expect(store.readOwned(7, gone.assetId)).rejects.toThrow(/^该视频已不在本机，可能已被移动或删除。$/)
+    await expect(store.resolveOwnedFilePath(7, gone.assetId)).rejects.toThrow(/^该视频已不在本机，可能已被移动或删除。$/)
   })
 
   it.runIf(process.platform !== 'win32')('still runs the full file checks on a remembered location', async () => {
@@ -329,7 +329,7 @@ describe('AiVideoAssetStore on a relocated documents folder', () => {
     await expect(restarted.readOwned(7, asset.assetId)).resolves.toMatchObject({ bytes: mp4() })
     await expect(restarted.resolveOwnedFilePath(7, asset.assetId)).resolves.toContain(`xingmang-${asset.assetId}.mp4`)
     await restarted.removeOwned(7, asset.assetId)
-    await expect(restarted.readOwned(7, asset.assetId)).rejects.toThrow('这段视频已经不在电脑上了')
+    await expect(restarted.readOwned(7, asset.assetId)).rejects.toThrow('该视频已不在本机')
   })
 
   it('keeps refusing the relocated folder while no policy accepts it', async () => {

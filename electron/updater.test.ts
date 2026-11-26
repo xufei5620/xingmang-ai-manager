@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
 import { parseServiceStatus, type ServiceStatus } from './service-status'
 import { UPDATE_SIGNATURE_FIELD, buildUpdateSignaturePayload, verifyUpdateEntrySignature } from './update-package-signature'
-import { buildIntelMacUpdateInfo, createSharedDirectRetry, createUpdaterService, decideUpdateOffer, resolveDownloadedPackageBytes, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, isTransientDownloadFailure, requiredUpdateDiskBytes, resolveDownloadRetryDelay, rollbackFloorVersion, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadRetryDelaysMs, updateDownloadWatchMs, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadMeasure, type UpdateDownloadRetry, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
+import { buildIntelMacUpdateInfo, createSharedDirectRetry, createUpdaterService, decideUpdateOffer, resolveDownloadedPackageBytes, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, isTransientDownloadFailure, requiredUpdateDiskBytes, resolveDownloadRetryDelay, rollbackFloorVersion, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadRetryDelaysMs, updateDownloadWatchMs, updateHandoffBlockedCode, updateHandoffBlockedMessage, updateHandoffQuitTimeoutCode, updateInstallCancelledMessage, updateInstallNotQuitMessage, updatePackageChangedMessage, updatePreviousInstallFailedMessage, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadMeasure, type UpdateDownloadRetry, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
 
 // What electron-updater's Provider.resolveFiles hands MacUpdater.filterFilesForArch.
 interface ResolvedUpdateFile {
@@ -190,7 +190,7 @@ describe('updater service', () => {
       phase: 'error',
       error: {
         code: 'STARTUP_UPDATE_TIMEOUT',
-        message: '网络有点慢，这次没来得及查完有没有新版本。星芒会在后台接着查，不影响现在使用。',
+        message: '网络较慢，本次未能完成新版本检查。星芒将在后台继续检查，不影响当前使用。',
         automatic: true,
       },
     })
@@ -730,7 +730,7 @@ describe('updater service', () => {
       phase: 'error',
       error: {
         code: 'UPDATE_ERROR',
-        message: '更新服务器这会儿返回的内容不对，不是你这边的问题。稍后再试；还不行请找客服。',
+        message: '更新服务器当前返回的内容异常，并非本机问题。请稍后重试；如仍无法解决，请联系客服。',
         detail: '更新服务器返回了网页而不是 latest.yml',
       },
     })
@@ -772,7 +772,7 @@ describe('updater service', () => {
       phase: 'error',
       error: {
         code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND',
-        message: '更新服务器上这一版的更新文件还没放好，不是你这边的问题。稍后再试；急着用请找客服。',
+        message: '更新服务器上该版本的更新文件尚未就绪，并非本机问题。请稍后重试；如急需使用，请联系客服。',
         detail: '更新服务器缺少更新清单 latest-mac.yml',
       },
     })
@@ -795,7 +795,7 @@ describe('updater service', () => {
       phase: 'error',
       error: {
         code: 'UPDATE_ERROR',
-        message: '更新服务器上这一版的更新文件还没放好，不是你这边的问题。稍后再试；急着用请找客服。',
+        message: '更新服务器上该版本的更新文件尚未就绪，并非本机问题。请稍后重试；如急需使用，请联系客服。',
         detail: '更新服务器缺少更新清单 latest-mac.yml',
       },
     })
@@ -950,7 +950,7 @@ describe('updater service', () => {
       expect(client.quitAndInstall).toHaveBeenCalledTimes(1)
       expect(service.getState()).toMatchObject({
         phase: 'downloaded',
-        error: { code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT', message: expect.stringContaining('点「重新安装」') },
+        error: { code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT', message: expect.stringContaining('点击「重新安装」') },
       })
       // 强制更新那道门里软件用不了、也没有更新页，这句不许再把人往那儿指。
       expect(service.getState().error?.message).not.toMatch(/照常能用|「更新」页/)
@@ -2532,7 +2532,7 @@ describe('downloaded package digest verification', () => {
     }))
     expect(service.getState()).toMatchObject({
       failedStep: 'check',
-      error: { message: expect.stringContaining('更新文件还没放好'), detail: '更新服务器缺少更新清单 latest.yml' },
+      error: { message: expect.stringContaining('更新文件尚未就绪'), detail: '更新服务器缺少更新清单 latest.yml' },
     })
     service.dispose()
   })
@@ -2839,14 +2839,14 @@ describe('plain-language install failures', () => {
   })
 
   it('tells the previous-failure check when the version that failed is the older one the publisher rolled back to', () => {
-    // D11：退回旧版时那句要说「建议退回的 X 版上次没装上」，跟快照的 rollback 同一个算法。
+    // D11：退回旧版时那句要说「建议回退的 X 版上次没装上」，跟快照的 rollback 同一个算法。
     const client = new FakeUpdater()
     const asked: [string, boolean][] = []
     const service = createUpdaterService(client, {
       currentVersion: '1.2.0',
       isPackaged: true,
       platform: 'win32',
-      previousAutoInstallFailure: (version, rollback) => { asked.push([version, rollback]); return '建议退回的 1.1.0 版上次没装上' },
+      previousAutoInstallFailure: (version, rollback) => { asked.push([version, rollback]); return '建议回退的 1.1.0 版上次没装上' },
     })
     client.emit('update-downloaded', updateInfo('1.1.0'))
     expect(asked).toEqual([['1.1.0', true]])
@@ -2873,7 +2873,7 @@ describe('plain-language install failures', () => {
     await service.check({ manual: true })
     expect(service.getState().error).toEqual({
       code: 'ENOENT',
-      message: '下载好的安装包不完整或被删掉了，常见是安全软件拦了。重新下载一次就好。',
+      message: '已下载的安装包不完整或已被删除，通常是被安全软件拦截。请重新下载。',
       detail: raw,
     })
   })
@@ -2881,12 +2881,12 @@ describe('plain-language install failures', () => {
 
 describe('describeUnrecognizedUpdateFailure', () => {
   it('sorts common English failures into plain words', () => {
-    expect(describeUnrecognizedUpdateFailure('ENOSPC: no space left on device, write')).toContain('磁盘空间不够')
+    expect(describeUnrecognizedUpdateFailure('ENOSPC: no space left on device, write')).toContain('磁盘空间不足')
     expect(describeUnrecognizedUpdateFailure('EPERM: operation not permitted, rename')).toContain('安全软件')
     expect(describeUnrecognizedUpdateFailure('EBUSY: resource busy or locked')).toContain('被占用')
     expect(describeUnrecognizedUpdateFailure('sha512 checksum mismatch')).toContain('重新下载')
     // 更新页、首页气泡、强制更新门三处都会显示这句；门和气泡里没有「查看日志」按钮。
-    expect(describeUnrecognizedUpdateFailure('Something odd happened')).toContain('找客服')
+    expect(describeUnrecognizedUpdateFailure('Something odd happened')).toContain('联系客服')
     expect(describeUnrecognizedUpdateFailure('Something odd happened')).not.toContain('查看日志')
   })
 
@@ -2899,11 +2899,11 @@ describe('describeUnrecognizedUpdateFailure', () => {
     // Windows 的中文用户名、Mac 上的「星芒AI管理工具」都在路径里。以前这几句被当成中文整句交给界面，
     // 脱敏后客户看到的是「EPERM: operation not permitted, open '本机路径」（第三十批跟进项）。
     expect(describeUnrecognizedUpdateFailure("EPERM: operation not permitted, open 'C:\\Users\\张三\\AppData\\Local\\xingmang-ai-manager-updater\\pending\\temp-XingMang-AI-Manager-0.2.15-Setup.exe'"))
-      .toBe('新版本的安装包写不进去或被占用了，常见是安全软件拦了。重开软件再试；还不行请找客服。')
+      .toBe('新版本安装包无法写入或已被占用，通常是被安全软件拦截。请重新打开软件后重试；如仍无法解决，请联系客服。')
     expect(describeUnrecognizedUpdateFailure('EBUSY: resource busy or locked, unlink C:\\Users\\张 三\\AppData\\Local\\xingmang-ai-manager-updater\\pending\\update.exe'))
-      .toBe('新版本的安装包写不进去或被占用了，常见是安全软件拦了。重开软件再试；还不行请找客服。')
+      .toBe('新版本安装包无法写入或已被占用，通常是被安全软件拦截。请重新打开软件后重试；如仍无法解决，请联系客服。')
     expect(describeUnrecognizedUpdateFailure("ENOENT: no such file or directory, open '/Users/张三/Library/Caches/xingmang-ai-manager-updater/pending/星芒AI管理工具-0.2.15-mac.zip'"))
-      .toBe('下载好的安装包不完整或被删掉了，常见是安全软件拦了。重新下载一次就好。')
+      .toBe('已下载的安装包不完整或已被删除，通常是被安全软件拦截。请重新下载。')
   })
 
   it('still keeps a Chinese sentence that names a path', () => {
@@ -2942,7 +2942,7 @@ describe('Mac update signature rejection', () => {
     client.emit('error', new Error(rejection))
     const state = service.getState()
     expect(state).toMatchObject({ phase: 'downloaded', failedStep: 'install', error: { code: updateSignatureRejectedCode } })
-    expect(state.error?.message).toBe('新版本已经下载好了，但这台 Mac 校验它的时候没通过，自动安装装不上，再点也一样。请点「打开下载页」下载新版本的安装包，装好后打开就行。')
+    expect(state.error?.message).toBe('新版本已下载，但未通过本机系统校验，无法自动安装，重试也无法解决。请点击「打开下载页」下载新版本安装包，安装后打开即可。')
     expect(state.error?.detail).toContain('did not pass validation')
     service.dispose()
   })
@@ -4253,7 +4253,7 @@ describe('stalled update checks', () => {
         failedStep: 'check',
         error: {
           code: 'STARTUP_UPDATE_TIMEOUT',
-          message: '网络有点慢，这次没来得及查完有没有新版本。星芒会在后台接着查，不影响现在使用。',
+          message: '网络较慢，本次未能完成新版本检查。星芒将在后台继续检查，不影响当前使用。',
         },
       })
       expect(f.errors).toEqual(['STARTUP_UPDATE_TIMEOUT'])
@@ -4464,7 +4464,7 @@ describe('stalled update checks', () => {
 })
 
 describe('launch install notice', () => {
-  const notice = { version: '1.1.0', title: '星芒AI马上更新', body: '几秒后开始安装', installAt: 5_000 }
+  const notice = { version: '1.1.0', title: '星芒AI即将更新', body: '几秒后开始安装', installAt: 5_000 }
 
   it('carries the notice only while that version waits downloaded', () => {
     const client = new FakeUpdater()
@@ -4693,7 +4693,7 @@ describe('system installer channel (Linux .deb)', () => {
     const quitAfterSystemInstaller = vi.fn()
     const installQuitAborted = vi.fn()
     const openSystemInstaller = vi.fn(async (_packagePath: string): Promise<void> => {
-      throw Object.assign(new Error('没能打开这台电脑的安装程序。点「重新安装」再试一次；还不行请找客服。'), { code: 'UPDATE_SYSTEM_INSTALLER_FAILED' })
+      throw Object.assign(new Error('无法打开本机的安装程序。请点击「重新安装」重试；如仍无法解决，请联系客服。'), { code: 'UPDATE_SYSTEM_INSTALLER_FAILED' })
     })
     const service = createUpdaterService(client, linuxRuntime({ openSystemInstaller, quitAfterSystemInstaller, installQuitAborted, prepareInstallQuit: async () => undefined }))
     client.emit('update-downloaded', debInfo())
@@ -4702,7 +4702,7 @@ describe('system installer channel (Linux .deb)', () => {
     await vi.waitFor(() => expect(service.getState().failedStep).toBe('install'))
     expect(service.getState()).toMatchObject({
       phase: 'downloaded',
-      error: { code: 'UPDATE_SYSTEM_INSTALLER_FAILED', message: '没能打开这台电脑的安装程序。点「重新安装」再试一次；还不行请找客服。' },
+      error: { code: 'UPDATE_SYSTEM_INSTALLER_FAILED', message: '无法打开本机的安装程序。请点击「重新安装」重试；如仍无法解决，请联系客服。' },
     })
     expect(installQuitAborted).toHaveBeenCalledOnce()
     expect(quitAfterSystemInstaller).not.toHaveBeenCalled()
@@ -4759,7 +4759,7 @@ describe('system installer channel (Linux .deb)', () => {
         failedStep: 'install',
         error: { code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT' },
       })
-      expect(service.getState().error?.message).toContain('安装窗口已经打开')
+      expect(service.getState().error?.message).toContain('安装窗口已打开')
       service.dispose()
     } finally {
       vi.useRealTimers()
@@ -5010,7 +5010,7 @@ describe('a downloaded version the feed has moved past', () => {
     const countingService = createUpdaterService(counting, { currentVersion: '1.0.0', isPackaged: true, readAutoUpdate: () => true })
     await countingService.scheduledCheck()
     countingFeed.version = '1.2.0'
-    countingService.setLaunchInstallNotice({ version: '1.1.0', title: '星芒AI马上更新', body: '几秒后开始安装', installAt: 5_000 })
+    countingService.setLaunchInstallNotice({ version: '1.1.0', title: '星芒AI即将更新', body: '几秒后开始安装', installAt: 5_000 })
     await expect(countingService.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0' })
     expect(counting.checkForUpdates).toHaveBeenCalledOnce()
     countingService.dispose()
@@ -5460,5 +5460,202 @@ describe('a newer version that would not fit on the disk while one is downloaded
     }))
     expect(client.downloadUpdate).toHaveBeenCalledOnce()
     service.dispose()
+  })
+})
+
+describe('Windows install handoff (S01)', () => {
+  const setupFile = 'C:\\Users\\测试 用户\\下载 目录\\XingMang-AI-Manager-1.1.0-Setup.exe'
+  const digest = Buffer.alloc(64, 7).toString('base64')
+  const setupInfo = (version = '1.1.0') => ({
+    ...updateInfo(version),
+    files: [{ url: `XingMang-AI-Manager-${version}-Setup.exe`, sha512: digest, size: 4242 }],
+    downloadedFile: setupFile,
+  })
+  type Handoff = NonNullable<UpdaterRuntime['windowsInstallHandoff']>
+  const windowsRuntime = (overrides: Partial<UpdaterRuntime> = {}) => ({
+    currentVersion: '1.0.0',
+    isPackaged: true,
+    platform: 'win32' as NodeJS.Platform,
+    windowsInstallHandoff: vi.fn<Handoff>(async () => ({ kind: 'verified' })),
+    quitForInstall: vi.fn(),
+    prepareInstallQuit: vi.fn(() => undefined),
+    installQuitAborted: vi.fn(),
+    ...overrides,
+    verifyPackageDigest: vi.fn(async (_filePath: string, _expected: string) => true),
+  })
+
+  async function downloaded(runtime: ReturnType<typeof windowsRuntime>) {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, runtime)
+    client.emit('update-downloaded', setupInfo())
+    await vi.waitFor(() => expect(service.getState().phase).toBe('downloaded'))
+    return { client, service }
+  }
+
+  it('hands the package and the digest it was verified with to the handoff, then quits once, never through electron-updater', async () => {
+    const runtime = windowsRuntime()
+    const { client, service } = await downloaded(runtime)
+    expect(service.install()).toEqual({ accepted: true })
+    await vi.waitFor(() => expect(runtime.quitForInstall).toHaveBeenCalledOnce())
+    expect(runtime.verifyPackageDigest).toHaveBeenNthCalledWith(2, setupFile, digest)
+    expect(runtime.windowsInstallHandoff).toHaveBeenCalledWith({ path: setupFile, sha512: digest, size: 4242, version: '1.1.0' })
+    expect(client.quitAndInstall).not.toHaveBeenCalled()
+    expect(runtime.installQuitAborted).not.toHaveBeenCalled()
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', error: null })
+    service.dispose()
+  })
+
+  it('stops before any elevation prompt when the package no longer matches what was verified, and goes back to downloading', async () => {
+    const runtime = windowsRuntime()
+    const { client, service } = await downloaded(runtime)
+    runtime.verifyPackageDigest.mockResolvedValueOnce(false)
+    clickInstall(service)
+    await vi.waitFor(() => expect(service.getState().phase).toBe('error'))
+    expect(service.getState()).toMatchObject({ failedStep: 'download', error: { code: 'UPDATE_PACKAGE_CHANGED', message: updatePackageChangedMessage } })
+    expect(runtime.windowsInstallHandoff).not.toHaveBeenCalled()
+    expect(client.quitAndInstall).not.toHaveBeenCalled()
+    expect(runtime.quitForInstall).not.toHaveBeenCalled()
+    expect(runtime.installQuitAborted).toHaveBeenCalledOnce()
+    // The package is gone for good: installing again is refused until it is downloaded again.
+    expect(() => service.install()).toThrow('更新尚未下载并校验完成')
+    service.dispose()
+  })
+
+  it('treats a package that could not be re-read as changed, and a deleted one as missing', async () => {
+    for (const [failure, code] of [
+      [new Error('更新安装包存在多个硬链接'), 'UPDATE_PACKAGE_CHANGED'],
+      [Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' }), 'UPDATE_PACKAGE_PATH_MISSING'],
+    ] as const) {
+      const runtime = windowsRuntime()
+      const { service } = await downloaded(runtime)
+      runtime.verifyPackageDigest.mockRejectedValueOnce(failure)
+      clickInstall(service)
+      await vi.waitFor(() => expect(service.getState().phase).toBe('error'))
+      expect(service.getState()).toMatchObject({ failedStep: 'download', error: { code } })
+      expect(runtime.windowsInstallHandoff).not.toHaveBeenCalled()
+      expect(runtime.installQuitAborted).toHaveBeenCalledOnce()
+      service.dispose()
+    }
+  })
+
+  it('goes back to downloading without quitting when the elevated check finds a different package', async () => {
+    const runtime = windowsRuntime({ windowsInstallHandoff: vi.fn<Handoff>(async () => ({ kind: 'mismatch' })) })
+    const { service } = await downloaded(runtime)
+    clickInstall(service)
+    await vi.waitFor(() => expect(service.getState().phase).toBe('error'))
+    expect(service.getState()).toMatchObject({ failedStep: 'download', error: { code: 'UPDATE_PACKAGE_CHANGED', message: updatePackageChangedMessage } })
+    expect(runtime.quitForInstall).not.toHaveBeenCalled()
+    expect(runtime.installQuitAborted).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it('keeps the verified package after a cancelled prompt and runs the whole handoff again on the next click', async () => {
+    const handoff = vi.fn<Handoff>()
+      .mockResolvedValueOnce({ kind: 'cancelled' })
+      .mockResolvedValueOnce({ kind: 'verified' })
+    const runtime = windowsRuntime({ windowsInstallHandoff: handoff })
+    const { service } = await downloaded(runtime)
+    clickInstall(service)
+    await vi.waitFor(() => expect(service.getState().error?.code).toBe('UPDATE_INSTALL_CANCELLED'))
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', failedStep: 'install', error: { message: updateInstallCancelledMessage } })
+    expect(runtime.installQuitAborted).toHaveBeenCalledOnce()
+    expect(runtime.quitForInstall).not.toHaveBeenCalled()
+
+    expect(service.install()).toEqual({ accepted: true })
+    await vi.waitFor(() => expect(runtime.quitForInstall).toHaveBeenCalledOnce())
+    expect(handoff).toHaveBeenCalledTimes(2)
+    // Checked once when downloaded and once again before each handoff.
+    expect(runtime.verifyPackageDigest).toHaveBeenCalledTimes(3)
+    expect(runtime.prepareInstallQuit).toHaveBeenCalledTimes(2)
+    service.dispose()
+  })
+
+  it('reports a handoff that did not get through with the message customers already know, and stays installable', async () => {
+    const runtime = windowsRuntime({ windowsInstallHandoff: vi.fn<Handoff>(async () => ({ kind: 'failed', reason: '安装脚本没有启动' })) })
+    const { service } = await downloaded(runtime)
+    clickInstall(service)
+    await vi.waitFor(() => expect(service.getState().error?.code).toBe('UPDATE_HANDOFF_FAILED'))
+    expect(service.getState()).toMatchObject({
+      phase: 'downloaded',
+      failedStep: 'install',
+      error: { message: expect.stringContaining('可能是 Windows 授权窗口被关闭'), detail: '安装脚本没有启动' },
+    })
+    expect(runtime.installQuitAborted).toHaveBeenCalledOnce()
+    expect(service.install()).toEqual({ accepted: true })
+    service.dispose()
+  })
+
+  it('sends a machine whose PowerShell refused the handoff script to the download page instead of the consent prompt', async () => {
+    const runtime = windowsRuntime({ windowsInstallHandoff: vi.fn<Handoff>(async () => ({ kind: 'blocked', reason: 'PowerShell 未运行安装脚本（退出码 1）' })) })
+    const { client, service } = await downloaded(runtime)
+    clickInstall(service)
+    await vi.waitFor(() => expect(service.getState().error?.code).toBe(updateHandoffBlockedCode))
+    expect(service.getState()).toMatchObject({
+      phase: 'downloaded',
+      failedStep: 'install',
+      error: { code: 'UPDATE_HANDOFF_BLOCKED', message: updateHandoffBlockedMessage, detail: 'PowerShell 未运行安装脚本（退出码 1）' },
+    })
+    expect(updateHandoffBlockedMessage).toContain('「打开下载页」')
+    expect(updateHandoffBlockedMessage).not.toMatch(/授权窗口|重新安装/)
+    // No fallback to another way of installing: the checks the handoff adds stay in force.
+    expect(client.quitAndInstall).not.toHaveBeenCalled()
+    expect(runtime.quitForInstall).not.toHaveBeenCalled()
+    expect(runtime.installQuitAborted).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it('says the app did not close once the script has stopped waiting for it', async () => {
+    const runtime = windowsRuntime({ windowsHandoffQuitTimeoutMs: 20 })
+    const { service } = await downloaded(runtime)
+    clickInstall(service)
+    // A real 20 ms timer: a loaded Windows runner can hold it well past waitFor's default second.
+    await vi.waitFor(() => expect(service.getState().error?.code).toBe(updateHandoffQuitTimeoutCode), { timeout: 10_000 })
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', failedStep: 'install', error: { message: updateInstallNotQuitMessage } })
+    expect(runtime.quitForInstall).toHaveBeenCalledOnce()
+    expect(runtime.installQuitAborted).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it('hands nothing over once the app is shutting down while the package is being checked', async () => {
+    let finishCheck: (value: boolean) => void = () => undefined
+    const runtime = windowsRuntime()
+    const { service } = await downloaded(runtime)
+    runtime.verifyPackageDigest.mockImplementationOnce(() => new Promise<boolean>((resolve) => { finishCheck = resolve }))
+    clickInstall(service)
+    service.dispose()
+    finishCheck(true)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(runtime.windowsInstallHandoff).not.toHaveBeenCalled()
+    expect(runtime.quitForInstall).not.toHaveBeenCalled()
+  })
+
+  it('shows last run\'s installer failure for that version and still installs it on request', async () => {
+    const runtime = windowsRuntime({ previousAutoInstallFailure: () => updatePreviousInstallFailedMessage })
+    const { service } = await downloaded(runtime)
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', failedStep: 'install', error: { message: updatePreviousInstallFailedMessage } })
+    expect(service.install()).toEqual({ accepted: true })
+    await vi.waitFor(() => expect(runtime.quitForInstall).toHaveBeenCalledOnce())
+    service.dispose()
+  })
+
+  it('shows last run\'s blocked handoff with its own code, so the download page is offered right away', async () => {
+    const runtime = windowsRuntime({ previousAutoInstallFailure: () => ({ code: updateHandoffBlockedCode, message: updateHandoffBlockedMessage }) })
+    const { service } = await downloaded(runtime)
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', failedStep: 'install', error: { code: 'UPDATE_HANDOFF_BLOCKED', message: updateHandoffBlockedMessage } })
+    service.dispose()
+  })
+
+  it('leaves the macOS and the no-handoff Windows install on electron-updater', async () => {
+    const runtime = windowsRuntime({ windowsInstallHandoff: undefined })
+    const { client, service } = await downloaded(runtime)
+    clickInstall(service)
+    expect(client.quitAndInstall).toHaveBeenCalledWith(true, true)
+    service.dispose()
+    const macRuntime = windowsRuntime({ platform: 'darwin' })
+    const mac = await downloaded(macRuntime)
+    clickInstall(mac.service)
+    expect(mac.client.quitAndInstall).toHaveBeenCalledWith(true, true)
+    expect(macRuntime.windowsInstallHandoff).not.toHaveBeenCalled()
+    mac.service.dispose()
   })
 })

@@ -14,8 +14,16 @@ import {
   assertSafeDataFile,
   ensureSafeDataDirectory,
 } from './safe-local-data'
+import {
+  createSessionActivityTracker,
+  observeCodexActivity,
+  type SessionTurnActivity,
+} from './session-activity'
 import { exportSessionMarkdown, sessionMarkdownFileName } from './session-markdown-export'
 
+// Thrown out of the message callback to stop reading at the first match; the
+// stream is torn down by the for-await loop that is unwound by it.
+const contentFound = new Error('content found')
 const MAX_OPERATION_JOURNAL_BYTES = 64 * 1024 * 1024
 const OPERATION_JOURNAL_LABEL = 'Codex 会话操作日志'
 const MAX_RECOVERY_WARNING_DETAILS = 32
@@ -74,6 +82,8 @@ export interface CodexSessionMessage {
   role: string
   text: string
   timestamp: string | null
+  /** 只挂在一轮里最后一条 AI 回复上：这一轮跑了哪些命令、改了哪些文件。缺省 = 这一轮没有（旧行为）。 */
+  activity?: SessionTurnActivity
 }
 
 export interface CodexSessionMessageStats {
@@ -610,10 +620,18 @@ function validateRolloutIdentitySync(rolloutPath: string, sessionId: string): vo
   }
 }
 
+interface StreamMessagesOptions {
+  /** 每一行解析出来的原样 JSON（记录详情里那一轮跑了什么，session-activity.ts）。 */
+  onEntry?: (value: unknown) => void
+  /** 只读文件开头这么多字节。缺省 = 读完整个文件（旧行为）。 */
+  maxBytes?: number
+}
+
 async function streamMessages(
   rolloutPath: string,
   maximumLineBytes: number,
   onMessage: (message: CodexSessionMessage) => void | Promise<void>,
+  options: StreamMessagesOptions = {},
 ): Promise<CodexSessionMessageStats> {
   const stats: CodexSessionMessageStats = {
     total: 0,
@@ -633,6 +651,7 @@ async function streamMessages(
       stats.invalidLines += 1
       return
     }
+    options.onEntry?.(parsed)
     const message = extractMessage(parsed)
     if (!message) return
     stats.total += 1
@@ -643,7 +662,11 @@ async function streamMessages(
     await onMessage(message)
   }
 
-  const input = fs.createReadStream(rolloutPath, { encoding: 'utf8', highWaterMark: 64 * 1024 })
+  const input = fs.createReadStream(rolloutPath, {
+    encoding: 'utf8',
+    highWaterMark: 64 * 1024,
+    ...(options.maxBytes !== undefined ? { end: Math.max(0, options.maxBytes - 1) } : {}),
+  })
   let pending = ''
   let droppingOversizedLine = false
   for await (const rawChunk of input) {
@@ -959,16 +982,19 @@ export class CodexSessionsService {
     const rolloutPath = await validateRollout(this.codexHome, row.rolloutPath, row.id)
     const messages: CodexSessionMessage[] = []
     let textTruncated = false
+    const activity = createSessionActivityTracker()
     const messageStats = await streamMessages(rolloutPath, this.maxJsonLineBytes, (message) => {
       // 预览上限只约束 IPC 返回内容；导出复用解析器，不能在解析阶段丢掉正文（#600）。
+      let retained = message
       if (message.text.length > DETAIL_TEXT_LIMIT) {
         textTruncated = true
-        messages.push({ ...message, text: `${message.text.slice(0, DETAIL_TEXT_LIMIT)}\n…` })
-      } else {
-        messages.push(message)
+        retained = { ...message, text: `${message.text.slice(0, DETAIL_TEXT_LIMIT)}\n…` }
       }
+      messages.push(retained)
+      activity.message(message.role, retained)
       if (messages.length > DETAIL_MESSAGE_LIMIT) messages.shift()
-    })
+    }, { onEntry: (value) => observeCodexActivity(activity, value) })
+    activity.finish()
     return {
       session: await toSummary(row, this.codexHome),
       messages,
@@ -976,6 +1002,25 @@ export class CodexSessionsService {
       // 跳过的坏行也是看不到的内容（#491），和只留最近若干条一样算「不完整」。
       messagesTruncated: textTruncated || messageStats.total > messages.length || messageStats.invalidLines > 0,
     }
+  }
+
+  /**
+   * 这段对话里有没有说过 `needle`（记录页「同时搜索对话内容」）。`needle` 由调用方统一转成
+   * 小写；只读文件开头 `maxBytes` 字节，读到第一处就停。
+   */
+  async contentMatches(sessionId: string, needle: string, maxBytes: number): Promise<boolean> {
+    const { row, schema } = this.readThread(sessionId)
+    if (!schema.status.readable) return false
+    const rolloutPath = await validateRollout(this.codexHome, row.rolloutPath, row.id)
+    try {
+      await streamMessages(rolloutPath, this.maxJsonLineBytes, (message) => {
+        if (message.text.toLocaleLowerCase().includes(needle)) throw contentFound
+      }, { maxBytes })
+    } catch (error) {
+      if (error === contentFound) return true
+      throw error
+    }
+    return false
   }
 
   async exportMarkdown(sessionId: string, destinationPath: string): Promise<CodexSessionExportResult> {
@@ -1128,12 +1173,12 @@ export class CodexSessionsService {
       }
     }
     if (this.journalUnreadable) {
-      throw new Error('Codex 会话操作日志无法安全读取，已暂停归档和恢复；请重启本工具后再试')
+      throw new Error('Codex 会话操作日志无法安全读取，已暂停归档和恢复，请重启本工具后重试')
     }
     try {
       assertSafeDataFile(this.operationJournalPath, OPERATION_JOURNAL_LABEL)
     } catch {
-      throw new Error('Codex 会话操作日志无法安全写入，已暂停归档和恢复；请重启本工具后再试')
+      throw new Error('Codex 会话操作日志无法安全写入，已暂停归档和恢复，请重启本工具后重试')
     }
   }
 
@@ -1389,10 +1434,10 @@ export class CodexSessionsService {
     try {
       interrupted = this.interruptedOperations()
     } catch {
-      throw new Error('Codex 会话操作日志无法安全读取，已暂停删除；请重启本工具后再试')
+      throw new Error('Codex 会话操作日志无法安全读取，已暂停删除，请重启本工具后重试')
     }
     if (interrupted.some((entry) => entry.sessionId === row.id)) {
-      throw new Error('这条记录上次的整理还没收尾，请重启本工具后再删')
+      throw new Error('该记录上次的整理尚未完成，请重启本工具后再删除')
     }
     const rolloutPath = await this.deletableRollout(row)
 
@@ -1421,7 +1466,7 @@ export class CodexSessionsService {
           const code = (error as NodeJS.ErrnoException).code
           if (code !== 'ENOENT') {
             throw new Error(code === 'EBUSY' || code === 'EPERM' || code === 'EACCES'
-              ? '这条记录正被别的程序占用，请先关掉 Codex 再删'
+              ? '该记录正被其他程序占用，请先关闭 Codex 后再删除'
               : `删除对话原文失败：${error instanceof Error ? error.message : String(error)}`)
           }
         }
@@ -1460,7 +1505,7 @@ export class CodexSessionsService {
     const { row, schema } = this.readThread(sessionId)
     if (!schema.status.mutationsAllowed) throw new Error(schema.status.reason)
     if (row.archived === archived) {
-      throw new Error(archived ? '会话已经归档' : '会话已经处于活动状态')
+      throw new Error(archived ? '会话已归档' : '会话已处于活动状态')
     }
     const sourcePath = await validateRollout(this.codexHome, row.rolloutPath, row.id)
     const targetPath = ensureInside(

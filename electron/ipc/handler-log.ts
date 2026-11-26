@@ -34,14 +34,14 @@ export function ipcSuccessMessage(channel: IpcInvokeChannel, args: unknown[], re
     ?? (isRecord(args[0]) ? providerDisplayName(args[0].provider) : null)
   const count = collectionSize(result)
   if (channel === 'workspace:choose' && result === null) return '已取消选择工作目录'
-  if ((channel === 'sessions:export' || channel === 'provider-sessions:export') && result === null) {
-    return '已取消导出会话'
-  }
+  if (channel === 'provider-sessions:export' && result === null) return '已取消导出会话'
   if ((channel === 'diagnostics:export' || channel === 'runtime-logs:export-feedback') && result === null) {
     return '已取消导出报告'
   }
   if ((channel === 'chat-history:export-text' || channel === 'data-transfer:export') && result === null) return '已取消导出'
   if (channel === 'data-transfer:import' && result === null) return '已取消导入'
+  if (channel === 'data-transfer:inspect-works' && result === null) return '未登录，未统计作品'
+  if (channel === 'data-transfer:import-works' && isRecord(result) && result.status === 'no-space') return '本机空间不足，作品未导入'
   if (channel === 'video:save-as' && isRecord(result) && result.saved === false) return '已取消另存视频'
   // 写「接回完成」会让客服以为片段挂回去了；null 是主进程那边没有这一单（没交出去、服务端说失败了）。
   if (channel === 'video:resume' && result === null) return '没有要接回的视频片段'
@@ -62,6 +62,7 @@ export function ipcSuccessMessage(channel: IpcInvokeChannel, args: unknown[], re
   // 以为已经装好了，紧跟着的失败反而像是另一回事。
   if (channel === 'update:install' && isRecord(result) && result.postponed === true) return '还有工具在装，这次没装新版本'
   if (channel === 'update:install') return '已把新版本交给安装程序，装没装上看下一条更新状态'
+  if (channel === 'runtime:restart-windows' && isRecord(result) && result.postponed === true) return '还有任务没做完，这次没发重启'
   // 开机先摆的上次结果（已知13）只读了本机一个文件，没检测；写「检测完成」会让客服看反馈报告时
   // 以为这次已经检测过了，真的那轮卡住或没跑完就分不出来。
   if (readsCachedExternalClientsOnly(channel, args)) {
@@ -104,12 +105,29 @@ export function ipcLogDetail(channel: string, args: unknown[], result: unknown, 
     detail.action = first.action
     detail.id = first.id
   }
-  // 「星芒占用的空间」：清的是哪一样、腾出多少、几份没删掉，客服看得出清理有没有用。只有数，没有路径（I13）。
+  // 「星芒占用空间」：清的是哪一样、腾出多少、几份没删掉，客服看得出清理有没有用。只有数，没有路径（I13）。
   if (channel === 'storage:clean' && typeof first === 'string') {
     detail.target = first
     if (isRecord(result)) {
       detail.freedBytes = result.freedBytes
       detail.kept = result.kept
+    }
+  }
+  // 「迁移到新电脑」带作品：几件、多大，导入时新增、已有、失败各几件。只有数，没有路径和作品名（I13）。
+  if (channel === 'data-transfer:inspect-works' && isRecord(result)) {
+    detail.images = result.images
+    detail.videos = result.videos
+    detail.audios = result.audios
+    detail.bytes = result.bytes
+  }
+  if (channel === 'data-transfer:export' && isRecord(result)) {
+    detail.conversations = result.conversations
+    detail.videoProjects = result.videoProjects
+    if (isRecord(result.works)) detail.works = result.works.count
+  }
+  if (channel === 'data-transfer:import-works' && isRecord(result)) {
+    for (const key of ['status', 'added', 'existing', 'failed', 'neededBytes', 'availableBytes']) {
+      if (result[key] !== undefined) detail[key] = result[key]
     }
   }
   // 「装上了但连不上」是这一页最常见的工单。日志里只留条数，原因文本来自 CLI

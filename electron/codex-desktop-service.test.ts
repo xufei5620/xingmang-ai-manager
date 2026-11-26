@@ -40,7 +40,9 @@ import {
   buildDesktopUpdateStatus,
   canAttemptCodexDesktopFirstInstallFallback,
   initialCodexDesktopChineseLocale,
+  buildCodexDesktopActivationFailureSummary,
   describeCodexDesktopLaunchFailure,
+  resolveCodexDesktopStartMenuName,
   describeCodexDesktopLaunchWait,
   buildCodexDesktopResetScript,
   buildCodexDesktopStartAppProbeScript,
@@ -101,7 +103,7 @@ import {
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
 import { codexDesktopInstallFailureReasons } from './codex-desktop-install-failure'
-import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
+import { codexDesktopActivationBrokenMarker, codexDesktopActivationOfflineMarker, codexDesktopKnownIssueMarker, codexDesktopWindowsUpdateBlockedMarker } from './codex-desktop-known-issues'
 import {
   desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketIndexStaleError, DesktopBucketUnavailableError, downloadDesktopBucketPackage,
 } from './desktop-package-bucket'
@@ -190,23 +192,36 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
   it('gives the three steps a customer can take', () => {
     const generic = describeCodexDesktopLaunchFailure()
     expect(generic.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
-    expect(generic).toContain('点「重试」')
-    expect(generic).toContain('开始菜单里搜「Codex」')
+    expect(generic).toContain('点击「重试」')
+    expect(generic).toContain('开始菜单中搜索「Codex」')
     expect(generic).toContain('联系客服')
   })
 
   it('says how long it waited and gives a start-menu check the customer can do alone', () => {
-    const noWindow = describeCodexDesktopLaunchFailure({ waitedSeconds: 47, processSeen: true })
-    expect(noWindow.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
-    expect(noWindow).toContain('等了 47 秒')
-    expect(noWindow).toContain('Codex 已经启动，但它的窗口一直没出来')
-    expect(noWindow).toContain('开始菜单里搜「Codex」直接点开')
-    expect(noWindow).toContain('Codex 这一版自己的问题，不是星芒')
-    expect(noWindow).toContain('联系客服')
+    // The approved wording (「开始菜单改」), word for word, with the name Windows shows in the Start menu.
+    const notStarted = describeCodexDesktopLaunchFailure({ waitedSeconds: 38, processSeen: false }, null, false, 'ChatGPT')
+    expect(notStarted).toBe('Codex 桌面端未能打开：等待 38 秒，Codex 未能启动。请关闭所有 Codex 窗口后点击「重试」。'
+      + '如需确认是否为 Codex 自身问题，可在开始菜单中搜索「ChatGPT」并直接打开：如同样无法打开，则为 Codex 当前版本的问题，'
+      + '可等待微软商店更新，或先使用 Codex CLI；如开始菜单中可以打开而星芒中无法打开，请联系客服。')
 
-    const notStarted = describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false })
-    expect(notStarted).toContain('等了 45 秒，Codex 没有启动起来')
-    expect(notStarted).not.toContain('窗口一直没出来')
+    // Windows handed back a process id and it was gone by the end: it started and quit on its own.
+    const exited = describeCodexDesktopLaunchFailure({ waitedSeconds: 38, processSeen: true }, null, false, 'ChatGPT')
+    expect(exited.startsWith('Codex 桌面端未能打开：等待 38 秒，Codex 启动后随即退出，未出现窗口。请关闭所有 Codex 窗口后点击「重试」。')).toBe(true)
+    expect(exited.slice(exited.indexOf('请关闭'))).toBe(notStarted.slice(notStarted.indexOf('请关闭')))
+    expect(exited).not.toContain('Codex 未能启动')
+  })
+
+  it('names the Start menu entry the way Windows shows it, and falls back to Codex when that name is unusable', () => {
+    function searched(name?: string | null): string {
+      const message = describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false }, null, false, name)
+      return /开始菜单中搜索「([^」]*)」/.exec(message)?.[1] ?? ''
+    }
+    expect(searched('ChatGPT')).toBe('ChatGPT')
+    expect(searched('  Codex Beta ')).toBe('Codex Beta')
+    for (const unusable of [undefined, null, '', '   ', 'a\nb', 'ab\u0007', '「ChatGPT」', 'x'.repeat(41)]) {
+      expect(searched(unusable)).toBe('Codex')
+    }
+    expect(resolveCodexDesktopStartMenuName('x'.repeat(40))).toBe('x'.repeat(40))
   })
 
   // Windows only refuses sandboxed store apps on these accounts; Codex Desktop
@@ -225,36 +240,118 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
   it('names the known-broken version and points to the command-line Codex instead of the start-menu check', () => {
     const message = describeCodexDesktopLaunchFailure({ waitedSeconds: 51, processSeen: false }, '26.924.2738.0')
     expect(message.startsWith(codexDesktopNotStartedPrefix)).toBe(true)
-    expect(message).toContain('等了 51 秒，Codex 没有启动起来')
-    expect(message).toContain('你装的这一版（26.924.2738.0）')
+    expect(message).toContain('等待 51 秒，Codex 未成功启动')
+    expect(message).toContain('您安装的版本（26.924.2738.0）')
     expect(message).toContain(codexDesktopKnownIssueMarker)
-    expect(message).toContain('「改用 Codex 命令行版」')
-    expect(message).not.toContain('开始菜单里搜「Codex」')
+    expect(message).toContain('「改用 Codex CLI」')
+    expect(message).not.toContain('开始菜单')
     expect(message).not.toMatch(/wsreset|AppModel|AppX|Appx|UAC|0x[0-9A-F]{8}|SID|Microsoft Store/i)
 
     const noOutcome = describeCodexDesktopLaunchFailure(undefined, '26.924.2738.0')
-    expect(noOutcome).toContain('等了将近一分钟')
+    expect(noOutcome).toContain('等待近一分钟')
     expect(noOutcome).toContain(codexDesktopKnownIssueMarker)
 
     expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false }, null)).not.toContain(codexDesktopKnownIssueMarker)
   })
 
+  it('asks for a restart, and nothing else, when Windows refused to start an installed Codex', () => {
+    const message = describeCodexDesktopLaunchFailure({ waitedSeconds: 38, processSeen: false }, null, true)
+    expect(message).toBe('Codex 桌面端未能打开：Codex 已安装，但 Windows 未能启动它，等待 38 秒仍未检测到 Codex 运行。重启电脑后通常可以恢复。')
+    expect(message).toContain(codexDesktopActivationBrokenMarker)
+    // The code stays in the runtime log; the customer sees no hex and no start-menu detour.
+    expect(message).not.toMatch(/0x[0-9A-F]{8}|AppModel|AppX|Appx|开始菜单/i)
+    // A known-broken version is a different problem (it times out after starting); the Windows refusal wins.
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 38, processSeen: false }, '26.924.2738.0', true))
+      .not.toContain(codexDesktopKnownIssueMarker)
+    expect(describeCodexDesktopLaunchFailure(undefined, null, true)).toBe('Codex 桌面端未能打开：Codex 已安装，但 Windows 未能启动它，未检测到 Codex 运行。重启电脑后通常可以恢复。')
+    // Without the flag nothing changes.
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false })).not.toContain(codexDesktopActivationBrokenMarker)
+  })
+
+  it('calls it a Windows refusal only when the activation said not installed and never handed back a process', () => {
+    const refused = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x80270254)')
+    const timedOut = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x8027025A)')
+
+    expect(buildCodexDesktopActivationFailureSummary([timedOut, refused], null)).toEqual({ windowsActivationBroken: true, windowsActivationOffline: false, windowsUpdateSuspect: false, cause: refused })
+    // A process id means Windows did start it: that is the 「启动后随即退出」 case, not this one.
+    expect(buildCodexDesktopActivationFailureSummary([refused], 18420)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: false, windowsUpdateSuspect: false, cause: refused })
+    expect(buildCodexDesktopActivationFailureSummary([timedOut], null)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: false, windowsUpdateSuspect: false, cause: timedOut })
+    // Nothing failed (plain Explorer launch, nothing came up): no cause to attach, and Windows gave no reason, so the update service is worth a look.
+    expect(buildCodexDesktopActivationFailureSummary([], null)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: false, windowsUpdateSuspect: true })
+  })
+
+  it('calls it a failed online check only when the activation hit a network code and never handed back a process', () => {
+    const offline = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x80072EE2)')
+    const refused = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x80270254)')
+
+    expect(buildCodexDesktopActivationFailureSummary([offline], null)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: true, windowsUpdateSuspect: false, cause: offline })
+    // The Chinese launch failed offline, the plain activation then said not installed: both are reported, the message picks.
+    expect(buildCodexDesktopActivationFailureSummary([offline, refused], null)).toEqual({ windowsActivationBroken: true, windowsActivationOffline: true, windowsUpdateSuspect: false, cause: refused })
+    // One of the attempts did start a process: the online check went through after all.
+    expect(buildCodexDesktopActivationFailureSummary([offline], 18420)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: false, windowsUpdateSuspect: false, cause: offline })
+  })
+
+  it('sends the customer to the network, ahead of a restart, when Windows could not verify Codex online', () => {
+    const message = describeCodexDesktopLaunchFailure({ waitedSeconds: 58, processSeen: false }, null, false, 'ChatGPT', true)
+    expect(message).toBe('Codex 桌面端未能打开：Windows 打开 Codex 前需要联网向微软验证，本次验证超时，等待 58 秒仍未检测到 Codex 运行。网络恢复后重新打开即可。')
+    expect(message).toContain(codexDesktopActivationOfflineMarker)
+    expect(message).not.toMatch(/0x[0-9A-F]{8}|AppModel|AppX|Appx|开始菜单|重启/i)
+    // Both codes seen: the network comes first, a later attempt with a working network falls to the restart card on its own.
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 58, processSeen: false }, '26.924.2738.0', true, 'ChatGPT', true)).toBe(message)
+    expect(describeCodexDesktopLaunchFailure(undefined, null, false, null, true)).toBe('Codex 桌面端未能打开：Windows 打开 Codex 前需要联网向微软验证，本次验证超时，未检测到 Codex 运行。网络恢复后重新打开即可。')
+    // Without the flag nothing changes.
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 45, processSeen: false }, null, true)).not.toContain(codexDesktopActivationOfflineMarker)
+  })
+
+  it('looks at the Windows Update service only when Windows timed out or said nothing, and never started Codex', () => {
+    const timedOut = new Error('Codex Desktop AppX 激活失败：(异常来自 HRESULT:0x800705B4)')
+    const refused = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x80270254)')
+    const offline = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x80072EE2)')
+    const other = new Error('Codex Desktop AppX 激活失败：(Exception from HRESULT: 0x80004005)')
+
+    // The 21H2 machine whose Windows Update had been blocked: activation timed out and no process ever came.
+    expect(buildCodexDesktopActivationFailureSummary([timedOut], null)).toEqual({ windowsActivationBroken: false, windowsActivationOffline: false, windowsUpdateSuspect: true, cause: timedOut })
+    expect(buildCodexDesktopActivationFailureSummary([other, timedOut], null).windowsUpdateSuspect).toBe(true)
+    // Windows started it after all, or named a reason that already has its own card.
+    expect(buildCodexDesktopActivationFailureSummary([timedOut], 18420).windowsUpdateSuspect).toBe(false)
+    expect(buildCodexDesktopActivationFailureSummary([timedOut, refused], null).windowsUpdateSuspect).toBe(false)
+    expect(buildCodexDesktopActivationFailureSummary([offline, timedOut], null).windowsUpdateSuspect).toBe(false)
+    // Some other code: not this case, keep the generic card without spending the probe.
+    expect(buildCodexDesktopActivationFailureSummary([other], null).windowsUpdateSuspect).toBe(false)
+  })
+
+  it('sends the customer to turn Windows Update on once, after the network and restart cases and ahead of a known-broken version', () => {
+    const message = describeCodexDesktopLaunchFailure({ waitedSeconds: 62, processSeen: false }, null, false, 'ChatGPT', false, true)
+    // yoyo 2026-11-24（「更新框改」）批的原文。
+    expect(message).toBe('Codex 桌面端未能打开：本机的 Windows 更新服务无法启动，Codex 首次启动所需的验证未能完成，等待 62 秒仍未检测到 Codex 运行。临时开启 Windows 更新并成功打开一次 Codex 后，可重新关闭更新。')
+    expect(message).toContain(codexDesktopWindowsUpdateBlockedMarker)
+    expect(message).not.toMatch(/0x[0-9A-F]{8}|AppModel|AppX|Appx|wuauserv|开始菜单|重启|重置/i)
+    expect(describeCodexDesktopLaunchFailure(undefined, null, false, null, false, true)).toBe('Codex 桌面端未能打开：本机的 Windows 更新服务无法启动，Codex 首次启动所需的验证未能完成，未检测到 Codex 运行。临时开启 Windows 更新并成功打开一次 Codex 后，可重新关闭更新。')
+    // With updates blocked no version opens, so this comes before the known-broken one.
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 62, processSeen: false }, '26.924.2738.0', false, 'ChatGPT', false, true)).toBe(message)
+    // The two cases Windows names by code keep their own sentence.
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 62, processSeen: false }, null, false, 'ChatGPT', true, true)).toContain(codexDesktopActivationOfflineMarker)
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 62, processSeen: false }, null, true, 'ChatGPT', false, true)).toContain(codexDesktopActivationBrokenMarker)
+    // Without the flag nothing changes.
+    expect(describeCodexDesktopLaunchFailure({ waitedSeconds: 62, processSeen: false }, null, false, 'ChatGPT', false)).not.toContain(codexDesktopWindowsUpdateBlockedMarker)
+  })
+
   it('describes the launch wait in plain words and adds the start-menu hint after twenty seconds', () => {
-    expect(describeCodexDesktopLaunchWait('preparing', 5)).toBe('正在准备打开 Codex 桌面端，已经等了 5 秒。')
-    expect(describeCodexDesktopLaunchWait('waiting-window', 15)).toBe('正在等 Codex 桌面端的窗口出现，已经等了 15 秒。Codex 第一次打开有时要一分钟。')
-    expect(describeCodexDesktopLaunchWait('waiting-window', 20)).toBe('正在等 Codex 桌面端的窗口出现，已经等了 20 秒。Codex 第一次打开有时要一分钟，可以先去开始菜单看看它有没有弹出来。')
+    expect(describeCodexDesktopLaunchWait('preparing', 5)).toBe('正在准备打开 Codex 桌面端，已等待 5 秒。')
+    expect(describeCodexDesktopLaunchWait('waiting-window', 15)).toBe('正在等待 Codex 桌面端的窗口出现，已等待 15 秒。Codex 首次打开有时需要一分钟。')
+    expect(describeCodexDesktopLaunchWait('waiting-window', 20)).toBe('正在等待 Codex 桌面端的窗口出现，已等待 20 秒。Codex 首次打开有时需要一分钟，可先在开始菜单中查看其是否已打开。')
     for (const stage of ['preparing', 'waiting-window', 'switching-language'] as const) {
       expect(describeCodexDesktopLaunchWait(stage, 30)).not.toMatch(/PowerShell|AppModel|AppX|进程|PID|调试端口|CDP/i)
     }
   })
 
   it('says Codex is already open while its interface is switched to Chinese and never sends the customer to the start menu', () => {
-    expect(describeCodexDesktopLaunchWait('switching-language', 8)).toBe('Codex 桌面端已经打开，正在把它的界面换成中文，已经等了 8 秒。')
-    expect(describeCodexDesktopLaunchWait('switching-language', 25)).toBe('Codex 桌面端已经打开，正在把它的界面换成中文，已经等了 25 秒。')
+    expect(describeCodexDesktopLaunchWait('switching-language', 8)).toBe('Codex 桌面端已打开，正在切换为中文界面，已等待 8 秒。')
+    expect(describeCodexDesktopLaunchWait('switching-language', 25)).toBe('Codex 桌面端已打开，正在切换为中文界面，已等待 25 秒。')
     for (const elapsed of [5, 20, 45, 90]) {
       const message = describeCodexDesktopLaunchWait('switching-language', elapsed)
       expect(message).not.toContain('开始菜单')
-      expect(message).not.toContain('等 Codex 桌面端的窗口出现')
+      expect(message).not.toContain('Codex 桌面端的窗口出现')
     }
   })
 
@@ -271,7 +368,7 @@ describe('Codex Desktop AppModel launch diagnostics', () => {
       clock = 5 * codexDesktopLaunchHeartbeatIntervalMs
       vi.advanceTimersByTime(codexDesktopLaunchHeartbeatIntervalMs)
       expect(reports.at(-2)?.message).toBe(describeCodexDesktopLaunchWait('waiting-window', 20))
-      expect(reports.at(-1)).toEqual({ elapsedSeconds: 25, message: 'Codex 桌面端已经打开，正在把它的界面换成中文，已经等了 25 秒。' })
+      expect(reports.at(-1)).toEqual({ elapsedSeconds: 25, message: 'Codex 桌面端已打开，正在切换为中文界面，已等待 25 秒。' })
       heartbeat.stop()
     } finally {
       vi.useRealTimers()
@@ -329,9 +426,9 @@ describe('Codex Desktop launch trust', () => {
     expect(buildCodexDesktopWorkspaceUrl('C:\\Users\\tester\\My Project')).toBe(
       'codex://threads/new?path=C%3A%5CUsers%5Ctester%5CMy+Project',
     )
-    expect(() => buildCodexDesktopWorkspaceUrl('')).toThrow('工作目录无效')
-    expect(() => buildCodexDesktopWorkspaceUrl('relative\\project')).toThrow('工作目录无效')
-    expect(() => buildCodexDesktopWorkspaceUrl(`C:\\${'x'.repeat(32_767)}`)).toThrow('工作目录无效')
+    expect(() => buildCodexDesktopWorkspaceUrl('')).toThrow('项目文件夹无效')
+    expect(() => buildCodexDesktopWorkspaceUrl('relative\\project')).toThrow('项目文件夹无效')
+    expect(() => buildCodexDesktopWorkspaceUrl(`C:\\${'x'.repeat(32_767)}`)).toThrow('项目文件夹无效')
   })
 
   it.runIf(process.platform === 'win32')('keeps workspace launch on the trusted Explorer path', () => {
@@ -1159,7 +1256,7 @@ describe('Codex Desktop mirror fallback disclosure', () => {
     expect(describeCodexDesktopDownloadAttempt(fallback, 0, null, []))
       .toBe('正在从镜像备用源下载')
     expect(describeCodexDesktopDownloadAttempt(fallback, 1, '国内镜像（26.917.9434.0）：SHA-256 不一致', ['国内镜像：查询超时']))
-      .toBe('前一路镜像未通过校验，已改从镜像备用源下载')
+      .toBe('上一个镜像未通过校验，已改为从镜像备用源下载')
   })
 
   it('says the store is missing instead of that it failed, on every mirror attempt', () => {
@@ -1167,25 +1264,25 @@ describe('Codex Desktop mirror fallback disclosure', () => {
     const fallback = { label: '镜像备用源', url: 'https://codexapp-r2.agentsmirror.com/latest/win-x64' }
     const noStore = { storeFailure: null, storeUnavailable: true }
     expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], noStore))
-      .toBe('这台电脑没有微软商店，直接用国内线路装：正在从国内镜像下载')
+      .toBe('本机没有微软商店，直接通过国内线路安装：正在从国内镜像下载')
     expect(describeCodexDesktopDownloadAttempt(fallback, 1, '国内镜像：SHA-256 不一致', [], noStore))
-      .toBe('这台电脑没有微软商店，直接用国内线路装：前一路镜像未通过校验，已改从镜像备用源下载')
+      .toBe('本机没有微软商店，直接通过国内线路安装：上一个镜像未通过校验，已改为从镜像备用源下载')
     expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], noStore)).not.toContain('没装上')
   })
 
   it('names a missing store installer as a missing part, not a store failure', () => {
     const primary = { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' }
     expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], {
-      storeFailure: '这台电脑上的微软商店安装组件用不了',
+      storeFailure: '本机的微软商店安装组件不可用',
       storeInstallerMissing: true,
-    })).toBe('微软商店少一个安装组件，先用国内线路装：正在从国内镜像下载')
+    })).toBe('微软商店缺少安装组件，先通过国内线路安装：正在从国内镜像下载')
     expect(describeCodexDesktopStoreNotice({ storeFailure: null })).toBe('')
   })
 
   it('keeps the Microsoft Store failure in front of every mirror attempt', () => {
     const primary = { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' }
-    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], '连不上微软商店'))
-      .toBe('微软商店这次没装上（连不上微软商店），正在从国内镜像下载')
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], '无法连接微软商店'))
+      .toBe('微软商店安装失败（无法连接微软商店），正在从国内镜像下载')
   })
 
   it('reads the failure the historical probe actually produces', async () => {
@@ -1504,6 +1601,36 @@ describe('Codex Desktop Appx probe script', () => {
     // WMI cannot confirm, and it must not be limited to today's exe names.
     expect(script).not.toContain('GetOwnerSid')
     expect(script).not.toContain("Name='ChatGPT.exe'")
+  })
+
+  it('finds a launched window where PowerShell is held to ConstrainedLanguage', () => {
+    // 应用控制策略开着的电脑上，等窗口这条查进程脚本以前用 Process 这句 .NET 调用问会话、
+    // 用 [pscustomobject] 出结果，两句都被拒，Codex 已经开在屏幕上，星芒等满时间还说没启动。
+    // 受限模式下改问 WMI 这个 PowerShell 进程自己在哪个会话；FullLanguage 照旧走原来那句。
+    const script = buildCodexDesktopSessionProcessProbeScript()
+    const scan = scanPowerShell(script)
+    expect(scan.unterminated).toBe(false)
+    expect(unbalancedBracket(scan.code)).toBeNull()
+    expect(script.startsWith(powerShellUtf8OutputStatement)).toBe(true)
+    const fullLanguageBranch = /if \(\$ExecutionContext\.SessionState\.LanguageMode -eq 'FullLanguage'\) \{[^}]*\}/g
+    const branches = script.match(fullLanguageBranch) ?? []
+    expect(branches.some((branch) => (
+      branch.includes('$currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId')
+    ))).toBe(true)
+    const constrained = script.replace(fullLanguageBranch, '')
+    expect(constrained).toContain('Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop')
+    expect(constrained).toContain('$currentSessionId = $selfProcess.SessionId')
+    // An unknown session must fail the probe, not run a filter that names no session.
+    expect(constrained).toContain('if ($null -eq $currentSessionId) { throw ')
+    // Same two fields in the same order as before, so FullLanguage writes the same JSON.
+    expect(constrained).toContain('[ordered]@{ ProcessId = $_.ProcessId; ExecutablePath = $path }')
+    // What ConstrainedLanguage refuses is left only inside the FullLanguage branches.
+    expect(constrained).not.toContain('[pscustomobject]')
+    expect(constrained).not.toContain('[System.')
+    expect(constrained.replace(/\[regex\]::Match\(/g, '')).not.toContain('::')
+    // Outside FullLanguage the output stays in the console code page, so anything past ASCII is escaped.
+    expect(script).toContain(buildPowerShellJsonOutputStatements('$items | ConvertTo-Json -Compress')[1])
+    expect(script.trimEnd().endsWith('$xingmangJson')).toBe(true)
   })
 
   it('reduces the launch probe to PIDs of the expected package only', () => {
@@ -2166,7 +2293,7 @@ describe('Codex Desktop launch queueing', () => {
     await accountWork.whenIdle()
     revision++
     accountWork.abortQueued()
-    await expect(started).rejects.toThrow('账号刚切换过')
+    await expect(started).rejects.toThrow('账号刚刚切换')
     expect(queue.snapshot().pendingKeys).toEqual([])
 
     const next = fixture.service.launchCodexDesktop('open', fixture.target, { accountWork: accountWork.queue() })
@@ -2218,7 +2345,7 @@ describe('Codex Desktop launch queueing', () => {
     await new Promise<void>((resolve) => setImmediate(resolve))
     expect(settled).toBe(false)
     showWindow()
-    await expect(launch).rejects.toThrow('账号刚切换过')
+    await expect(launch).rejects.toThrow('账号刚刚切换')
     expect(waited).toBe(true)
   })
 
@@ -2244,7 +2371,7 @@ describe('Codex Desktop launch queueing', () => {
 
 describe('initialCodexDesktopChineseLocale', () => {
   it('says the Chinese patch is off only for a Codex it starts fresh', () => {
-    const off = { status: 'failed', message: 'Codex 已经打开，中文界面暂时停用了，这次先用英文界面，修好以后会自动恢复。' }
+    const off = { status: 'failed', message: 'Codex 已打开，中文界面已暂时停用，本次使用英文界面，修复后将自动恢复。' }
     expect(initialCodexDesktopChineseLocale({ chineseSuspended: true }, true)).toEqual(off)
     expect(initialCodexDesktopChineseLocale({ chineseSuspended: true }, false)).toBeUndefined()
     expect(initialCodexDesktopChineseLocale({}, true)).toBeUndefined()
@@ -2395,7 +2522,7 @@ describe('Codex Desktop install on macOS', () => {
       await (options.withVendorDownloadRoute ?? ((operation: () => Promise<void>) => operation()))(async () => {
         options.onProgress?.({ phase: 'downloading', message: '正在下载 Codex 桌面端 26.930.31730', percent: 40 })
       })
-      options.onProgress?.({ phase: 'checking', message: '正在检查下载下来的安装包是不是完整的官方版', percent: null })
+      options.onProgress?.({ phase: 'checking', message: '正在校验下载的安装包是否为完整的官方版本', percent: null })
       await options.runProcess({ executable: '/usr/bin/codesign', argv: ['--verify'], timeoutMs: 1_000 })
       options.onProgress?.({ phase: 'installing', message: '正在放进「应用程序」', percent: null })
       return { version: '26.930.31730', path: '/Applications/ChatGPT.app' }
@@ -2449,9 +2576,9 @@ describe('Codex Desktop install on macOS', () => {
     expect(bucket.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({ bucket: { onFallback } }))
     expect(f.progress()).toEqual([
       ['downloading', 40, '正在下载 Codex 桌面端 26.930.31730'],
-      ['validating', null, '正在检查下载下来的安装包是不是完整的官方版'],
+      ['validating', null, '正在校验下载的安装包是否为完整的官方版本'],
       ['installing', null, '正在放进「应用程序」'],
-      ['completed', 100, 'Codex 桌面端 26.930.31730 装好了，在「应用程序」里叫 ChatGPT'],
+      ['completed', 100, 'Codex 桌面端 26.930.31730 已安装完成，在「应用程序」中名为 ChatGPT'],
     ])
     // The installer's own checks run through the same runner, never claiming trustedOnly on darwin.
     expect(f.executeCommand).toHaveBeenCalledWith(
@@ -2492,7 +2619,7 @@ describe('Codex Desktop install on macOS', () => {
     await expect(f.service.installCodexDesktop(f.target))
       .resolves.toEqual({ action: 'unchanged', previousVersion: '26.930.31730', installedVersion: '26.930.31730' })
     expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
-    expect(f.progress()).toEqual([['completed', 100, 'Codex 桌面端已经装好了，不用重复安装']])
+    expect(f.progress()).toEqual([['completed', 100, 'Codex 桌面端已安装，无需重复安装']])
   })
 
   // 点「安装」那一刻检测没做完：照「没装」往下走的话，安装那一步会把「应用程序」里客户自己装好的
@@ -2517,7 +2644,7 @@ describe('Codex Desktop install on macOS', () => {
         .resolves.toEqual({ action: 'unchanged', previousVersion: '26.930.31730', installedVersion: '26.930.31730' })
       expect(detectMacosCodexApp).toHaveBeenCalledTimes(2)
       expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
-      expect(f.progress()).toEqual([['completed', 100, 'Codex 桌面端已经装好了，不用重复安装']])
+      expect(f.progress()).toEqual([['completed', 100, 'Codex 桌面端已安装，无需重复安装']])
     }
   })
 
@@ -2629,7 +2756,7 @@ describe('Codex Desktop install on macOS', () => {
 
   it('will not install for root, whose copy the customer could never update', async () => {
     const f = macInstallFixture({ getuid: () => 0 })
-    await expect(f.service.installCodexDesktop(f.target)).rejects.toThrow('请用你平时登录 Mac 的账号重新打开星芒，再安装 Codex 桌面端。')
+    await expect(f.service.installCodexDesktop(f.target)).rejects.toThrow('请使用您日常登录 Mac 的账号重新打开星芒，再安装 Codex 桌面端。')
     expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
   })
 
@@ -2656,7 +2783,7 @@ describe('Codex Desktop install on macOS', () => {
     const unexpected = macInstallFixture({ withDownloadRoute: async () => { throw new Error('连接超时') } })
     const error = await unexpected.service.installCodexDesktop(unexpected.target).then(() => null, (reason: unknown) => reason)
     expect(error).toBeInstanceOf(MacosDesktopInstallError)
-    expect((error as MacosDesktopInstallError).message).toBe('Codex 桌面端没装好，请再点一次「安装」。')
+    expect((error as MacosDesktopInstallError).message).toBe('Codex 桌面端安装失败，请再次点击「安装」。')
     expect((error as MacosDesktopInstallError).detail).toBe('连接超时')
   })
 
@@ -2664,9 +2791,9 @@ describe('Codex Desktop install on macOS', () => {
     const disk = new Error('Codex 桌面端安装失败：磁盘空间不足，只剩 300 MB，至少需要 1.0 GB，请先清理磁盘再试')
     expect(toCodexDesktopMacInstallFailure(disk)).toBe(disk)
     const failure = toCodexDesktopMacInstallFailure(new Error('HTTP 503'))
-    expect(failure.message).toBe('Codex 桌面端没装好，请再点一次「安装」。')
+    expect(failure.message).toBe('Codex 桌面端安装失败，请再次点击「安装」。')
     expect(isMacosDesktopInstallFailure(failure.message)).toBe(true)
-    expect(failure.message).not.toContain('Codex 桌面端没装上')
+    expect(failure.message).not.toContain('Codex 桌面端未能安装')
   })
 
   it('stops a cancelled install and reports it as cancelled', async () => {
@@ -2823,7 +2950,7 @@ describe('Codex Desktop updates on macOS', () => {
       },
     })
     await expect(swapping.service.installCodexDesktop(swapping.target, { update: true, closeRunning: false })).resolves.toMatchObject({ action: 'updated' })
-    expect(refusal).toEqual({ cancelled: false, reason: '正在安装 Codex 桌面端，这一步中断会留下装了一半的程序，请等它结束。' })
+    expect(refusal).toEqual({ cancelled: false, reason: '正在安装 Codex 桌面端，此步骤中断将留下未安装完成的程序，请等待安装结束。' })
 
     const cancelled = updateFixture(installed('26.930.31730', '/Applications/ChatGPT.app', true), {
       installMacosDesktopApp: async (options) => {
@@ -2843,7 +2970,7 @@ describe('Codex Desktop updates on macOS', () => {
     })
     await expect(f.service.installCodexDesktop(f.target, { update: true, closeRunning: false }))
       .resolves.toEqual({ action: 'unchanged', previousVersion: '26.930.31730', installedVersion: '26.930.31730' })
-    expect(f.progress().at(-1)).toBe('Codex 桌面端已经是最新版，不用更新')
+    expect(f.progress().at(-1)).toBe('Codex 桌面端已是最新版本，无需更新')
   })
 })
 
@@ -2874,13 +3001,13 @@ describe('Codex Desktop Microsoft Store install', () => {
   })
 
   it('explains Store failures in plain words', () => {
-    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x80072efd | 0 }))).toBe('连不上微软商店')
-    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a15002b | 0 }))).toBe('商店里暂时还没有更新的版本')
-    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a150014 | 0 }))).toBe('商店里没找到 Codex 桌面端')
-    expect(describeCodexDesktopStoreFailure(storeError({ code: 'TIMED_OUT', exitCode: null }))).toBe('等了很久还没装完')
-    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a150084 | 0 }))).toBe('商店那边没说原因')
+    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x80072efd | 0 }))).toBe('无法连接微软商店')
+    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a15002b | 0 }))).toBe('商店暂无更新的版本')
+    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a150014 | 0 }))).toBe('商店中未找到 Codex 桌面端')
+    expect(describeCodexDesktopStoreFailure(storeError({ code: 'TIMED_OUT', exitCode: null }))).toBe('等待时间过长，仍未安装完成')
+    expect(describeCodexDesktopStoreFailure(storeError({ exitCode: 0x8a150084 | 0 }))).toBe('商店未说明原因')
     expect(codexDesktopStoreExitCode(storeError({ exitCode: 0x8a150084 | 0 }))).toBe('0x8a150084')
-    expect(describeCodexDesktopStoreFailure(new Error('spawn failed'))).toBe('安装没有完成')
+    expect(describeCodexDesktopStoreFailure(new Error('spawn failed'))).toBe('安装未完成')
   })
 
   it('reads the last percentage from Store progress output', () => {
@@ -2890,19 +3017,19 @@ describe('Codex Desktop Microsoft Store install', () => {
   })
 
   it('tells the user how long the Store install has been waiting', () => {
-    expect(buildCodexDesktopStoreWaitMessage(0, null)).toBe('正在从微软商店下载安装 Codex 桌面端，要等几分钟，请别关窗口')
+    expect(buildCodexDesktopStoreWaitMessage(0, null)).toBe('正在从微软商店下载并安装 Codex 桌面端，需要几分钟，请勿关闭窗口')
     expect(buildCodexDesktopStoreWaitMessage(3 * 60_000 + 5_000, null))
-      .toBe('正在从微软商店下载安装 Codex 桌面端，已经等了 3 分 05 秒。商店有时要十来分钟，不用管它，请别关窗口')
-    expect(buildCodexDesktopStoreWaitMessage(codexDesktopStoreHeartbeatMs, 42)).toContain('（42%），已经等了 15 秒')
+      .toBe('正在从微软商店下载并安装 Codex 桌面端，已等待 3 分 05 秒。商店有时需要十余分钟，请耐心等待，勿关闭窗口')
+    expect(buildCodexDesktopStoreWaitMessage(codexDesktopStoreHeartbeatMs, 42)).toContain('（42%），已等待 15 秒')
   })
 
   it('says how much longer the Store gets before switching to the fallback download', () => {
     const timeoutMs = 15 * 60_000
     expect(buildCodexDesktopStoreWaitMessage(12 * 60_000, null, timeoutMs))
-      .toBe('还在等微软商店，最多再等 3 分钟；还不行星芒会自动换 OpenAI 官网的离线安装包接着装，请别关窗口')
-    expect(buildCodexDesktopStoreWaitMessage(14 * 60_000 + 30_000, 90, timeoutMs)).toContain('（90%），最多再等 1 分钟')
-    expect(buildCodexDesktopStoreWaitMessage(timeoutMs + 5_000, null, timeoutMs)).toContain('最多再等 1 分钟')
-    expect(buildCodexDesktopStoreWaitMessage(11 * 60_000, null, timeoutMs)).toContain('已经等了 11 分 00 秒')
+      .toBe('仍在等待微软商店，最多再等待 3 分钟；如仍未完成，星芒将自动改用 OpenAI 官网的离线安装包继续安装，请勿关闭窗口')
+    expect(buildCodexDesktopStoreWaitMessage(14 * 60_000 + 30_000, 90, timeoutMs)).toContain('（90%），最多再等待 1 分钟')
+    expect(buildCodexDesktopStoreWaitMessage(timeoutMs + 5_000, null, timeoutMs)).toContain('最多再等待 1 分钟')
+    expect(buildCodexDesktopStoreWaitMessage(11 * 60_000, null, timeoutMs)).toContain('已等待 11 分 00 秒')
   })
 
   it('keeps install jargon out of the Store wait messages', () => {
@@ -2971,43 +3098,43 @@ describe('Codex Desktop official offline package', () => {
   }
 
   it('words the official download step the way the customer was told', () => {
-    const storeFailed = { storeFailure: '连不上微软商店' }
+    const storeFailed = { storeFailure: '无法连接微软商店' }
     expect(describeCodexDesktopOfficialDownload(storeFailed, '26.930.1.0', { percent: 12 }))
-      .toBe('微软商店这次没装上（连不上微软商店），正在从 OpenAI 官网下载 Codex 桌面端 26.930.1.0 的离线安装包（12%）')
+      .toBe('微软商店安装失败（无法连接微软商店），正在从 OpenAI 官网下载 Codex 桌面端 26.930.1.0 的离线安装包（12%）')
     expect(describeCodexDesktopOfficialDownload({ storeFailure: null, storeUnavailable: true }, '26.930.1.0'))
-      .toBe('这台电脑没有微软商店，正在从 OpenAI 官网下载 Codex 桌面端 26.930.1.0 的离线安装包（0%）')
+      .toBe('本机没有微软商店，正在从 OpenAI 官网下载 Codex 桌面端 26.930.1.0 的离线安装包（0%）')
     expect(describeCodexDesktopOfficialDownload({
-      storeFailure: '这台电脑上的微软商店安装组件用不了',
+      storeFailure: '本机的微软商店安装组件不可用',
       storeInstallerMissing: true,
     }, '26.930.1.0', { percent: 40 }))
-      .toBe('微软商店少一个安装组件，正在从 OpenAI 官网下载 Codex 桌面端 26.930.1.0 的离线安装包（40%）')
+      .toBe('微软商店缺少安装组件，正在从 OpenAI 官网下载 Codex 桌面端 26.930.1.0 的离线安装包（40%）')
     expect(describeCodexDesktopOfficialDownload(storeFailed, '26.930.1.0', { percent: 40, resuming: true }))
-      .toBe('网络断了一下，正在接着从 OpenAI 官网下载 Codex 桌面端 26.930.1.0 的离线安装包（已下 40%）')
+      .toBe('网络曾短暂中断，正在继续从 OpenAI 官网下载 Codex 桌面端 26.930.1.0 的离线安装包（已下载 40%）')
     // 接线路、读官网清单那几秒还不知道版本：先把「正在等微软商店」换掉。
     expect(describeCodexDesktopOfficialDownload(storeFailed, null))
-      .toBe('微软商店这次没装上（连不上微软商店），正在从 OpenAI 官网下载 Codex 桌面端的离线安装包')
+      .toBe('微软商店安装失败（无法连接微软商店），正在从 OpenAI 官网下载 Codex 桌面端的离线安装包')
   })
 
   it('names the failed official package, without the store reason, before every mirror attempt', () => {
     const primary = { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' }
     const official = 'OpenAI 官网连接或下载超时'
-    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], { storeFailure: '连不上微软商店', officialFailure: official }))
-      .toBe('微软商店这次没装上，OpenAI 官网的离线安装包也没下成，正在从国内镜像下载')
+    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], { storeFailure: '无法连接微软商店', officialFailure: official }))
+      .toBe('微软商店安装失败，OpenAI 官网的离线安装包也未能下载，正在从国内镜像下载')
     expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], { storeFailure: null, storeUnavailable: true, officialFailure: official }))
-      .toBe('这台电脑没有微软商店，OpenAI 官网的离线安装包也没下成，正在从国内镜像下载')
+      .toBe('本机没有微软商店，OpenAI 官网的离线安装包也未能下载，正在从国内镜像下载')
     expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], {
-      storeFailure: '这台电脑上的微软商店安装组件用不了',
+      storeFailure: '本机的微软商店安装组件不可用',
       storeInstallerMissing: true,
       officialFailure: official,
-    })).toBe('微软商店少一个安装组件，OpenAI 官网的离线安装包也没下成，正在从国内镜像下载')
-    expect(describeCodexDesktopStoreNotice({ storeFailure: '连不上微软商店', officialFailure: official })).not.toContain(official)
+    })).toBe('微软商店缺少安装组件，OpenAI 官网的离线安装包也未能下载，正在从国内镜像下载')
+    expect(describeCodexDesktopStoreNotice({ storeFailure: '无法连接微软商店', officialFailure: official })).not.toContain(official)
   })
 
   it('keeps install jargon out of every official download line', () => {
     const attempts = [
-      { storeFailure: '连不上微软商店' },
+      { storeFailure: '无法连接微软商店' },
       { storeFailure: null, storeUnavailable: true },
-      { storeFailure: '这台电脑上的微软商店安装组件用不了', storeInstallerMissing: true },
+      { storeFailure: '本机的微软商店安装组件不可用', storeInstallerMissing: true },
     ]
     for (const attempt of attempts) {
       for (const message of [
@@ -3616,7 +3743,7 @@ describe('Codex Desktop from the Xingmang bucket', () => {
     // Handed over as is, it is the firewall card right away, with no Store or official route in it.
     const failure = toCodexDesktopInstallFailure(firewallOff, { storeFailure: null, storeExitCode: null, updating: true })
     expect(failure).toBeInstanceOf(CodexDesktopInstallFailure)
-    expect(failure.message).toBe(`Codex 桌面端没装上：${codexDesktopInstallFailureReasons.firewallOff}`)
+    expect(failure.message).toBe(`Codex 桌面端未能安装：${codexDesktopInstallFailureReasons.firewallOff}`)
     expect(failure).toMatchObject({ reason: 'firewallOff', detail: firewallOff.message })
   })
 })

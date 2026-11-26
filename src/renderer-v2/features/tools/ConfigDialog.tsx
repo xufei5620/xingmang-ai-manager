@@ -41,7 +41,7 @@ export interface ConfigDialogProps {
   onOfficialQuota?(): void
   onClose(): void
   /**
-   * 工具自己都读不了这份配置时（brokenConfigOf），顶上那行说明旁边的「修好它」：先关掉配置（有没保存的修改照旧先问），
+   * 工具自己都读不了这份配置时（brokenConfigOf），顶上那行说明旁边的「立即修复」：先关掉配置（有没保存的修改照旧先问），
    * 再走首页同一颗按钮。缺省 = 不给这颗按钮（旧行为，只能展开「高级」点重置）。
    */
   onRepair?(tool: ToolId): void
@@ -122,8 +122,8 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
   const sourceStorage = getSourceMarkerStorage()
   const switchLabel = switchAccountLabel(accountName)
   const currentSource = sourceFor(native, provider, sourceStorage)
-  // 工具自己读不了的文件，星芒读不出 Key 时会认成官方账号（已知44）。这时先选上首页「修好它」
-  // 会用的那边，展开「高级」点重置就和点「修好它」一样；读得出官方登录的照旧是官方账号。
+  // 工具自己读不了的文件，星芒读不出 Key 时会认成官方账号（已知44）。这时先选上首页「立即修复」
+  // 会用的那边，展开「高级」点重置就和点「立即修复」一样；读得出官方登录的照旧是官方账号。
   const broken = brokenConfigOf(native, provider)
   const initialSource = currentSource === 'official' && broken && brokenConfigRepairTarget(broken, native) === 'account' ? 'account' : currentSource
   const draft: ConfigDraft = edited ?? {
@@ -163,7 +163,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     setKeysLoading(true); setKeyError('')
     void api.readUsableGroups().then((groups) => { if (current) setUsableGroups(groups.map((group) => group.name)) }, () => { if (current) setUsableGroups(null) })
     void api.readKeys().then((page) => { if (current) setKeys(page.keys) }).catch((cause) => {
-      if (current) setKeyError(errorMessage(cause, '密钥列表暂时没有读到'))
+      if (current) setKeyError(errorMessage(cause, '密钥列表暂时无法获取'))
     }).finally(() => { if (current) setKeysLoading(false) })
     return () => { current = false }
   }, [api, signedIn, keyRevision])
@@ -175,7 +175,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     void api.readKeyOptions(tool).then((value) => {
       if (active.current && owner()) setMetadata(value)
     }).catch((cause) => {
-      if (active.current && owner()) setMetadataError(errorMessage(cause, '当前密钥信息暂时没有读到'))
+      if (active.current && owner()) setMetadataError(errorMessage(cause, '当前密钥信息暂时无法获取'))
     }).finally(() => {
       if (active.current && owner()) setMetadataLoading(false)
     })
@@ -249,7 +249,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
       setModelsDetected(true)
       const next = detectedDraft(target, result)
       if (next !== target) change(next)
-      if (!result.length) setError('这把密钥没有可用模型，请换一把密钥后重新检测。')
+      if (!result.length) setError('该密钥无可用模型，请更换密钥后重新检测。')
     } catch (cause) {
       if (active.current && id()) { setError(modelCheckFailure(cause, '模型检测未完成')); setDetectTried(true) }
     }
@@ -273,7 +273,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     setModelsDetected(true)
     const next = detectedDraft(target, result)
     if (next !== target) change(next)
-    if (!result.length) { setError('这把密钥没有可用模型，请换一把密钥后重新检测。'); return }
+    if (!result.length) { setError('该密钥无可用模型，请更换密钥后重新检测。'); return }
     if (!result.includes(next.model)) { setError('请选择默认模型。'); return }
     if (readyToSave(next, result)) commit('merge', next)
   }
@@ -281,7 +281,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     if (locked.current) return
     locked.current = true; setBusy(label); setError(''); setWarning('')
     try { await operation() }
-    catch (cause) { if (active.current) setError(failureWithDetail(cause, `${label}没有成功`)) }
+    catch (cause) { if (active.current) setError(failureWithDetail(cause, `${label}失败`)) }
     finally { locked.current = false; if (active.current) setBusy('') }
   }
   // 一键改用当前账号：成功后留在对话框里说一句结果（一闪而过的提示容易看漏），
@@ -295,7 +295,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
       if (result) onKeyWritten?.(tool)
       if (!active.current || !result) return
       setEdited(null)
-      setNotice(result.verified ? `已${switchLabel}，可以开始用了。` : `已${switchLabel}。${result.message.replace(/^已改用当前账号[，。]?/, '')}`)
+      setNotice(result.verified ? `已${switchLabel}，现在可以开始使用。` : `已${switchLabel}。${result.message.replace(/^已改用当前账号[，。]?/, '')}`)
     } finally { locked.current = false; if (active.current) setBusy('') }
   }
   /** 保存与重置共用同一套前置检查；返回 false 表示已经把原因写进了提示。 */
@@ -307,7 +307,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     if (target.source === 'account' && !signedIn && !current) { onLogin(); return false }
     if (target.source === 'account') {
       if (current && !native.hasApiKey) { setError('当前工具没有可保留的密钥，请重新选择。'); return false }
-      if (automatic && (!metadata || metadataLoading || metadataError)) { setError('还没读到当前账号的密钥信息，请稍等片刻或点「刷新密钥」。'); return false }
+      if (automatic && (!metadata || metadataLoading || metadataError)) { setError('尚未获取当前账号的密钥信息，请稍候或点击「刷新密钥」。'); return false }
       if (!current && !automatic && !chosen) { setError('所选密钥已不可用，请重新选择。'); return false }
       if (!current && !automatic && (keysLoading || keyError)) { setError('请先获取最新的账号密钥列表。'); return false }
       if (!automatic && !target.model) { setError('请选择默认模型。'); return false }
@@ -315,7 +315,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     if (target.source === 'manual') {
       const issue = manualKeyIssue(target.secret, strictKeyFormat)
       if (issue) { setSecretError(issue); return false }
-      if (target.validatedSecret !== target.secret || !detected.includes(target.model)) { setError('请先检测这把密钥的可用模型，再选择模型保存。'); return false }
+      if (target.validatedSecret !== target.secret || !detected.includes(target.model)) { setError('请先检测该密钥的可用模型，再选择模型并保存。'); return false }
     }
     setError('')
     return true
@@ -332,7 +332,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     try {
       const outcome = await api.configureManaged(tool, draft.model || undefined, 'merge')
       if (outcome.failed.length) throw new Error(outcome.failed.map((item) => item.message).join('；'))
-      if (!outcome.configured.includes(provider)) throw new Error('工具没有返回配置写入结果，请重新检测后再试。')
+      if (!outcome.configured.includes(provider)) throw new Error('工具未返回配置写入结果，请重新检测后重试。')
       saved = true
       onKeyWritten?.(tool)
       const markerWarning = applyManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
@@ -352,11 +352,11 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
       const suggested = result.includes(savedModel) ? savedModel : resolveDefaultCliModel(provider, result, savedModel, modelHints) ?? ''
       if (suggested && suggested !== savedModel) setEdited({ ...savedDraft, model: suggested, dirty: true })
       if (markerWarning) setWarning(markerWarning)
-      setNotice('密钥已准备好并保存。想换模型就在上面选，选完再点「保存配置」。')
+      setNotice('密钥已准备并保存。如需更换模型，请在上方选择后点击「保存配置」。')
     } catch (cause) {
       if (!active.current || !id()) return
       // 写进去了就要说清楚，否则用户会以为什么都没改、再去点一遍。
-      setError(saved ? `配置已保存，但模型列表暂时没读到：${errorMessage(cause, '请稍后再点一次')}` : failureWithDetail(cause, '保存并检测没有成功'))
+      setError(saved ? `配置已保存，但模型列表暂时无法获取：${errorMessage(cause, '请稍后重试')}` : failureWithDetail(cause, '保存并检测失败'))
     }
     finally { locked.current = false; if (active.current) setBusy('') }
   }
@@ -389,7 +389,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
       else if (target.keyId === AUTOMATIC_KEY) {
         const result = await api.configureManaged(tool, target.model || undefined, mode)
         if (result.failed.length) throw new Error(result.failed.map((item) => item.message).join('；'))
-        if (!result.configured.includes(provider)) throw new Error('工具没有返回配置写入结果，请重新检测后再试。')
+        if (!result.configured.includes(provider)) throw new Error('工具未返回配置写入结果，请重新检测后重试。')
         markerWarning = applyManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
       }
       else throw new Error('请选择要保存的密钥。')
@@ -430,7 +430,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
   }
   function copyPath(path: string) {
     const copied = navigator.clipboard?.writeText ? navigator.clipboard.writeText(path) : Promise.reject(new Error('clipboard unavailable'))
-    void copied.then(() => toast.show('路径已复制', 'ok'), () => toast.show('没复制上，请手动选中这行文字复制。', 'warn'))
+    void copied.then(() => toast.show('路径已复制', 'ok'), () => toast.show('复制失败，请手动选中此行文字复制。', 'warn'))
   }
   const officialName = officialAccountNames[provider] ?? '官方账号'
   const officialEmail = native.officialAccountEmail
@@ -439,23 +439,23 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
   const officialNote = definition.sources.includes('official') ? officialAccountNotes[provider] : null
   const sourceCards: RadioCardOption[] = [
     { value: 'account', label: '当前账号', badge: <Pill tone="accent">推荐</Pill>, description: '按用量从当前账号扣费', testId: 'tool-source-account' },
-    ...(definition.sources.includes('official') ? [{ value: 'official', label: officialName, description: officialEmail ? officialPlan ? `已登录 ${officialPlan}` : '已登录' : '用你自己的官方订阅', testId: 'tool-source-official' }] : []),
-    { value: 'manual', label: '自己填写密钥', description: '粘贴星芒创建的密钥', testId: 'tool-manual-key' },
+    ...(definition.sources.includes('official') ? [{ value: 'official', label: officialName, description: officialEmail ? officialPlan ? `已登录 ${officialPlan}` : '已登录' : '使用您的官方订阅', testId: 'tool-source-official' }] : []),
+    { value: 'manual', label: '手动填写密钥', description: '粘贴星芒创建的密钥', testId: 'tool-manual-key' },
   ]
   const keyDescription = draft.source === 'manual'
     ? { name: '手动填写', group: '分组未确认', preview: manualKeyPreview(draft.secret) }
     : usingCurrentKey
       ? { name: metadata?.current.name || '名称未确认', group: metadata?.current.group || '分组未确认', preview: metadata?.current.preview || native.apiKeyPreview || '密钥预览未提供' }
       : usingAutomaticKey
-        ? { name: metadata?.automatic.name || '正在读取', group: metadata?.automatic.group || '分组还没读到', preview: '保存时自动准备' }
+        ? { name: metadata?.automatic.name || '正在读取', group: metadata?.automatic.group || '分组尚未获取', preview: '保存时自动准备' }
         : { name: selectedKey?.name || '密钥已不可用', group: selectedKey?.group || '分组未确认', preview: selectedKey?.maskedKey || '密钥预览未提供' }
   const automaticLabel = metadata
     ? '自动准备（推荐）'
-    : metadataError ? '自动准备 · 账号信息暂时没读到' : '自动准备 · 正在读取账号信息'
+    : metadataError ? '自动准备 · 账号信息暂时无法获取' : '自动准备 · 正在读取账号信息'
   const keyOptions: PickerOption[] = [
     // 别的站的 Key 不给「保持当前」：选了也存不进去（主进程报「属于其他账号」）。
     ...((native.hasApiKey && native.matchesRelay) || usingCurrentKey ? [{ value: CURRENT_KEY, label: currentKeyLabel(metadata, native.apiKeyPreview), disabled: !native.hasApiKey || !native.matchesRelay }] : []),
-    { value: AUTOMATIC_KEY, label: automaticLabel, description: '保存时自动准备好密钥，不用自己创建', disabled: !metadata || metadataLoading || Boolean(metadataError) },
+    { value: AUTOMATIC_KEY, label: automaticLabel, description: '保存时自动准备密钥，无需手动创建', disabled: !metadata || metadataLoading || Boolean(metadataError) },
     ...listedAccountKeys(keys, draft.keyId, usableGroups).map((key) => ({ value: String(key.id), label: key.name || key.maskedKey || '密钥预览未提供', description: accountKeyDescription(key) })),
     ...(!usingCurrentKey && !usingAutomaticKey && !selectedKey ? [{ value: draft.keyId, label: '所选密钥已不可用，请重新选择', disabled: true }] : []),
   ]
@@ -484,39 +484,39 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
   const automaticReady = signedIn && Boolean(metadata) && !metadataLoading && !metadataError && !(draft.source === 'account' && usingAutomaticKey)
   const saveSummary = <div data-testid="tool-save-summary">{draft.source === 'official' ? <p>来源：{officialName}</p> : <><p>密钥：{keyDescription.name}</p><p>分组：{keyDescription.group}</p><p>预览：{keyDescription.preview}</p><p>模型：{draft.model || '使用该分组默认模型'}</p></>}</div>
   const permissionText = !permission ? '' : permission.error ? permission.error
-    : permission.trustLevel === 'trusted' ? 'Codex 已信任这个文件夹，可以直接改里面的文件'
-      : permission.trustLevel === 'untrusted' ? 'Codex 没有信任这个文件夹' : 'Codex 还没对这个文件夹做过选择'
+    : permission.trustLevel === 'trusted' ? 'Codex 已信任该文件夹，可直接修改其中的文件'
+      : permission.trustLevel === 'untrusted' ? 'Codex 未信任该文件夹' : 'Codex 尚未对该文件夹作出选择'
   const modelField = <div className="xm-field v2-config-model">
     <div className="v2-config-model-row"><Select label="默认模型" testId="tool-default-model" value={draft.model} options={[...(!draft.model ? [{ value: '', label: '请先检测模型', disabled: true }] : []), ...modelChoices.options]} onChange={(event) => change({ model: event.target.value })} />
       {!(draft.source === 'account' && usingAutomaticKey) && <Button icon={RefreshCw} testId="tool-detect-models" loading={detecting} onClick={() => void detectModels()} disabled={draft.source === 'manual' && !draft.secret}>{detecting ? '检测中' : '检测模型'}</Button>}</div>
-    {detectedForDraft && draft.model && models.includes(draft.model) && <p className="v2-ok-line" data-testid="tool-model-ok"><Check size={13} aria-hidden="true" />这把密钥能用 {modelCount} 个模型，{draft.model} 可以用</p>}
+    {detectedForDraft && draft.model && models.includes(draft.model) && <p className="v2-ok-line" data-testid="tool-model-ok"><Check size={13} aria-hidden="true" />该密钥可用 {modelCount} 个模型，{draft.model} 可用</p>}
     {notice && <p role="status" data-testid="tool-save-detect-notice">{notice}</p>}
   </div>
-  return <Dialog open title={`${definition.name} 配置`} subtitle={provider === 'codex' ? 'Codex CLI 和 Codex 桌面端共用这一份配置，在哪边改都一样' : undefined} width={640}
+  return <Dialog open title={`${definition.name} 配置`} subtitle={provider === 'codex' ? 'Codex CLI 与 Codex 桌面端共用此配置，在任一端修改效果相同' : undefined} width={640}
     onClose={onClose} busy={Boolean(busy)} dirty={draft.dirty} testId="config-dialog"
-    footer={<><span className="v2-dialog-footer-start v2-config-foot-note">只改账号、密钥和模型，改之前会自动备份。</span><DialogExitButton disabled={Boolean(busy)}>取消</DialogExitButton>
+    footer={<><span className="v2-dialog-footer-start v2-config-foot-note">仅修改账号、密钥和模型，修改前将自动备份。</span><DialogExitButton disabled={Boolean(busy)}>取消</DialogExitButton>
       <Button variant="primary" icon={done ? undefined : Save} loading={saving} disabled={Boolean(busy) || (!done && draft.source === 'unknown')} onClick={primary} testId="tool-save-config">{primaryLabel}</Button></>}>
     <fieldset className="v2-config-controls" disabled={Boolean(busy)}>
-    {/* 读不了的文件，这里改什么都存不进去（只更新会被拒），出路是「修好它」，放在最上面先说（2026-11-18 客户在这里来回点）。 */}
+    {/* 读不了的文件，这里改什么都存不进去（只更新会被拒），出路是「立即修复」，放在最上面先说（2026-11-18 客户在这里来回点）。 */}
     {broken && onRepair && <><p className="v2-callout is-bad" data-testid="tool-broken-config-note">{brokenConfigDetails[broken]}</p><div className="v2-inline-actions">
-      <DialogExitButton variant="primary" after={() => onRepair(tool)} testId="tool-repair-config">修好它</DialogExitButton></div></>}
-    {draft.source === 'unknown' && <><p className="v2-callout is-warn" data-testid="tool-foreign-key-note">{foreignKeyKind(native, 'unknown') === 'otherAccount' ? '这把密钥可能不是当前账号的，用量可能算到别的账号上。' : '这个工具现在用的不是当前账号的密钥，在这里打不开。'}点「{switchLabel}」换成你自己的，改之前会先备份现在的设置。</p><div className="v2-inline-actions">{onSwitchAccount
+      <DialogExitButton variant="primary" after={() => onRepair(tool)} testId="tool-repair-config">立即修复</DialogExitButton></div></>}
+    {draft.source === 'unknown' && <><p className="v2-callout is-warn" data-testid="tool-foreign-key-note">{foreignKeyKind(native, 'unknown') === 'otherAccount' ? '该密钥可能不属于当前账号，用量可能计入其他账号。' : '该工具当前使用的不是当前账号的密钥，无法在此打开。'}点击「{switchLabel}」更换为您的密钥，修改前将先备份当前设置。</p><div className="v2-inline-actions">{onSwitchAccount
       ? <Button variant="primary" icon={KeyRound} loading={busy === '改用当前账号'} onClick={() => void switchAccount()} testId="tool-switch-account">{signedIn ? switchLabel : '登录后改用我的账号'}</Button>
       : <Button onClick={() => change({ source: 'account' })}>{switchLabel}</Button>}</div></>}
-      {/* 来源没确认时三张卡都不选中：一键改用当前账号最省事，没登录的人还能挑「自己填写密钥」。 */}
+      {/* 来源没确认时三张卡都不选中：一键改用当前账号最省事，没登录的人还能挑「手动填写密钥」。 */}
       <div className="xm-field"><span className="v2-field-label">用哪个账号的额度</span><RadioCards label="用哪个账号的额度" testId="tool-source" value={draft.source} options={sourceCards} onChange={(value) => {
         if (value === 'account' || value === 'manual' || value === 'official') change({ source: value })
       }} />{officialNote && <p data-testid="tool-source-note">{officialNote}</p>}</div>
-      {draft.source === 'unknown' ? null : draft.source === 'official' ? <><div className="v2-official-summary"><BrandIcon tool={tool} /><div><strong>{officialEmail || `使用 ${officialName}`}</strong><p>{officialEmail ? [officialPlan, '不扣当前账号余额'].filter(Boolean).join('，') : `还没登录。保存后打开 ${definition.name}，按提示登录官方账号`}</p></div><Pill tone={officialEmail ? 'ok' : 'warn'}>{officialEmail ? '已登录' : '待登录'}</Pill></div>
+      {draft.source === 'unknown' ? null : draft.source === 'official' ? <><div className="v2-official-summary"><BrandIcon tool={tool} /><div><strong>{officialEmail || `使用 ${officialName}`}</strong><p>{officialEmail ? [officialPlan, '不扣当前账号余额'].filter(Boolean).join('，') : `尚未登录。保存后请打开 ${definition.name}，按提示登录官方账号`}</p></div><Pill tone={officialEmail ? 'ok' : 'warn'}>{officialEmail ? '已登录' : '待登录'}</Pill></div>
         {provider === 'codex' && officialEmail && onOfficialQuota && <div><DialogExitLink after={onOfficialQuota} testId="tool-official-quota">查看 ChatGPT 账号额度</DialogExitLink></div>}</> : <>
         {draft.source === 'account' ? <div className="v2-config-key">
           <OptionPicker label="密钥" testId="tool-key-select" value={draft.keyId} options={keyOptions} disabled={!signedIn} onOpen={() => refreshKeyOptions()} onChange={(value) => change({ keyId: value })}
             aside={<span className="v2-option-picker-aside"><Button variant="ghost" size="sm" icon={RefreshCw} aria-label="刷新密钥" title="刷新密钥" testId="tool-key-refresh" loading={keysLoading || metadataLoading} onClick={() => refreshKeyOptions(true)} disabled={!signedIn} /><DialogExitLink after={onKeys}>管理密钥</DialogExitLink></span>} />
-          {usingCurrentKey && <p className="v2-field-note" data-testid="tool-key-summary">继续用现在这把密钥：{keyDescription.name} · {keyDescription.preview}</p>}
+          {usingCurrentKey && <p className="v2-field-note" data-testid="tool-key-summary">继续使用当前密钥：{keyDescription.name} · {keyDescription.preview}</p>}
           {metadataError && <p role="alert">{metadataError}</p>}
           {keyError && <p role="alert">{keyError}</p>}</div>
           : <div className="v2-config-key"><Input label="星芒密钥" password mono autoComplete="off" testId="tool-manual-secret" value={draft.secret} error={secretError || undefined} onChange={(event) => change({ secret: event.target.value, validatedSecret: '' })}
-            placeholder={native.apiKeyPreview ?? (strictKeyFormat ? '粘贴你在星芒创建的密钥，以 sk- 开头' : '粘贴你在星芒创建的密钥')} />
+            placeholder={native.apiKeyPreview ?? (strictKeyFormat ? '请粘贴在星芒创建的密钥，以 sk- 开头' : '请粘贴在星芒创建的密钥')} />
             {native.hasApiKey && <Button size="sm" variant="ghost" icon={Eye} onClick={() => void run('读取密钥', async () => { const secret = await api.reveal(tool); if (active.current) change({ secret, validatedSecret: '' }) })}>读取当前密钥</Button>}</div>}
         {modelField}
       </>}
@@ -527,8 +527,8 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
       <div className="v2-config-disclosure-body">
         <div className="xm-field"><span className="v2-field-label">Codex 界面语言</span><Segment label="Codex 界面语言" testId="tool-codex-language" activation="manual" value={locale?.installed ? locale.configuredLocale === 'zh-CN' ? 'zh-CN' : 'system' : ''}
           options={[{ value: 'zh-CN', label: '启用中文界面' }, { value: 'system', label: '跟随系统语言' }]} onChange={changeLocale} />
-          {os === 'mac' ? <p className="v2-field-note">{macLocaleNote}</p> : <><p className="v2-field-note">中文界面只在从星芒打开 Codex 时生效；从开始菜单或任务栏直接打开还是英文。运行中的 Codex 会重新打开，请先保存手头的工作。</p>
-            <p className="v2-field-note">要让 Codex 界面显示中文，星芒每次打开 Codex 时会顺带开一个本机通道，关掉 Codex 就关上。通道开着时，这台电脑上的其他程序和其他用户也能连上它、控制 Codex。和别人共用这台电脑的，或者不想要这个通道，选「跟随系统语言」即可。</p></>}</div>
+          {os === 'mac' ? <p className="v2-field-note">{macLocaleNote}</p> : <><p className="v2-field-note">中文界面仅在从星芒打开 Codex 时生效；从开始菜单或任务栏直接打开仍为英文。运行中的 Codex 将重新打开，请先保存当前工作。</p>
+            <p className="v2-field-note">为使 Codex 界面显示中文，星芒每次打开 Codex 时会同时开启一个本机通道，Codex 关闭后通道随之关闭。通道开启期间，本机的其他程序和其他用户也可连接并控制 Codex。如与他人共用本机，或不希望开启该通道，请选择「跟随系统语言」。</p></>}</div>
         {localeText && <p role="status" data-testid="tool-locale-status">{localeText}</p>}
         <div className="v2-config-perm">{permission?.trustLevel === 'trusted' && <ShieldCheck size={15} aria-hidden="true" />}{permissionText && <span>{permissionText}</span>}
           <button type="button" className="v2-link-button" onClick={() => void run('查看文件夹权限', async () => { const result = await api.getPermissions(); if (active.current) setPermission(result) })}>查看文件夹权限</button>
@@ -541,8 +541,8 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
           {onBackups && <DialogExitButton size="sm" icon={Archive} after={onBackups}>查看配置备份</DialogExitButton>}</div>
         {draft.source !== 'unknown' && saveSummary}
         {provider === 'codex' && <p className="v2-save-profile-note">星芒与 ChatGPT 各自保留一份配置；切换来源时，优先恢复该来源上次保存的自定义设置。</p>}
-        {draft.source !== 'unknown' && <div className="v2-reset-box"><div><strong>重置为初始状态</strong><small>会先备份，再按上面选的账号重新生成配置，历史会话会保留。</small></div>
-          {resetAsk ? <><span className="v2-reset-warn" role="status">这个工具里自己改过的设置也会重置</span><Button size="sm" onClick={() => setResetAsk(false)}>取消</Button><Button size="sm" variant="danger" testId="tool-save-reset-confirm" onClick={() => commit('reset', draft)}>确认重置</Button></>
+        {draft.source !== 'unknown' && <div className="v2-reset-box"><div><strong>重置为初始状态</strong><small>将先备份，再按上方所选账号重新生成配置，历史会话将保留。</small></div>
+          {resetAsk ? <><span className="v2-reset-warn" role="status">该工具中自行修改过的设置也将重置</span><Button size="sm" onClick={() => setResetAsk(false)}>取消</Button><Button size="sm" variant="danger" testId="tool-save-reset-confirm" onClick={() => commit('reset', draft)}>确认重置</Button></>
             : <Button size="sm" variant="ghost" testId="tool-save-reset" onClick={requestReset}>重置</Button>}</div>}
       </div></details>
     </fieldset>

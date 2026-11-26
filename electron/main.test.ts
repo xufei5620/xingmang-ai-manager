@@ -242,6 +242,8 @@ describe('main process quit cleanup', () => {
         'detachPrivacyListener()',
         'usageStats.stop()',
         'noteUsageEvent = null',
+        'clientVersionReporter?.stop()',
+        'noteAccountChangedForVersionReport = null',
       ],
       'acceleration-power': ["powerMonitor.off('suspend', onSuspend)", "powerMonitor.off('resume', onResume)"],
       'cli-hook-events': ['cliHookEvents.dispose()'],
@@ -499,6 +501,25 @@ describe('main process unexpected exit', () => {
   })
 })
 
+describe('main process user agent', () => {
+  it('drops the application name from the default user agent at the top level, after the CI marker and before startup', () => {
+    // 默认 UA 要在任何会话建出来之前改好（third-party-user-agent.ts），CI 记号要先加上，两种 UA 才都带着它。
+    const { source } = mainSource()
+    const indexOf = (text: string) => source.statements.findIndex((statement) => statement.getText(source).includes(text))
+    const marker = indexOf('ensureCiUserAgentMarker(app, process.env)')
+    const policy = indexOf('installThirdPartyUserAgentPolicy(app)')
+    const startup = indexOf('app.whenReady().then(')
+    expect(marker).toBeGreaterThan(-1)
+    expect(policy).toBeGreaterThan(marker)
+    expect(startup).toBeGreaterThan(policy)
+  })
+
+  it('hooks the default session again once the app is ready', () => {
+    const { source } = mainSource()
+    expect(startupCallback(source).getText(source)).toContain('applyThirdPartyUserAgentPolicy(session.defaultSession)')
+  })
+})
+
 describe('main process application protocol', () => {
   it('attaches the security policy to every xingmang:// file, worker scripts included', () => {
     // 页面的 <meta> 到不了后台线程，只有协议回包里的头才管得到拼片线程（app-protocol.ts）。
@@ -551,7 +572,7 @@ describe('main process external links', () => {
     const { source } = mainSource()
     const entries = nonSiteAllowlistEntries(source)
     expect(entries).toContain('claudeDesktopOfflinePackagesUrl')
-    // 「去 Claude 官网」打开的 claude.com/download 经它收进来。
+    // 「前往 Claude 官网」打开的 claude.com/download 经它收进来。
     expect(entries).toContain('...Object.values(externalClientOfficialDownloadUrls)')
     expect(source.getText()).toContain("import { claudeDesktopOfflinePackagesUrl } from './claude-desktop-install-failure'")
   })

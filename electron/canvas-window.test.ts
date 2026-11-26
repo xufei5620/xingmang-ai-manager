@@ -12,7 +12,7 @@ const electronMocks = vi.hoisted(() => ({
   onHandlers: new Map<string, (...args: unknown[]) => unknown>(),
   removeHandler: vi.fn(),
   removeAllListeners: vi.fn(),
-  showSaveDialog: vi.fn(async () => ({ canceled: true, filePath: undefined })),
+  showSaveDialog: vi.fn<(...args: unknown[]) => Promise<{ canceled: boolean; filePath: string | undefined }>>(async () => ({ canceled: true, filePath: undefined })),
   showOpenDialog: vi.fn<() => Promise<{ canceled: boolean; filePaths: string[] }>>(async () => ({ canceled: true, filePaths: [] })),
   showMessageBox: vi.fn<(...args: unknown[]) => Promise<{ response: number; checkboxChecked: boolean }>>(async () => ({ response: 1, checkboxChecked: false })),
   browserWindowFromWebContents: vi.fn(() => undefined),
@@ -112,7 +112,7 @@ vi.mock('electron', () => ({
   webContents: { getAllWebContents: () => electronMocks.allWebContents ?? [electronMocks.latestWebContents] },
 }))
 
-import { buildCanvasProjectPackage } from './canvas-project-package'
+import { buildCanvasProjectPackage, parseCanvasProjectPackage } from './canvas-project-package'
 import { canvasHostChannels } from './canvas-contract'
 import {
   canvasHostCancelRequestChannel,
@@ -174,6 +174,8 @@ import {
   canvasProjectFolderToTrash,
   createCanvasWindowController,
   importedCanvasProjectName,
+  parseCanvasProjectListId,
+  toCanvasProjectList,
   type CanvasWindowControllerOptions,
 } from './canvas-window'
 
@@ -639,7 +641,7 @@ describe('createCanvasWindowController', () => {
   })
 
   it('defines the dark canvas color used before the renderer becomes visible', () => {
-    expect(canvasWindowBackgroundColor).toBe('#0b0c10')
+    expect(canvasWindowBackgroundColor).toBe('#1f2023')
   })
 
   it('opens with the stored dark theme in both the native background and renderer URL', async () => {
@@ -662,7 +664,7 @@ describe('createCanvasWindowController', () => {
       inspectRendererSandbox: async () => ({ kind: 'disabled', reason: 'no-sandbox' }),
     }))
 
-    await expect(controller.open()).rejects.toThrow('这层保护被关掉了')
+    await expect(controller.open()).rejects.toThrow('该保护已被关闭')
 
     expect(electronMocks.browserWindowOptions).toEqual([])
     expect(runtimeLog.log).toHaveBeenCalledWith('error', 'canvas', 'sandbox.refused', expect.any(String), {
@@ -677,7 +679,7 @@ describe('createCanvasWindowController', () => {
       .mockResolvedValue({ kind: 'sandboxed' })
     const controller = createCanvasWindowController(controllerOptions({ inspectRendererSandbox }))
 
-    await expect(controller.open()).rejects.toThrow('没能确认画布的安全保护')
+    await expect(controller.open()).rejects.toThrow('无法确认画布的安全保护')
     await controller.open()
 
     expect(inspectRendererSandbox).toHaveBeenCalledTimes(2)
@@ -1044,7 +1046,7 @@ describe('createCanvasWindowController', () => {
     const controller = createCanvasWindowController(controllerOptions({ projects: projects as never, defaultProjectsDirectory: () => path.join(blocked, '星芒画布') }))
     await controller.open()
     await expect(electronMocks.handlers.get(canvasHostCreateProjectInDefaultFolderChannel)!(trustedEvent(), '海报'))
-      .rejects.toThrow(/^没能在「星芒画布」文件夹里建项目（.+），可以点「换个位置创建…」自己选文件夹$/)
+      .rejects.toThrow(/^无法在「星芒画布」文件夹中创建项目（.+），您可点击「换个位置创建…」自行选择文件夹$/)
     expect(projects.create).not.toHaveBeenCalled()
     controller.dispose()
 
@@ -1088,7 +1090,7 @@ describe('createCanvasWindowController', () => {
     // A project whose folder is still there, or one this account does not have, never gets the dialog.
     electronMocks.showOpenDialog.mockClear()
     list.mockResolvedValueOnce([{ ...summary, workspaceStatus: 'ready' as const }])
-    await expect(handler(trustedEvent(), projectId)).rejects.toThrow('项目的工作文件夹还在')
+    await expect(handler(trustedEvent(), projectId)).rejects.toThrow('项目的工作文件夹仍然存在')
     await expect(handler(trustedEvent(), '22222222-2222-4222-8222-222222222222')).rejects.toThrow('画布项目不存在')
     await expect(handler(trustedEvent(), 42)).rejects.toThrow('画布项目标识')
     expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
@@ -1205,7 +1207,7 @@ describe('createCanvasWindowController', () => {
       const { handler, remove } = await deleteController(path.join(root, '旧海报'), root, false)
       electronMocks.showMessageBox.mockResolvedValue({ response: 0, checkboxChecked: false })
 
-      await expect(handler(trustedEvent(), projectId)).rejects.toThrow('请先归档这个项目再删除')
+      await expect(handler(trustedEvent(), projectId)).rejects.toThrow('请先归档此项目，再进行删除')
       await expect(handler(trustedEvent(), '22222222-2222-4222-8222-222222222222')).rejects.toThrow('画布项目不存在')
       await expect(handler(trustedEvent(), 42)).rejects.toThrow('画布项目标识')
       expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
@@ -1671,7 +1673,7 @@ describe('createCanvasWindowController', () => {
 
     // The two refused pictures above already used two of the twenty saves.
     for (let index = 0; index < 18; index += 1) await importBytes(trustedEvent(), new Uint8Array(projectPng))
-    await expect(importBytes(trustedEvent(), new Uint8Array(projectPng))).rejects.toThrow('保存图片太频繁')
+    await expect(importBytes(trustedEvent(), new Uint8Array(projectPng))).rejects.toThrow('保存图片过于频繁')
     expect(aiAssets.storeLocalBytes).toHaveBeenCalledTimes(18)
   })
 
@@ -1798,6 +1800,40 @@ describe('createCanvasWindowController', () => {
     expect(lastSaveDialogPath()).toBe('xingmang-project.xingcanvas')
     await handler(trustedEvent(), '..', '{}')
     expect(lastSaveDialogPath()).toBe('xingmang-project.xingcanvas')
+  })
+
+  // #1368 第 14 条：原来先把项目里的图全读进内存才弹保存框，图多的项目点了「导出」半天没反应。
+  it('asks where to save a project export before reading any picture', async () => {
+    const assetId = 'E'.repeat(43)
+    const order: string[] = []
+    const readOwned = vi.fn(async () => {
+      order.push('read')
+      return { asset: { assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png', fileName: `xingmang-${assetId}.png` }, bytes: projectPng }
+    })
+    electronMocks.showSaveDialog.mockImplementation(async () => {
+      order.push('dialog')
+      return { canceled: true, filePath: undefined }
+    })
+    const controller = createCanvasWindowController(controllerOptions({
+      aiAssets: { copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(), listOwned: vi.fn(async () => []), readOwned, storeBase64: vi.fn(), removeOwned: vi.fn() } as never,
+    }))
+    await controller.open()
+    const handler = electronMocks.handlers.get(canvasHostExportProjectChannel)!
+
+    // Cancelling reads nothing at all.
+    await expect(handler(trustedEvent(), 'xingmang-project.xingcanvas', projectWorkflow([assetId]))).resolves.toBeNull()
+    expect(order).toEqual(['dialog'])
+    expect(readOwned).not.toHaveBeenCalled()
+
+    const target = path.join(temporaryDirectory(), '导出.xingcanvas')
+    electronMocks.showSaveDialog.mockImplementation(async () => {
+      order.push('dialog')
+      return { canceled: false, filePath: target }
+    })
+    await expect(handler(trustedEvent(), 'xingmang-project.xingcanvas', projectWorkflow([assetId]))).resolves.toEqual({ savedPath: target })
+    expect(order).toEqual(['dialog', 'dialog', 'read'])
+    expect(readOwned).toHaveBeenCalledWith(7, assetId)
+    expect(parseCanvasProjectPackage(fs.readFileSync(target, 'utf8')).assets).toHaveLength(1)
   })
 
   it('never lets the canvas aim a project export at a startup directory', async () => {
@@ -2058,7 +2094,7 @@ describe('createCanvasWindowController', () => {
       const preview = await electronMocks.handlers.get(canvasHostPreviewProjectChannel)!(trustedEvent()) as { previewId: string }
 
       await expect(electronMocks.handlers.get(canvasHostImportProjectChannel)!(trustedEvent(), preview.previewId))
-        .rejects.toThrow(/^没能在「星芒画布」文件夹里建项目（.+），这次没有导入$/)
+        .rejects.toThrow(/^无法在「星芒画布」文件夹中创建项目（.+），本次未导入$/)
       expect(forNewWorkspace).not.toHaveBeenCalled()
       expect(projects.createImported).not.toHaveBeenCalled()
     })
@@ -2179,6 +2215,254 @@ describe('createCanvasWindowController', () => {
         await expect(opening).rejects.toThrow('账号已切换')
         expect(projects.createImported).not.toHaveBeenCalled()
       })
+    })
+  })
+
+  it('lists for the main window only the id, name and time of projects that are not archived, newest first', () => {
+    const first = '11111111-1111-4111-8111-111111111111'
+    const second = '22222222-2222-4222-8222-222222222222'
+    const third = '33333333-3333-4333-8333-333333333333'
+
+    expect(toCanvasProjectList([
+      { id: first, name: '春季海报', updatedAt: '2026-11-18T08:00:00.000Z' },
+      { id: second, name: '  橘猫\n回家\u0000 ', updatedAt: '2026-11-19T13:14:00.000Z' },
+      { id: third, name: '旧稿', updatedAt: '2026-11-20T00:00:00.000Z', archivedAt: '2026-11-20T01:00:00.000Z' },
+      { id: '../../etc/passwd', name: '坏编号', updatedAt: '2026-11-20T02:00:00.000Z' },
+    ])).toEqual([
+      { id: second, name: '橘猫 回家', updatedAt: Date.parse('2026-11-19T13:14:00.000Z') },
+      { id: first, name: '春季海报', updatedAt: Date.parse('2026-11-18T08:00:00.000Z') },
+    ])
+    // A name with nothing printable and a time that does not parse still list; the entry sorts last.
+    expect(toCanvasProjectList([
+      { id: first, name: '\n\t', updatedAt: 'not a date' },
+      { id: second, name: '图'.repeat(200), updatedAt: '2026-11-19T13:14:00.000Z' },
+    ])).toEqual([
+      { id: second, name: '图'.repeat(128), updatedAt: Date.parse('2026-11-19T13:14:00.000Z') },
+      { id: first, name: '未命名项目', updatedAt: 0 },
+    ])
+    expect(toCanvasProjectList(Array.from({ length: 130 }, (_, index) => ({
+      id: `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`, name: `项目 ${index}`, updatedAt: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+    })))).toHaveLength(100)
+  })
+
+  it('hands the main window a cover only for a picture or video whose id has the asset id shape', () => {
+    const base = { updatedAt: '2026-11-19T13:14:00.000Z' }
+    const assetId = 'a'.repeat(43)
+    const listed = toCanvasProjectList([
+      { ...base, id: '11111111-1111-4111-8111-111111111111', name: '有图', previewAsset: { kind: 'image', assetId, localUrl: `xingmang-asset://image/${assetId}` } },
+      { ...base, id: '22222222-2222-4222-8222-222222222222', name: '有视频', previewAsset: { kind: 'video', assetId, localUrl: 'https://attacker.example/cover.mp4' } },
+      { ...base, id: '33333333-3333-4333-8333-333333333333', name: '只有声音', previewAsset: { kind: 'audio', assetId, localUrl: `xingmang-asset://audio/${assetId}` } },
+      { ...base, id: '44444444-4444-4444-8444-444444444444', name: '坏编号', previewAsset: { kind: 'image', assetId: '../../etc/passwd', localUrl: 'file:///etc/passwd' } },
+      { ...base, id: '55555555-5555-4555-8555-555555555555', name: '空的' },
+    ])
+    expect(Object.fromEntries(listed.map((project) => [project.name, project.cover]))).toEqual({
+      有图: { assetId, mediaType: 'image' },
+      有视频: { assetId, mediaType: 'video' },
+      只有声音: undefined,
+      坏编号: undefined,
+      空的: undefined,
+    })
+    // Only the id and the kind leave: no address the project file wrote reaches the main window.
+    expect(JSON.stringify(listed)).not.toMatch(/localUrl|attacker|file:|xingmang-asset/)
+    expect(listed.filter((project) => 'cover' in project)).toHaveLength(2)
+  })
+
+  it('takes a project id from the main window only in the shape the project store hands out', () => {
+    expect(parseCanvasProjectListId('11111111-1111-4111-8111-111111111111')).toBe('11111111-1111-4111-8111-111111111111')
+    for (const value of [undefined, null, 7, '', '../../etc/passwd', '11111111-1111-4111-8111-11111111111', '11111111-1111-4111-8111-111111111111/', 'G1111111-1111-4111-8111-111111111111', ['11111111-1111-4111-8111-111111111111']]) {
+      expect(() => parseCanvasProjectListId(value)).toThrow('画布项目标识格式错误')
+    }
+  })
+
+  describe('the project list and 「打开画布」 the main window asks for', () => {
+    const firstId = '11111111-1111-4111-8111-111111111111'
+    const secondId = '22222222-2222-4222-8222-222222222222'
+    const archivedId = '44444444-4444-4444-8444-444444444444'
+    const unknownId = '55555555-5555-4555-8555-555555555555'
+
+    function stored(id: string, name: string, updatedAt: string, archivedAt?: string) {
+      return {
+        id, name, createdAt: '2026-11-09T00:00:00.000Z', updatedAt,
+        lastOpenedAt: '2026-11-09T00:00:00.000Z', nodeCount: 1, assetCount: 1,
+        workspaceName: name, workspaceConfigured: true, workspaceStatus: 'ready' as CanvasProjectWorkspaceStatus,
+        ...(archivedAt ? { archivedAt } : {}),
+      }
+    }
+
+    function listedController(overrides: Partial<CanvasWindowControllerOptions> = {}) {
+      const projects = {
+        list: vi.fn(async () => [
+          stored(firstId, '春季海报', '2026-11-18T08:00:00.000Z'),
+          stored(secondId, '橘猫回家', '2026-11-19T13:14:00.000Z'),
+          stored(archivedId, '旧稿', '2026-11-20T00:00:00.000Z', '2026-11-20T01:00:00.000Z'),
+        ]),
+        create: vi.fn(),
+        open: vi.fn(async (_userId: number, id: string) => ({ project: stored(id, '在开的项目', '2026-11-19T13:14:00.000Z'), content: projectWorkflow([]) })),
+        save: vi.fn(),
+      }
+      const projectAssets = {
+        forNewWorkspace: vi.fn(),
+        forProject: vi.fn(async () => ({
+          images: { ensureOutputDirectory: vi.fn(), storeBase64: vi.fn(), removeOwned: vi.fn() },
+          media: { setSource: vi.fn(async () => undefined) },
+        })),
+        forgetProject: vi.fn(),
+      }
+      const controller = createCanvasWindowController(controllerOptions({ projects: projects as never, projectAssets: projectAssets as never, ...overrides }))
+      return { controller, projects }
+    }
+
+    /** The canvas window is up and its page has opened this project. */
+    async function showing(projectId: string, overrides: Partial<CanvasWindowControllerOptions> = {}) {
+      const created = listedController(overrides)
+      await created.controller.open()
+      await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), projectId)
+      return created
+    }
+
+    function loadedProjectId(window: Record<string, unknown> | null): string | null {
+      const loadURL = window!.loadURL as ReturnType<typeof vi.fn>
+      return new URL(loadURL.mock.calls.at(-1)![0] as string).searchParams.get('project')
+    }
+
+    function latestCloseRequestId(): string | undefined {
+      const send = electronMocks.latestWebContents!.send as ReturnType<typeof vi.fn>
+      return [...send.mock.calls].reverse().find(([channel]) => channel === canvasHostChannels.closeRequested)?.[1].requestId
+    }
+
+    it('lists the signed-in account\'s projects without opening the canvas or telling its page', async () => {
+      const { controller, projects } = listedController()
+
+      await expect(controller.listProjects()).resolves.toEqual([
+        { id: secondId, name: '橘猫回家', updatedAt: Date.parse('2026-11-19T13:14:00.000Z') },
+        { id: firstId, name: '春季海报', updatedAt: Date.parse('2026-11-18T08:00:00.000Z') },
+      ])
+      expect(projects.list).toHaveBeenCalledWith(7)
+      expect(electronMocks.browserWindowOptions).toHaveLength(0)
+    })
+
+    it('lists nothing for a signed-out window and drops a list read for an account that has since changed', async () => {
+      const signedOut = listedController({
+        accountService: { getSessionState: vi.fn(() => ({ authenticated: false, account: null })) } as never,
+      })
+      await expect(signedOut.controller.listProjects()).rejects.toThrow('请先登录星芒账号')
+      expect(signedOut.projects.list).not.toHaveBeenCalled()
+
+      let userId = 7
+      const { controller, projects } = listedController({
+        accountService: { getSessionState: vi.fn(() => ({ authenticated: true, account: { userId } })) } as never,
+      })
+      projects.list.mockImplementationOnce(async () => {
+        userId = 9
+        return [stored(firstId, '上一个账号的项目', '2026-11-18T08:00:00.000Z')]
+      })
+      await expect(controller.listProjects()).rejects.toThrow('账号已切换')
+    })
+
+    it('opens a closed canvas straight on the project the main window named', async () => {
+      const { controller } = listedController()
+
+      await expect(controller.openProject(secondId)).resolves.toBe(true)
+      expect(electronMocks.browserWindowOptions).toHaveLength(1)
+      expect(loadedProjectId(electronMocks.latestBrowserWindow)).toBe(secondId)
+      expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+    })
+
+    it('opens no window for an id that is malformed, unknown to this account or archived', async () => {
+      const { controller, projects } = listedController()
+
+      await expect(controller.openProject('../../etc/passwd')).rejects.toThrow('画布项目标识格式错误')
+      expect(projects.list).not.toHaveBeenCalled()
+      await expect(controller.openProject(unknownId)).rejects.toThrow('未找到该画布项目，可能已在画布中删除或归档')
+      await expect(controller.openProject(archivedId)).rejects.toThrow('未找到该画布项目，可能已在画布中删除或归档')
+      expect(electronMocks.browserWindowOptions).toHaveLength(0)
+    })
+
+    it('brings the canvas forward without reloading it when it already shows that project', async () => {
+      const { controller } = await showing(secondId)
+      const window = electronMocks.latestBrowserWindow!
+      const loads = (window.loadURL as ReturnType<typeof vi.fn>).mock.calls.length
+      const shown = (window.show as ReturnType<typeof vi.fn>).mock.calls.length
+
+      await expect(controller.openProject(secondId)).resolves.toBe(true)
+      expect(latestCloseRequestId()).toBeUndefined()
+      expect(window.close).not.toHaveBeenCalled()
+      expect((window.loadURL as ReturnType<typeof vi.fn>).mock.calls.length).toBe(loads)
+      expect((window.show as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(shown)
+      expect(electronMocks.browserWindowOptions).toHaveLength(1)
+    })
+
+    it('lets a canvas on another project save and close through its own confirmation before reopening on the named one', async () => {
+      const { controller } = await showing(firstId)
+      const firstWindow = electronMocks.latestBrowserWindow!
+
+      const opening = controller.openProject(secondId)
+      await vi.waitFor(() => expect(latestCloseRequestId()).toBeDefined())
+      expect(electronMocks.browserWindowOptions).toHaveLength(1)
+      expect(electronMocks.handlers.get(canvasHostChannels.finishClose)!(trustedEvent(), latestCloseRequestId(), true)).toBe(true)
+
+      await expect(opening).resolves.toBe(true)
+      expect(firstWindow.close).toHaveBeenCalledOnce()
+      expect(electronMocks.latestBrowserWindow).not.toBe(firstWindow)
+      expect(loadedProjectId(electronMocks.latestBrowserWindow)).toBe(secondId)
+    })
+
+    it('asks the project centre to close the same way, since no project is open there to compare', async () => {
+      const { controller } = listedController()
+      await controller.open()
+      const firstWindow = electronMocks.latestBrowserWindow!
+
+      const opening = controller.openProject(secondId)
+      await vi.waitFor(() => expect(latestCloseRequestId()).toBeDefined())
+      electronMocks.handlers.get(canvasHostChannels.finishClose)!(trustedEvent(), latestCloseRequestId(), true)
+
+      await expect(opening).resolves.toBe(true)
+      expect(electronMocks.latestBrowserWindow).not.toBe(firstWindow)
+      expect(loadedProjectId(electronMocks.latestBrowserWindow)).toBe(secondId)
+    })
+
+    it('stays on the open project and answers false when the user keeps the canvas open', async () => {
+      const { controller } = await showing(firstId)
+      const firstWindow = electronMocks.latestBrowserWindow!
+      const shown = (firstWindow.show as ReturnType<typeof vi.fn>).mock.calls.length
+
+      const opening = controller.openProject(secondId)
+      await vi.waitFor(() => expect(latestCloseRequestId()).toBeDefined())
+      electronMocks.handlers.get(canvasHostChannels.finishClose)!(trustedEvent(), latestCloseRequestId(), false)
+
+      await expect(opening).resolves.toBe(false)
+      expect(firstWindow.close).not.toHaveBeenCalled()
+      expect((firstWindow.show as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(shown)
+      expect(electronMocks.browserWindowOptions).toHaveLength(1)
+    })
+
+    it('needs a signed-in account and does not reopen for an account that changed while the canvas was closing', async () => {
+      const signedOut = listedController({
+        accountService: { getSessionState: vi.fn(() => ({ authenticated: false, account: null })) } as never,
+      })
+      await expect(signedOut.controller.openProject(secondId)).rejects.toThrow('请先登录星芒账号')
+
+      let userId = 7
+      const { controller } = await showing(firstId, {
+        accountService: { getSessionState: vi.fn(() => ({ authenticated: true, account: { userId } })) } as never,
+      })
+      const opening = controller.openProject(secondId)
+      await vi.waitFor(() => expect(latestCloseRequestId()).toBeDefined())
+      userId = 9
+      electronMocks.handlers.get(canvasHostChannels.finishClose)!(trustedEvent(), latestCloseRequestId(), true)
+      await expect(opening).rejects.toThrow('账号已切换')
+      expect(electronMocks.browserWindowOptions).toHaveLength(1)
+    })
+
+    it('refuses both once the canvas host has shut down or was built without the project store', async () => {
+      const { controller } = listedController()
+      controller.dispose()
+      await expect(controller.openProject(secondId)).rejects.toThrow('画布宿主已关闭')
+
+      const bare = createCanvasWindowController(controllerOptions())
+      await expect(bare.listProjects()).rejects.toThrow('项目自动保存能力不可用')
+      await expect(bare.openProject(secondId)).rejects.toThrow('项目自动保存能力不可用')
+      expect(electronMocks.browserWindowOptions).toHaveLength(0)
     })
   })
 
@@ -2551,9 +2835,9 @@ describe('a canvas that stops responding', () => {
     expect(electronMocks.showMessageBox).toHaveBeenCalledOnce()
     expect(electronMocks.showMessageBox).toHaveBeenCalledWith(window, {
       type: 'warning',
-      title: '界面没有响应',
-      message: '无限画布暂时没有响应。',
-      detail: '可以再等一会儿，画布通常会自己恢复。重新加载只会重启画布，正在进行的安装、下载和已保存的设置都不受影响，但画布上还没保存的改动会丢失。',
+      title: '界面无响应',
+      message: '无限画布暂时无响应。',
+      detail: '可稍候片刻，画布通常会自动恢复。重新加载仅会重启画布，正在进行的安装、下载和已保存的设置均不受影响，但画布上尚未保存的改动将丢失。',
       buttons: ['继续等待', '重新加载'],
       defaultId: 0,
       cancelId: 0,

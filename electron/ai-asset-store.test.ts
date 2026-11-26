@@ -214,13 +214,13 @@ describe('AiAssetStore base64 and ownership', () => {
     const error = await store.assertWritable(42).then(() => null, (reason: unknown) => reason)
 
     expect(error).toMatchObject({ code: AI_OUTPUT_UNWRITABLE_ERROR_CODE })
-    expect((error as Error).message).toBe('保存位置写不进去，这次没有扣费。请新建一个项目、换个文件夹再试。')
+    expect((error as Error).message).toBe('保存位置无法写入，本次未扣费。请新建一个项目、换个文件夹再试。')
     // The OS reason stays on the cause for the log; the sentence on screen
     // carries no path, errno or permission jargon.
     expect((error as Error).cause).toBeInstanceOf(Error)
     expect((error as Error).message).not.toMatch(/权限|output|ENOTDIR|EEXIST/)
     await expect(new AiAssetStore(storeOptions(path.join(blocker, 'output'))).assertWritable(42))
-      .rejects.toThrow('保存位置写不进去，这次没有扣费。请联系客服帮你处理。')
+      .rejects.toThrow('保存位置无法写入，本次未扣费。请联系客服协助处理。')
   })
 
   it('stops a paid request on a nearly full disk with the install check wording, before writing anything (D38)', async () => {
@@ -268,7 +268,7 @@ describe('AiAssetStore base64 and ownership', () => {
     fs.writeFileSync(planted, 'planted')
     const store = new AiAssetStore(options)
 
-    await expect(store.assertWritable(42)).rejects.toThrow('保存位置写不进去')
+    await expect(store.assertWritable(42)).rejects.toThrow('保存位置无法写入')
     expect(fs.readFileSync(planted, 'utf8')).toBe('planted')
   })
 
@@ -280,7 +280,7 @@ describe('AiAssetStore base64 and ownership', () => {
     fs.symlinkSync(outside, path.join(accountRoot, `.write-check-${fixedRandomBytes().toString('hex')}.tmp`))
     const store = new AiAssetStore(options)
 
-    await expect(store.assertWritable(42)).rejects.toThrow('保存位置写不进去')
+    await expect(store.assertWritable(42)).rejects.toThrow('保存位置无法写入')
     expect(fs.existsSync(outside)).toBe(false)
   })
 
@@ -322,7 +322,7 @@ describe('AiAssetStore base64 and ownership', () => {
 
     await expect(store.readOwned(99, asset.assetId)).rejects.toThrow('无权访问')
     await expect(store.readOwned(42, '../secret')).rejects.toThrow('资产标识无效')
-    await expect(store.readOwned(42, 'A'.repeat(43))).rejects.toThrow('这张图已经不在电脑上了')
+    await expect(store.readOwned(42, 'A'.repeat(43))).rejects.toThrow('该图片已不在本机')
   })
 
   it('enforces a bounded base64 decode before persisting', async () => {
@@ -342,7 +342,7 @@ describe('AiAssetStore base64 and ownership', () => {
     expect(fs.existsSync(filePath)).toBe(true)
     await expect(store.removeOwned(42, stored.assetId)).resolves.toBeUndefined()
     expect(fs.existsSync(filePath)).toBe(false)
-    await expect(store.removeOwned(42, stored.assetId)).rejects.toThrow('这张图已经不在电脑上了')
+    await expect(store.removeOwned(42, stored.assetId)).rejects.toThrow('该图片已不在本机')
   })
 
   it('reports an explicit output write-permission failure', async () => {
@@ -352,7 +352,7 @@ describe('AiAssetStore base64 and ownership', () => {
     const store = new AiAssetStore(storeOptions(outputRoot))
 
     await expect(store.storeBase64(42, png().toString('base64')))
-      .rejects.toThrow('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
+      .rejects.toThrow('作品未能存入保存位置，请稍后重试；如持续失败，请联系客服')
   })
 
   it('keeps the operating-system reason under a failed store so the run log shows it (S-1)', async () => {
@@ -362,7 +362,7 @@ describe('AiAssetStore base64 and ownership', () => {
     const error = await store.storeBase64(42, png().toString('base64')).then(() => null, (reason: unknown) => reason)
 
     // The person still reads the one sentence; the errno travels below it for the log.
-    expect((error as Error).message).toBe('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
+    expect((error as Error).message).toBe('作品未能存入保存位置，请稍后重试；如持续失败，请联系客服')
     expect((error as Error).cause).toMatchObject({ code: 'ENOSPC' })
     expect(classifyStorageFailure(error)).toBe('disk-full')
   })
@@ -386,7 +386,7 @@ describe('AiAssetStore lookup by identifier', () => {
     try {
       const read = new AiAssetStore(storeOptions(outputRoot)).readOwned(42, assetId)
       if (present) await expect(read).resolves.toMatchObject({ bytes: png() })
-      else await expect(read).rejects.toThrow(/^这张图已经不在电脑上了，可能被移走或删掉了。$/)
+      else await expect(read).rejects.toThrow(/^该图片已不在本机，可能已被移动或删除。$/)
       return lstatSync.mock.calls.length
     } finally {
       lstatSync.mockRestore()
@@ -431,7 +431,7 @@ describe('AiAssetStore lookup by identifier', () => {
     fs.rmSync(original)
 
     // Not a raw ENOENT carrying the file's path.
-    await expect(store.readOwned(42, stored.assetId)).rejects.toThrow(/^这张图已经不在电脑上了，可能被移走或删掉了。$/)
+    await expect(store.readOwned(42, stored.assetId)).rejects.toThrow(/^该图片已不在本机，可能已被移动或删除。$/)
     const restored = writeRawImage(options.outputRoot, '2026-08-01', stored.assetId)
     await expect(store.readOwned(42, stored.assetId)).resolves.toMatchObject({ bytes: png() })
     await expect(store.resolveOwnedFilePath(42, stored.assetId)).resolves.toBe(restored)
@@ -444,7 +444,7 @@ describe('AiAssetStore lookup by identifier', () => {
     const stored = await store.storeBase64(42, png().toString('base64'))
     fs.rmSync(path.join(options.outputRoot, 'user-42', '2026-08-12', stored.fileName))
 
-    const gone = '这张图已经不在电脑上了，可能被移走或删掉了。'
+    const gone = '该图片已不在本机，可能已被移动或删除。'
     await expect(store.copy(42, stored.assetId)).rejects.toThrow(gone)
     await expect(store.saveAs(42, stored.assetId)).rejects.toThrow(gone)
     expect(nativeOperations.copyImage).not.toHaveBeenCalled()

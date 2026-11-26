@@ -23,7 +23,7 @@ export interface NpmFailureReason {
 }
 
 /** 星芒自己判下载卡住、总时长到点时说的那句（渲染层按「超时」归成「下载超时」）。 */
-export const npmDownloadTimedOutReason = '下载太久没有完成，超时中止'
+export const npmDownloadTimedOutReason = '下载长时间未完成，已超时中止'
 
 interface NpmReasonRow {
   test: RegExp
@@ -34,7 +34,7 @@ interface NpmReasonRow {
   impliedCode?: string
 }
 
-const retryLaterThenSupport = '过一会儿再点「重试」；一直这样请找客服。'
+const retryLaterThenSupport = '请稍后点击「重试」；如持续出现，请联系客服。'
 
 // 顺序就是同一句原话里撞上几个码时取哪一个：本机、网络、其他，证书在下面单独认（排在网络前）。
 const machineRows: readonly NpmReasonRow[] = [
@@ -45,16 +45,16 @@ const machineRows: readonly NpmReasonRow[] = [
 
 const networkRows: readonly NpmReasonRow[] = [
   { test: /\b(?:ETIMEDOUT|ESOCKETTIMEDOUT)\b/, reason: npmDownloadTimedOutReason, kind: 'network', nextStep: null },
-  { test: /\b(?:ENOTFOUND|EAI_AGAIN)\b/, reason: '解析不出下载源的地址', kind: 'network', nextStep: null },
-  { test: /\b(?:ECONNREFUSED|ECONNRESET)\b|socket hang up/i, reason: '和下载源的连接被切断', kind: 'network', nextStep: null, impliedCode: 'ECONNRESET' },
-  { test: /\bE50[0234]\b/, reason: '下载源那边出错', kind: 'source', nextStep: null },
+  { test: /\b(?:ENOTFOUND|EAI_AGAIN)\b/, reason: '无法解析下载源地址', kind: 'network', nextStep: null },
+  { test: /\b(?:ECONNREFUSED|ECONNRESET)\b|socket hang up/i, reason: '与下载源的连接已中断', kind: 'network', nextStep: null, impliedCode: 'ECONNRESET' },
+  { test: /\bE50[0234]\b/, reason: '下载源出错', kind: 'source', nextStep: null },
 ]
 
 const otherRows: readonly NpmReasonRow[] = [
-  { test: /\b(?:E404|ETARGET)\b/, reason: '找不到要装的版本', kind: 'other', nextStep: retryLaterThenSupport },
-  { test: /\b(?:E401|E403)\b/, reason: '下载源拒绝了这次下载', kind: 'other', nextStep: '换个网络后再点「重试」；一直这样请找客服。' },
-  { test: /\bEINTEGRITY\b/, reason: '下载下来的文件没通过校验，已经丢掉', kind: 'other', nextStep: '再点「重试」；一直这样换个网络。' },
-  { test: /\bERESOLVE\b/, reason: '要装的版本和它用到的组件对不上', kind: 'other', nextStep: retryLaterThenSupport },
+  { test: /\b(?:E404|ETARGET)\b/, reason: '未找到要安装的版本', kind: 'other', nextStep: retryLaterThenSupport },
+  { test: /\b(?:E401|E403)\b/, reason: '下载源拒绝了本次下载', kind: 'other', nextStep: '请更换网络后点击「重试」；如持续出现，请联系客服。' },
+  { test: /\bEINTEGRITY\b/, reason: '下载的文件未通过校验，已丢弃', kind: 'other', nextStep: '请点击「重试」；如持续出现，请更换网络。' },
+  { test: /\bERESOLVE\b/, reason: '要安装的版本与其依赖组件不匹配', kind: 'other', nextStep: retryLaterThenSupport },
 ]
 
 // 证书那几种：先找错误码，只有散句的照 Node 的对应关系补一个（network-failure.ts 的 tls、certDate 两行认的就是这些）。
@@ -80,21 +80,21 @@ function fromRow(row: NpmReasonRow, raw: string): NpmFailureReason {
 
 /**
  * 按 npm 报的码（或星芒自己写的超时那句）认出原因；认不出返回 null，交给调用方：原话本来是中文的照旧，
- * 其余说「npm 没有装成」。uninstall 时 EPERM、EACCES 说的是工具的文件删不掉，不是安装目录。
+ * 其余说「npm 安装失败」。uninstall 时 EPERM、EACCES 说的是工具的文件删不掉，不是安装目录。
  */
 export function npmFailureReasonFor(raw: string, options: { uninstall?: boolean } = {}): NpmFailureReason | null {
   for (const row of machineRows) {
     if (!row.test.test(raw)) continue
     const reason = fromRow(row, raw)
-    return options.uninstall && /EPERM|EACCES/.test(reason.code ?? '') ? { ...reason, reason: '工具的文件删不掉（拒绝访问）' } : reason
+    return options.uninstall && /EPERM|EACCES/.test(reason.code ?? '') ? { ...reason, reason: '工具文件无法删除（拒绝访问）' } : reason
   }
   const network = classifyNetworkFailure(raw)
   if (network === 'tls' || network === 'certDate') {
     const code = certificateCode.exec(raw)?.[0] ?? certificateSentences.find(([pattern]) => pattern.test(raw))?.[1] ?? null
-    return { reason: '安全证书没通过校验', code, kind: 'certificate', nextStep: null }
+    return { reason: '安全证书未通过校验', code, kind: 'certificate', nextStep: null }
   }
   // 握手被网络掐断（ERR_SSL_WRONG_VERSION_NUMBER 这类，#1060）和连接被重置是一回事。
-  if (isTlsHandshakeFailure(raw)) return { reason: '和下载源的连接被切断', code: handshakeCode.exec(raw)?.[0] ?? null, kind: 'network', nextStep: null }
+  if (isTlsHandshakeFailure(raw)) return { reason: '与下载源的连接已中断', code: handshakeCode.exec(raw)?.[0] ?? null, kind: 'network', nextStep: null }
   if (raw.includes(npmDownloadTimedOutReason)) {
     return { reason: npmDownloadTimedOutReason, code: /\b(?:ETIMEDOUT|ESOCKETTIMEDOUT)\b/.exec(raw)?.[0] ?? null, kind: 'network', nextStep: null }
   }

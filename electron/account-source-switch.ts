@@ -127,20 +127,20 @@ function reasonClause(error: unknown): string {
 /** 正在运行的 CLI 与 Codex 桌面端都把凭据缓存在内存里，不重开不会换账号。 */
 export function restartHint(provider: ProviderId): string {
   return provider === 'codex'
-    ? '已经开着的 Codex（包括桌面端）要关掉重开才会换过来。'
-    : `已经开着的 ${toolName(provider)} 要关掉重开才会换过来。`
+    ? '已打开的 Codex（包括桌面端）需关闭后重新打开才会生效。'
+    : `已打开的 ${toolName(provider)} 需关闭后重新打开才会生效。`
 }
 
 export function officialLoginHint(provider: ProviderId): string {
   switch (provider) {
     case 'claude':
-      return '这台电脑还没登录过 Claude 账号：打开 Claude Code 后输入 /login，按提示登录。'
+      return '本机尚未登录 Claude 账号：请打开 Claude Code 后输入 /login，按提示登录。'
     case 'codex':
-      return '这台电脑还没登录过 ChatGPT 账号：打开 Codex 后按提示用 ChatGPT 账号登录。'
+      return '本机尚未登录 ChatGPT 账号：请打开 Codex 后按提示使用 ChatGPT 账号登录。'
     case 'gemini':
-      return '这台电脑还没登录过 Google 账号：打开 Gemini CLI 后按提示用 Google 企业版账号登录。'
+      return '本机尚未登录 Google 账号：请打开 Gemini CLI 后按提示使用 Google 企业版账号登录。'
     case 'grok':
-      return '这台电脑还没登录过 Grok 账号：打开 Grok CLI 后按提示在浏览器里登录。'
+      return '本机尚未登录 Grok 账号：请打开 Grok CLI 后按提示在浏览器中登录。'
   }
 }
 
@@ -154,7 +154,7 @@ export async function switchAccountSource(
   try {
     backupId = deps.createBackup(provider).id
   } catch (error) {
-    throw new Error(`切换前的备份没有完成，已取消切换，配置没有改动：${errorText(error)}`)
+    throw new Error(`切换前的备份未完成，已取消切换，配置未改动：${errorText(error)}`)
   }
 
   async function rollBack(): Promise<string | null> {
@@ -171,7 +171,7 @@ export async function switchAccountSource(
 
   function failure(prefix: string, rollbackFailure: string | null): Error {
     return new Error(rollbackFailure
-      ? `${prefix}自动恢复也没有完成（${rollbackFailure}），请到「设置 › 备份迁移」里恢复切换前那一份。`
+      ? `${prefix}自动恢复也未完成（${rollbackFailure}），请在「设置 › 备份迁移」中恢复切换前的备份。`
       : `${prefix}已恢复到切换前的配置。`)
   }
 
@@ -191,7 +191,7 @@ export async function switchAccountSource(
     try {
       await deps.writeOfficialConfig(provider)
     } catch (error) {
-      throw failure(`切回官方账号没有完成：${reasonClause(error)}。`, await rollBack())
+      throw failure(`切回官方账号未完成：${reasonClause(error)}。`, await rollBack())
     }
     const present = deps.officialLoginPresent(provider)
     const loginRequired = present === false
@@ -209,9 +209,9 @@ export async function switchAccountSource(
   } catch (error) {
     if (error instanceof AccountSourceServiceUnavailableError) {
       deps.log?.('warn', 'account-source.service-unavailable', `${toolName(provider)} 切到当前账号时服务暂时不可用，配置没有改动`, { provider, backupId })
-      throw new Error(`改用当前账号没有完成：${error.message}原来的配置没有改动。`)
+      throw new Error(`改用当前账号未完成：${error.message}原配置未改动。`)
     }
-    throw failure(`改用当前账号没有完成：${reasonClause(error)}。`, await rollBack())
+    throw failure(`改用当前账号未完成：${reasonClause(error)}。`, await rollBack())
   }
 
   let check: ConnectionCheckResult | null = null
@@ -223,16 +223,16 @@ export async function switchAccountSource(
   const verdict = check ? judgeSwitchCheck(check) : null
   if (check && verdict === 'rollback') {
     deps.log?.('warn', 'account-source.rolled-back', `${toolName(provider)} 切到当前账号后自检没通过，已回滚`, { provider, layer: check.layer, backupId })
-    throw failure(`当前账号在 ${toolName(provider)} 上没有连通：${check.summary}。${check.nextStep ? `${check.nextStep}。` : ''}`, await rollBack())
+    throw failure(`当前账号在 ${toolName(provider)} 上未能连通：${check.summary}。${check.nextStep ? `${check.nextStep}。` : ''}`, await rollBack())
   }
   const verified = verdict === 'passed'
   const { hint, runningTools } = await runningHint()
   deps.log?.('info', 'account-source.switched', `${toolName(provider)} 已切到当前账号`, { provider, target, backupId, verified, verdict, layer: check?.layer ?? null, running: runningTools ?? null })
   const status = verified ? '连接自检通过。'
-    : verdict === 'serviceUnavailable' ? `不过这次没能确认能用：${networkFailureMessages.serviceUnavailable}`
-      : verdict === 'quota' && check ? `不过${check.summary}。${check.nextStep ? `${check.nextStep}。` : ''}`
-        : check ? `这次没能确认能用：${check.summary}。`
-          : '连接自检没有完成，稍后可以在检查页再测一次。'
+    : verdict === 'serviceUnavailable' ? `但本次未能确认可用：${networkFailureMessages.serviceUnavailable}`
+      : verdict === 'quota' && check ? `但${check.summary}。${check.nextStep ? `${check.nextStep}。` : ''}`
+        : check ? `本次未能确认可用：${check.summary}。`
+          : '连接自检未完成，请稍后在检查页重新检测。'
   return {
     provider, target, backupId, verified, loginRequired: false,
     message: `已改用当前账号，${status}${hint}`,

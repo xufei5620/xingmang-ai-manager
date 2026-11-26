@@ -29,6 +29,7 @@ import {
   windowsElevationCancelledMessage,
   windowsElevationDeniedMessage,
   windowsPowerShellExecutable,
+  windowsStandardAccountAdvice,
   type WindowsElevationCapability,
 } from './windows-elevation'
 import { compareVersionsBy, minimumSupportedNodeVersion, nodeVersionStatus, parseNodeReleaseVersion } from './versions'
@@ -420,7 +421,7 @@ function throwIfAborted(signal?: AbortSignal): void {
 
 // 1618：Windows 同一时间只让装一个安装包，别的程序（多半是 Windows 更新）正在装。
 // 跟从哪儿下载无关，认出它就不再换下载源重下（第三十五批 D）。
-const windowsInstallerBusyMessage = 'Windows 正在安装别的程序（错误 1618），Node.js 还没装上。等它装完再点一键安装；一直这样就先重启电脑再试'
+const windowsInstallerBusyMessage = 'Windows 正在安装其他程序（错误 1618），Node.js 尚未安装。请待其安装完成后再点击一键安装；如持续出现，请先重启电脑后重试'
 
 // 授权窗口点了「否」、或者没拿到管理员权限时，runUacProcess 按账号类型写好的那两句（windows-elevation.ts）。
 // 普通账号那句多出来的「输入管理员账号的密码 / 找 IT」是写给它的下一步，不能被下面那句泛话盖掉；
@@ -437,10 +438,10 @@ function errorText(reason: unknown): string {
   if (elevationDeclinedSentence.test(raw)) return raw
   if (/\b1602\b|取消|cancell?ed|declined/i.test(raw)) return '已取消管理员授权，Node.js 尚未安装'
   if (/\b1925\b/i.test(raw)) {
-    return 'Windows Installer 拒绝了机器级安装（错误 1925）。请在管理员授权提示中选择“是”；如果系统有待重启更新，请先重启电脑后再试'
+    return 'Windows Installer 拒绝了机器级安装（错误 1925）。请在管理员授权提示中选择“是”；如系统有待重启的更新，请先重启电脑后重试'
   }
   if (/\b1603\b/i.test(raw)) {
-    return 'Windows Installer 安装失败（错误 1603）。请先重启 Windows 完成挂起更新，再重新点击一键安装；如果仍失败，请检查系统安装权限'
+    return 'Windows Installer 安装失败（错误 1603）。请先重启 Windows 完成挂起的更新，再重新点击一键安装；如仍失败，请检查系统安装权限'
   }
   if (/\b1618\b/.test(raw)) return windowsInstallerBusyMessage
   if (raw) return raw
@@ -463,14 +464,15 @@ export function describeNodeInstallFailure(errors: readonly unknown[]): string {
 
 /** 放安装包的临时文件夹建不起来时那句。 */
 export function describeNodeStagingFailure(error: unknown): string {
-  return `Node.js 自动安装失败：安装包没地方放，临时文件夹写不进去${errorCodeClause(error)}。清理一下磁盘或重启电脑后再点「重试」。`
+  return `Node.js 自动安装失败：临时文件夹无法写入，安装包无处存放${errorCodeClause(error)}。请清理磁盘或重启电脑后点击「重试」。`
 }
 
 function withFullStop(sentence: string): string {
   return /[。！？]$/.test(sentence) ? sentence : `${sentence}。`
 }
 
-const windowsInstallerSentences = /^(?:已取消管理员授权|未获得管理员权限|Windows Installer|Windows 正在安装别的程序)/
+// 1618 那句开头 11-22 由「Windows 正在安装别的程序」改成「Windows 正在安装其他程序」（界面文案正式化第 13 批），两种都认。
+const windowsInstallerSentences = /^(?:已取消管理员授权|未获得管理员权限|Windows Installer|Windows 正在安装(?:别的|其他)程序)/
 
 /**
  * 只认 runUacProcess 抛出来的那两整句，不认 errorText 按「取消」「cancelled」猜出来的那句：
@@ -483,16 +485,16 @@ function elevationDeclined(error: unknown): boolean {
 function nodeInstallFailureReason(error: unknown): { rank: number; sentence: string } {
   const reason = errorText(error)
   if (windowsInstallerSentences.test(reason)) return { rank: 0, sentence: withFullStop(reason) }
-  if (/安装后的 Node\.js/.test(reason)) return { rank: 1, sentence: '装完没找到能用的 Node.js。重启电脑后再看一次；还不行请找客服。' }
+  if (/安装后的 Node\.js/.test(reason)) return { rank: 1, sentence: '安装完成后未找到可用的 Node.js。请重启电脑后再次检查；如仍无法使用，请联系客服。' }
   if (/SHA-256|数字签名|签名|校验后发生变化|安装包大小无效|内容过小|下载不完整|超过 160 MB/.test(reason)) {
-    return { rank: 2, sentence: '下载的安装包没通过校验，已经删掉。再点「重试」；一直这样换个网络。' }
+    return { rank: 2, sentence: '下载的安装包未通过校验，已删除。请点击「重试」；如持续出现，请更换网络。' }
   }
   const status = /^HTTP (\d{3})$/.exec(reason)?.[1]
   // 连上了、下载源那边自己出错，跟这台电脑的网络无关；说成「网络不通」会和错误框「下载源暂时出错」打架。
-  if (status && status.startsWith('5')) return { rank: 4, sentence: `下载安装包时下载源那边出错（错误码 HTTP ${status}）。过几分钟再点「重试」。` }
+  if (status && status.startsWith('5')) return { rank: 4, sentence: `下载安装包时下载源出错（错误码 HTTP ${status}）。请几分钟后点击「重试」。` }
   if (classifyNetworkFailure(error) || /fetch failed|请求超时|服务器返回了空响应|服务器没有返回安装包内容/.test(reason)) {
     const code = networkFailureCode(error)
-    return { rank: 3, sentence: `下载安装包时网络不通${code ? `（错误码 ${code}）` : ''}。检查网络后再点「重试」。` }
+    return { rank: 3, sentence: `下载安装包时网络不通${code ? `（错误码 ${code}）` : ''}。请检查网络后点击「重试」。` }
   }
   return { rank: 5, sentence: loggedFailureNextStep }
 }
@@ -999,7 +1001,8 @@ export function buildNodeRuntimeUacBrokerScript(
  *
  * 1223 和 740 说的是两件不同的事：一个是用户在授权窗口点了「否」，一个是没拿到
  * 管理员权限。普通账号上两条都会出现，而「重新点一次」对它没用，所以探到账号不在
- * 管理员组时换成另一句（见 windows-elevation.ts）。
+ * 管理员组时换成另一句（见 windows-elevation.ts）。普通账号在授权窗口输了别的管理员账号的
+ * 密码会落到 2225，「用当前账号的管理员身份重试」对它同样做不到，也换成那一句。
  */
 export function nodeRuntimeElevationFailureMessage(
   exitCode: number | null,
@@ -1007,11 +1010,13 @@ export function nodeRuntimeElevationFailureMessage(
 ): string | null {
   switch (exitCode) {
     case 1223:
-      return windowsElevationCancelledMessage('Node.js', capability)
+      return windowsElevationCancelledMessage('Node.js ', capability)
     case 2225:
-      return '管理员授权用的是另一个 Windows 账号，已停止安装以免装到别的账号名下。请用当前 Windows 账号的管理员身份重试。'
+      return `管理员授权使用了另一个 Windows 账号，为避免安装到其他账号名下，已停止安装。${capability === 'standard'
+        ? windowsStandardAccountAdvice()
+        : '请用当前 Windows 账号的管理员身份重试。'}`
     case 740:
-      return windowsElevationDeniedMessage('Node.js', capability)
+      return windowsElevationDeniedMessage('Node.js ', capability)
     case 13:
       return 'Node.js 安装包在授权期间发生变化或签名校验失败，已停止安装。请重新点击安装，程序会重新下载并校验。'
     default:
@@ -1073,8 +1078,8 @@ async function runUacProcess(plan: NodeRuntimeProcessPlan, signal?: AbortSignal)
     })
   } catch (error) {
     if (!(error instanceof CommandRunnerError)) throw error
-    // 只有会提到「授权」的那两条才值得多花一次探测。
-    const capability = error.exitCode === 1223 || error.exitCode === 740
+    // 只有会提到「授权」的那几条才值得多花一次探测。
+    const capability = error.exitCode === 1223 || error.exitCode === 740 || error.exitCode === 2225
       ? await inspectWindowsElevationCapability({ env: plan.env ?? process.env, machinePaths })
       : 'unknown'
     const message = nodeRuntimeElevationFailureMessage(error.exitCode, capability)
@@ -1297,7 +1302,7 @@ async function downloadMsi(
       onResume: (size, total) => report(options, {
         phase: 'downloading',
         source: source.id,
-        message: `网络断了一下，正在从${source.label}接着下载 Node.js LTS`,
+        message: `网络曾短暂中断，正在从${source.label}继续下载 Node.js LTS`,
         percent: percentOf(size, total),
         transferredBytes: size,
         totalBytes: total,
@@ -1360,7 +1365,7 @@ async function hashFileSha256(filePath: string): Promise<string> {
 export function nodeRuntimeMsiInstallingMessage(version: string, processElevated?: boolean): string {
   return processElevated
     ? `正在静默安装 Node.js ${version} LTS`
-    : `正在安装 Node.js ${version} LTS，Windows 会弹一次授权窗口，请选「是」；没看到窗口，看看任务栏上有没有闪的盾牌图标。`
+    : `正在安装 Node.js ${version} LTS，Windows 将弹出授权窗口，请选择「是」；如未看到窗口，请查看任务栏上是否有闪烁的盾牌图标。`
 }
 
 async function installFromSource(
@@ -1489,7 +1494,7 @@ export async function installNodeRuntime(
     throwIfAborted(options.signal)
     if (!nodeRuntimeTriesWingetFirst(region)) {
       tryWinget = false
-      failures.push(`winget：网络在国内或测不出位置（${region}），没试，直接下安装包`)
+      failures.push(`winget：网络位于国内或无法识别位置（${region}），已跳过，直接下载安装包`)
     }
   }
   if (tryWinget) {
@@ -1511,7 +1516,7 @@ export async function installNodeRuntime(
       report(options, {
         phase: 'checking',
         source: 'winget',
-        message: '这台电脑缺少系统自带的应用安装组件，改用经过校验的 Node.js 安装包',
+        message: '本机缺少系统自带的应用安装组件，改用经过校验的 Node.js 安装包',
         percent: null,
       })
     } else {
@@ -1544,7 +1549,7 @@ export async function installNodeRuntime(
         report(options, {
           phase: 'checking',
           source: 'winget',
-          message: '系统自带的应用安装组件没装成，改用经过校验的 Node.js 安装包',
+          message: '系统自带的应用安装组件安装失败，改用经过校验的 Node.js 安装包',
           percent: null,
         })
       }

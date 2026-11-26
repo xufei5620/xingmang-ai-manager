@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } fro
 import type { NetworkSettingsKind, XingmangApi } from '../../../../electron/ipc-contract'
 import { isOffline, offlineCause, stillOfflineText } from '../shell/online-status'
 import { useBrowserOnline, type OnlineStatus } from '../shell/useOnlineStatus'
-import type { AccountBalanceSnapshot, AccountBalanceStore } from './balance-store'
+import type { AccountBalanceStore } from './balance-store'
+import { useAccountBalanceSelector } from './balance-context'
 import type { AppToast } from './runtime-context'
 
 interface AppOnlineStatusOptions {
@@ -10,7 +11,6 @@ interface AppOnlineStatusOptions {
   toast: AppToast
   authenticated: boolean
   balanceStore: AccountBalanceStore
-  balanceState: AccountBalanceSnapshot
   mounted: RefObject<boolean>
 }
 
@@ -18,9 +18,12 @@ interface AppOnlineStatusOptions {
  * 顶上那条「网断了」横幅背后的判断：系统说断了，或者登录后读余额连着失败。代理连不上时先替用户
  * 试一次直连；「重新检测」再读一次余额，真通了横幅才收起。
  */
-export function useAppOnlineStatus({ native, toast, authenticated, balanceStore, balanceState, mounted }: AppOnlineStatusOptions) {
+export function useAppOnlineStatus({ native, toast, authenticated, balanceStore, mounted }: AppOnlineStatusOptions) {
   const browserOnline = useBrowserOnline()
-  const offline = isOffline({ browserOnline, networkFailures: authenticated ? balanceState.networkFailures : 0 })
+  // 只挑这两样：这个 hook 挂在根组件上，订阅整份余额会让每次刷新都整页重画（R8）。
+  const networkFailures = useAccountBalanceSelector(balanceStore, (state) => state.networkFailures)
+  const networkFailureReason = useAccountBalanceSelector(balanceStore, (state) => state.networkFailureReason)
+  const offline = isOffline({ browserOnline, networkFailures: authenticated ? networkFailures : 0 })
   // 安装任务跑到一半要看的是「现在」断没断网（换成星芒装的，动手卸之前），闭包里的 offline 停在点按钮那一刻。
   const offlineNow = useRef(offline)
   offlineNow.current = offline
@@ -29,7 +32,7 @@ export function useAppOnlineStatus({ native, toast, authenticated, balanceStore,
   useEffect(() => {
     if (browserOnline && authenticated && balanceStore.getSnapshot().networkFailures > 0) void balanceStore.refresh('manual')
   }, [browserOnline, balanceStore, authenticated])
-  const onlineCause = offline ? offlineCause({ browserOnline, networkFailureReason: balanceState.networkFailureReason }) : undefined
+  const onlineCause = offline ? offlineCause({ browserOnline, networkFailureReason }) : undefined
   // 代理连不上时，星芒先替用户试一次直连（只改自己的连接，下次打开软件照旧跟随系统）。
   // 自动只试一次；之后点「重新检测」再试。代理要账号密码时也试：直连通了就不用找管理员。
   const proxyCause = onlineCause === 'proxy' || onlineCause === 'proxyAuth'
@@ -59,7 +62,7 @@ export function useAppOnlineStatus({ native, toast, authenticated, balanceStore,
     void Promise.resolve().then(() => native.openNetworkSettings(kind)).then((opened) => {
       if (!opened) throw new Error('not-opened')
     }).catch(() => {
-      toast.show(kind === 'proxy' ? '没能打开系统代理设置，请在系统设置里找「代理」。' : '没能打开认证页，请打开浏览器随便访问一个网页。', 'warn')
+      toast.show(kind === 'proxy' ? '无法打开系统代理设置，请在系统设置中查找「代理」。' : '无法打开认证页，请在浏览器中访问任意网页。', 'warn')
     })
   }, [native, toast])
   const dismissProxyBypassNotice = useCallback(() => setProxyBypassNotice(false), [])

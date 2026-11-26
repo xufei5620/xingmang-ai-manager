@@ -1,10 +1,7 @@
-## 用户
-
-- Codex 对话太大、当时线路 2 一时连不上没换成的，过两分钟再发一句，会再帮你换一次线路。
-
 ## 开发
 
-- 0.2.25 总单第 48 项第二条（11-18 复核 R29-02 的「部分修复」那半，原见 `docs/audits/2026-10-29/findings.md`）：
+- 给客户看的那句并进了 `r29-01-codex-payload-catch-up.md`（0.2.25 更新说明统一改为正式书面口吻、同类并条，复查第三轮第 8 条）。
+- 0.2.25 总单第 48 项第二条（11-18 复核 R29-02 的「部分修复」那半）：
   `electron/codex-payload-limit.ts` 的 `createCodexPayloadLimitService` 在线路 1 上认出 413 时，先把对话记成处理过再去换线。
   线路 2 这会儿没查通（`unreachable`）、或者 Codex 的配置没跟过去（`unfollowed`，含跟的那一步抛错）时也照样记着，
   存进 `codex-payload-sessions.json`，这个对话以后在线路 1 上再报都不管了：线路 2 过一会儿好了，客户接着发、接着 413，

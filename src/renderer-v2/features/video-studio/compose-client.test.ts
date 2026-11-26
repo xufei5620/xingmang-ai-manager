@@ -42,8 +42,8 @@ describe('video studio compose client', () => {
   it('passes the worker failure message through', async () => {
     const { port, state } = fakeWorker()
     const pending = composeInVideoStudioWorker(request(), { createWorker: () => port })
-    state.listener?.message({ kind: 'failed', message: '第 2 段片段里没有画面', detail: 'Error: no track' })
-    await expect(pending).rejects.toThrow('第 2 段片段里没有画面')
+    state.listener?.message({ kind: 'failed', message: '第 2 段片段中无画面', detail: 'Error: no track' })
+    await expect(pending).rejects.toThrow('第 2 段片段中无画面')
     expect(state.terminated).toBe(1)
   })
 
@@ -51,12 +51,12 @@ describe('video studio compose client', () => {
     const unreadable = fakeWorker()
     const first = composeInVideoStudioWorker(request(), { createWorker: () => unreadable.port })
     unreadable.state.listener?.message({ kind: 'done', result: { ...result, data: null } })
-    await expect(first).rejects.toThrow('拼的时候出了点问题，请再试一次')
+    await expect(first).rejects.toThrow('合成时出现问题，请重试')
 
     const dying = fakeWorker()
     const second = composeInVideoStudioWorker(request(), { createWorker: () => dying.port })
     dying.state.listener?.error()
-    await expect(second).rejects.toThrow('拼的时候出了点问题，请再试一次')
+    await expect(second).rejects.toThrow('合成时出现问题，请重试')
     expect(dying.state.terminated).toBe(1)
   })
 
@@ -82,7 +82,7 @@ describe('video studio compose client', () => {
 
   it('reports clip bytes that cannot be handed over', async () => {
     const { port, state } = fakeWorker({ failStart: true })
-    await expect(composeInVideoStudioWorker(request(), { createWorker: () => port })).rejects.toThrow('拼的时候出了点问题，请再试一次')
+    await expect(composeInVideoStudioWorker(request(), { createWorker: () => port })).rejects.toThrow('合成时出现问题，请重试')
     expect(state.terminated).toBe(1)
   })
 })

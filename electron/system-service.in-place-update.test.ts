@@ -25,7 +25,7 @@ const integrity = `sha512-${Buffer.alloc(64, 0x33).toString('base64')}`
 const officialRegistry = 'https://registry.npmjs.org'
 const mirrorRegistry = 'https://registry.npmmirror.com'
 const previousVersion = '0.1.0'
-const writeSealReason = '正在把新版本写入工具目录，这一步中断会让工具用不了，请等它结束。'
+const writeSealReason = '正在将新版本写入工具目录，中断此步骤将导致工具无法使用，请等待完成。'
 
 const packages = {
   codex: { name: '@openai/codex', platformBuild: '@openai/codex-win32-x64', command: 'codex' },
@@ -334,8 +334,8 @@ describe('isMachineBoundNpmFailure', () => {
     for (const detail of [
       '命令执行失败（退出码 1）：node（ECONNRESET；network aborted）',
       '命令执行失败（退出码 1）：node（E500；500 Internal Server Error）',
-      '下载太久没有完成，超时中止',
-      'Codex CLI 的主程序没有下载完整，多半是网络不稳定。请关掉代理或换个网络后再装一次',
+      '下载长时间未完成，已超时中止',
+      'Codex CLI 的主程序未能完整下载，通常是网络不稳定所致。请关闭代理或更换网络后重新安装',
     ]) {
       expect(isMachineBoundNpmFailure(detail, true)).toBe(false)
     }
@@ -378,7 +378,7 @@ describe.runIf(process.platform !== 'win32')('updating a CLI in place on Windows
       downloadHasPlatformBuild: () => false,
     })
 
-    await expect(fixture.service.installCli('codex', fixture.target)).rejects.toThrow('Codex CLI 的主程序没有下载完整')
+    await expect(fixture.service.installCli('codex', fixture.target)).rejects.toThrow('Codex CLI 的主程序未能完整下载')
 
     expect(fixture.commands).toEqual([`download ${officialRegistry}`, `download ${mirrorRegistry}`])
     expect(fixture.installedVersion()).toBe(previousVersion)
@@ -436,7 +436,7 @@ describe.runIf(process.platform !== 'win32')('updating a CLI in place on Windows
   })
 
   it('leaves Codex as it was when the remote control is still using it', async () => {
-    const busy = '手机遥控里的 Codex 正在干活，等它做完再更新，或者先在设置里关掉手机遥控。'
+    const busy = '遥控中的 Codex 正在处理任务，请待其完成后再更新，或先在「遥控」页关闭遥控。'
     const fixture = createInPlaceUpdateFixture({
       provider: 'codex',
       releaseCodexRemote: async () => { throw new Error(busy) },
@@ -571,7 +571,7 @@ describe.runIf(process.platform !== 'win32')('checking the install manifest agai
     const error = await fixture.service.installCli('codex', fixture.target).catch((failure: unknown) => failure)
 
     const message = (error as Error).message
-    expect(message).toBe('Codex CLI 安装失败：装之前要先到 npm 官方源核对安装清单，这一步没连上（错误码 ETIMEDOUT）。换个网络（比如手机热点）后再试。')
+    expect(message).toBe('Codex CLI 安装失败：安装前需先在 npm 官方源核对安装清单，此步骤连接失败（错误码 ETIMEDOUT）。请更换网络（如手机热点）后重试。')
     expect(classifyOperationError(message)).toBe('officialRegistryUnreachable')
     expect(((error as Error).cause as CommandRunnerError).stderr).toBe(registryTimeoutStderr)
     expect(fixture.installedVersion()).toBe(previousVersion)
@@ -586,7 +586,7 @@ describe.runIf(process.platform !== 'win32')('checking the install manifest agai
 
     const error = await fixture.service.installCli('codex', fixture.target).catch((failure: unknown) => failure)
 
-    expect((error as Error).message).toBe('Codex CLI 安装失败：装之前要先到 npm 官方源核对安装清单，这一步没连上（错误码 ETIMEDOUT）。换个网络（比如手机热点）后再试。')
+    expect((error as Error).message).toBe('Codex CLI 安装失败：安装前需先在 npm 官方源核对安装清单，此步骤连接失败（错误码 ETIMEDOUT）。请更换网络（如手机热点）后重试。')
   })
 
   it('names a version the registry does not have in Chinese and says what to do', async () => {
@@ -600,7 +600,7 @@ describe.runIf(process.platform !== 'win32')('checking the install manifest agai
     const error = await fixture.service.installCli('codex', fixture.target).catch((failure: unknown) => failure)
 
     const message = (error as Error).message
-    expect(message).toBe('Codex CLI 安装失败：npm 官方源：找不到要装的版本（错误码 ETARGET）。过一会儿再点「重试」；一直这样请找客服。')
+    expect(message).toBe('Codex CLI 安装失败：npm 官方源：未找到要安装的版本（错误码 ETARGET）。请稍后点击「重试」；如持续出现，请联系客服。')
     // 整句自己说清了下一步，错误框不另配标题。
     expect(classifyOperationError(message)).toBe('unknown')
   })

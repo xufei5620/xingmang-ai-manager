@@ -1,6 +1,6 @@
 ## 用户
 
-- Windows 上从星芒打开 Claude Desktop 时，星芒会先替它放好聊天和 Code 要用的程序，不用再连 Claude 官网下载；Cowork 要用的工作区还是要连得上 Claude 官网。
+- 修复了 Claude 桌面端所需组件无法下载的问题。
 
 ## 开发
 

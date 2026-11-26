@@ -113,11 +113,11 @@ export function verifyUpdateEntrySignature(
 ): UpdateSignatureVerdict {
   const keys = publicKeys.map(parsePublicKey).filter((key): key is KeyObject => key !== null)
   if (keys.length === 0) {
-    return { ok: false, code: 'UPDATE_SIGNATURE_UNCONFIGURED', message: '这个版本没有配置更新包签名公钥，已阻止安装，请到官网下载新版安装包。' }
+    return { ok: false, code: 'UPDATE_SIGNATURE_UNCONFIGURED', message: '当前版本未配置更新包签名公钥，已阻止安装，请前往官网下载新版安装包。' }
   }
   const signature = entry[UPDATE_SIGNATURE_FIELD]
   if (signature === undefined || signature === null || signature === '') {
-    return { ok: false, code: 'UPDATE_SIGNATURE_MISSING', message: '更新清单里没有发布者签名，已阻止安装。请稍后再试，若一直这样请联系客服。' }
+    return { ok: false, code: 'UPDATE_SIGNATURE_MISSING', message: '更新清单中缺少发布者签名，已阻止安装。请稍后重试，如持续出现请联系客服。' }
   }
   const signatureBytes = decodeSignature(signature)
   const payload = typeof entry.url === 'string' && typeof entry.sha512 === 'string'

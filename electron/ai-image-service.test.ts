@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { aiImageKeptUnsavedMessage, chargedAfterStopAssetTag, createAiImageService, type AiImageAssetWriter } from './ai-image-service'
+import { aiImageKeptInMemoryMessage, aiImageKeptUnsavedMessage, chargedAfterStopAssetTag, createAiImageService, type AiImageAssetWriter } from './ai-image-service'
 import { networkFailureMessages } from './network-failure'
 import { relayQuotaFailureMessages } from './relay-quota-failure'
 
@@ -246,7 +246,7 @@ describe('AI image service', () => {
     const error = await service.generate(4, {
       requestId: 'remote-write-failed', group: '生图分组', model: 'grok-imagine-image-2.0', prompt: '图',
     }).then(() => null, (reason: unknown) => reason)
-    expect((error as Error).message).toMatch(/本地保存失败.*请勿立即重复提交.*磁盘空间/)
+    expect((error as Error).message).toMatch(/本地保存失败.*请勿立即重复提交.*磁盘的可用空间/)
     // The run log records the store's own reason under the sentence the person reads (S-1).
     expect((error as Error).cause).toBe(writeFailure)
   })
@@ -254,7 +254,7 @@ describe('AI image service', () => {
   it('tells the person not to regenerate when the paid image was set aside (S-1)', async () => {
     const fetchImpl = vi.fn(async () => response({ data: [{ url: 'https://imgen.x.ai/result.jpg' }] })) as unknown as typeof fetch
     const { service, assets } = setup(fetchImpl)
-    const setAside = Object.assign(new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服'), { code: 'AI_IMAGE_KEPT_UNSAVED' })
+    const setAside = Object.assign(new Error('作品未能存入保存位置，请稍后重试；如持续失败，请联系客服'), { code: 'AI_IMAGE_KEPT_UNSAVED' })
     vi.mocked(assets.storeRemoteUrl).mockRejectedValue(setAside)
 
     const error = await service.generate(4, {
@@ -262,8 +262,23 @@ describe('AI image service', () => {
     }).then(() => null, (reason: unknown) => reason)
 
     expect((error as Error).message).toBe(aiImageKeptUnsavedMessage)
-    expect(aiImageKeptUnsavedMessage).toBe('图片已经生成、也已经扣费了，但没能存进作品库，已经先替你收着。先别重新生成，清出一些空间后会自动存进作品库。')
+    expect(aiImageKeptUnsavedMessage).toBe('图片已生成并已扣费，但未能存入作品库，已为您临时保存。请勿重新生成，释放部分空间后将自动存入作品库。')
     expect((error as Error).cause).toBe(setAside)
+  })
+
+  it('warns that quitting loses a paid image the stash could only hold in memory (A02)', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+    const heldInMemory = Object.assign(new Error('作品未能存入保存位置，请稍后重试；如持续失败，请联系客服'), { code: 'AI_IMAGE_KEPT_IN_MEMORY' })
+    vi.mocked(assets.storeBase64).mockRejectedValue(heldInMemory)
+
+    const error = await service.generate(4, {
+      requestId: 'memory-set-aside', group: '生图分组', model: 'gpt-image-2', prompt: '图',
+    }).then(() => null, (reason: unknown) => reason)
+
+    expect((error as Error).message).toBe(aiImageKeptInMemoryMessage)
+    expect(aiImageKeptInMemoryMessage).toBe('图片已生成并已扣费，但本机暂时无法保存，已临时保存在星芒中，退出后将丢失。请勿重新生成，也请暂勿退出星芒，释放部分空间后将自动存入作品库。')
+    expect((error as Error).cause).toBe(heldInMemory)
   })
 
   it('treats a successful response without images as ambiguous and never retries it', async () => {
@@ -376,7 +391,7 @@ describe('AI image service', () => {
   it('stops before paid dispatch when the save location cannot be written', async () => {
     const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
     const { service, assets } = setup(fetchImpl)
-    const unwritable = new Error('保存位置写不进去，这次没有扣费。请联系客服帮你处理。')
+    const unwritable = new Error('保存位置无法写入，本次未扣费。请联系客服协助处理。')
     Object.assign(unwritable, { code: 'AI_OUTPUT_UNWRITABLE' })
     assets.assertWritable = vi.fn(async () => { throw unwritable })
 
@@ -391,12 +406,12 @@ describe('AI image service', () => {
   it('probes the save location before image edits read sources or dispatch', async () => {
     const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
     const { service, assets } = setup(fetchImpl)
-    assets.assertWritable = vi.fn(async () => { throw new Error('保存位置写不进去，这次没有扣费。') })
+    assets.assertWritable = vi.fn(async () => { throw new Error('保存位置无法写入，本次未扣费。') })
 
     await expect(service.edit(4, {
       requestId: 'unwritable-edit', group: '生图分组', model: 'gpt-image-2', prompt: '改一下',
       sourceAssetIds: ['a'.repeat(43)],
-    })).rejects.toThrow('这次没有扣费')
+    })).rejects.toThrow('本次未扣费')
     expect(assets.readOwned).not.toHaveBeenCalled()
     expect(fetchImpl).not.toHaveBeenCalled()
   })
@@ -589,16 +604,16 @@ describe('AI image service', () => {
   it.each([
     [400, { error: { message: "Invalid size '1025x1024'" } }, '不支持这个图片尺寸'],
     // 参考图文件太大不是尺寸不对，审核的英文原话也不上屏（#1101 第4条）。
-    [400, { error: { message: 'Invalid image: file size must be less than 20 MB.' } }, '参考图太大了，服务端收不下。换一张小一点的图，或者压缩一下再试。'],
+    [400, { error: { message: 'Invalid image: file size must be less than 20 MB.' } }, '参考图过大，服务端无法接收。请更换较小的图片或压缩后重试。'],
     [400, { error: { message: 'Your request was rejected as a result of our safety system.', code: 'moderation_blocked' } },
-      '这次的描述或参考图没通过安全审核，没有生成图片。改一改描述或换一张图再试。'],
-    [400, { error: { message: 'Request rejected', code: 'content_policy_violation' } }, '这次的描述或参考图没通过安全审核'],
+      '本次描述或参考图未通过安全审核，未生成图片。请调整描述或更换图片后重试。'],
+    [400, { error: { message: 'Request rejected', code: 'content_policy_violation' } }, '本次描述或参考图未通过安全审核'],
     [403, { error: { message: 'Project does not have access to model' } }, '暂无该生图模型权限'],
-    [403, { error: { message: '用户额度不足, 剩余额度: ＄0.000000 (request id: r1)', code: 'insufficient_user_quota' } }, '当前账号余额不足，充值后再试就行'],
-    [403, { error: { message: 'token quota is not enough, token remain quota: ＄0.001000, need quota: ＄0.050000', code: 'pre_consume_token_quota_failed' } }, '额度上限用完了'],
-    [401, { error: { message: '无效的令牌 (request id: r2)', type: 'new_api_error', code: '' } }, '密钥已失效，再发一次就会自动换一把新的'],
-    [429, { error: { message: 'API key 额度已用完', type: 'insufficient_quota', code: 'insufficient_quota' } }, '额度上限用完了'],
-    [429, { error: { message: 'rate limited' } }, '上游限流'],
+    [403, { error: { message: '用户额度不足, 剩余额度: ＄0.000000 (request id: r1)', code: 'insufficient_user_quota' } }, '当前账号余额不足，请充值后重试'],
+    [403, { error: { message: 'token quota is not enough, token remain quota: ＄0.001000, need quota: ＄0.050000', code: 'pre_consume_token_quota_failed' } }, '额度上限已用完'],
+    [401, { error: { message: '无效的令牌 (request id: r2)', type: 'new_api_error', code: '' } }, '密钥已失效，重新发送后将自动更换新密钥'],
+    [429, { error: { message: 'API key 额度已用完', type: 'insufficient_quota', code: 'insufficient_quota' } }, '额度上限已用完'],
+    [429, { error: { message: 'rate limited' } }, '生图服务繁忙'],
     [503, { error: { message: 'upstream unavailable' } }, '结果不明确'],
   ])('maps HTTP %s image failures to an actionable message', async (status, payload, expected) => {
     const fetchImpl = vi.fn(async () => response(payload, status)) as unknown as typeof fetch
@@ -608,7 +623,7 @@ describe('AI image service', () => {
     })).rejects.toThrow(expected)
   })
 
-  // 历史账号站提交前计费复查没过（#1240）：英文原话不上屏，换成余额不足那句，聊天页据此给「去充值」。
+  // 历史账号站提交前计费复查没过（#1240）：英文原话不上屏，换成余额不足那句，聊天页据此给「前往充值」。
   it('points the history-account site to recharging when the billing re-check fails', async () => {
     const payload = { error: { message: 'insufficient balance', type: 'billing_error' } }
     const fetchImpl = vi.fn(async () => response(payload, 403)) as unknown as typeof fetch

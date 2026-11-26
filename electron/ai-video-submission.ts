@@ -22,4 +22,4 @@ export function isAiVideoUnconfirmedSubmission(message: string): boolean {
  * 片段已经出了、钱已经扣了，下载下来却因为磁盘满了存不进去（D38，yoyo 2026-11-11 批）。以前说「请稍后重试」，
  * 客户就再点一次生成、再扣一次钱。任务记录这时还在（ai-video-service.ts 存进去以后才删），下次启动会自动再取一次。
  */
-export const aiVideoDiskFullMessage = '视频已经生成、也已经扣费了，但电脑的磁盘满了存不进去。先别重新生成，清出一些空间后重开星芒，会自动取回。'
+export const aiVideoDiskFullMessage = '视频已生成并已扣费，但本机磁盘剩余空间不足，无法保存。请勿重新生成，释放部分空间后重新打开星芒，将自动取回。'

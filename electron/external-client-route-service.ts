@@ -7,13 +7,18 @@
 import os from 'node:os'
 import path from 'node:path'
 import { cliCatalog, isRetiredProviderId, type ProviderId } from './catalog'
-import { createClaudeCodeSeedProgressRelay, createClaudeDesktopCodeSeeder } from './claude-desktop-code-seed'
+import { claudeCodeSeedPlatform, claudeDesktopAsarPath, createClaudeCodeSeedProgressRelay, createClaudeDesktopCodeSeeder } from './claude-desktop-code-seed'
+import { claudeDesktopMacAsarPath, type ClaudeDesktopVmArchitecture } from './claude-desktop-component-manifest'
+import { createClaudeDesktopMacCodeSeeder } from './claude-desktop-mac-code-seed'
+import { createClaudeDesktopVmCodeSeeder } from './claude-desktop-vm-code-seed'
+import { createClaudeDesktopWorkspaceSeeder, type ClaudeDesktopComponentTarget } from './claude-desktop-workspace-seed'
 import { createClaudeDesktopConfigService } from './claude-desktop-config'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
 import { resolveClaudeDesktopModels } from './claude-desktop-models'
 import { runClaudeDesktopModelTopUp } from './claude-desktop-model-topup'
+import { trustedCommandEnvironment } from './command-runner'
 import { buildGatewayMessagesProbe, runConnectionProbe } from './connection-check'
 import { type ExternalClientCheckResult, runExternalClientCheck } from './external-client-connection'
 import {
@@ -56,7 +61,7 @@ import type { ServiceContext } from './system-service-context'
  * OpenCode 的配置位置跟着 XDG_CONFIG_HOME 走，这个设置不是完整路径时找不到它（0.2.24 深查决定单 D62 第 4 条的原字）。
  * WorkBuddy 的配置在主目录下的 .workbuddy 里，不看这个设置，所以只拦 OpenCode。
  */
-const relativeXdgConfigHomeMessage = '你电脑上的 XDG_CONFIG_HOME 设置不是完整路径，OpenCode 的配置位置找不到。把它改成以 / 开头的完整路径，或者删掉这个设置再试。'
+const relativeXdgConfigHomeMessage = '本机的 XDG_CONFIG_HOME 设置不是完整路径，无法确定 OpenCode 的配置位置。请将其改为以 / 开头的完整路径，或删除该设置后重试。'
 
 /** 读不出来的安装记录进运行日志时的那几项：原因里万一带着主目录，按主目录脱敏。 */
 export function buildExternalClientRegistryLogDetail(failures: ExternalClientRegistryFailure[], userHome: string) {
@@ -176,6 +181,60 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     onProgress: (event) => claudeDesktopSeedProgress.report(event),
     log: (level, event, message, detail) => runtimeLog?.log(level, 'install', event, message, detail),
   })
+  // Mac 只问一次是不是 Apple 芯片：Claude 是通用程序，在 Apple 芯片上按 arm64 跑，星芒自己可能在 Rosetta 里。
+  let macArchitecture: Promise<ClaudeDesktopVmArchitecture> | null = null
+  function probeMacArchitecture(): Promise<ClaudeDesktopVmArchitecture> {
+    macArchitecture ??= (async (): Promise<ClaudeDesktopVmArchitecture> => {
+      if (process.arch === 'arm64') return 'arm64'
+      try {
+        const result = await executeCommand({ executable: '/usr/sbin/sysctl', argv: ['-n', 'hw.optional.arm64'] }, {
+          env: trustedCommandEnvironment(), trustedOnly: false, timeoutMs: 5_000, maxOutputBytes: 1024,
+        })
+        if (result.stdout.trim() === '1') return 'arm64'
+      } catch {
+        // 只有「1」才算 Apple 芯片；Intel 的 Mac 回 0 或者没有这一项（sysctl 非零退出），都是 x64。
+      }
+      return 'x64'
+    })()
+    return macArchitecture
+  }
+  /** 这一份 Claude Desktop 的数据目录、程序文件和它的虚拟机、Claude Code 用哪个架构（Windows 看安装位置，Mac 看芯片）。 */
+  async function claudeDesktopComponentTarget(clientPath: string): Promise<ClaudeDesktopComponentTarget | null> {
+    if (platform !== 'win32' && platform !== 'darwin') return null
+    const { env, storeVirtualization } = await claudeDesktopRoots(clientPath)
+    const { profileDirectory } = resolveClaudeDesktopPaths({ platform, userHome: providerRoots.userHome, env, installationPath: clientPath, storeVirtualization })
+    if (platform === 'darwin') return { profileDirectory, asarPath: claudeDesktopMacAsarPath(clientPath), architecture: await probeMacArchitecture() }
+    const seedPlatform = claudeCodeSeedPlatform(clientPath, process.arch)
+    if (!seedPlatform) return null
+    return { profileDirectory, asarPath: claudeDesktopAsarPath(clientPath), architecture: seedPlatform === 'win32-arm64' ? 'arm64' : 'x64' }
+  }
+  function componentLog(level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>): void {
+    runtimeLog?.log(level, 'install', event, message, detail)
+  }
+  // Mac 上 Claude Code 要的是官网那个带签名的程序包，npm 上没有，从星芒的下载站放（跟 Windows 那一半共用一个远程开关）。
+  // 下载那段跟 Windows 一样，工具行说「正在替 Claude Desktop 准备…（35%）」。
+  const claudeDesktopMacCodeSeeder = createClaudeDesktopMacCodeSeeder({
+    platform,
+    fetch: downloadFetch,
+    resolveTarget: claudeDesktopComponentTarget,
+    userHome: providerRoots.userHome,
+    isOff: () => serviceOptions.remoteFeatureOff?.('claude-desktop-code-seed') === true,
+    onProgress: (event) => claudeDesktopSeedProgress.report(event),
+    log: componentLog,
+  })
+  // Cowork 的工作区（约 1.3 GB）从星芒的下载站放，它虚拟机里那份 Linux 版 Claude Code 从 npm 镜像放。
+  // 装好或更新好 Claude、开机、从星芒点「打开」都叫一次，在后台做（seedClaudeDesktopWorkspace）。
+  const claudeDesktopWorkspaceSeeder = createClaudeDesktopWorkspaceSeeder({
+    platform,
+    executionMode: windowsExecutionMode,
+    fetch: downloadFetch,
+    resolveTarget: claudeDesktopComponentTarget,
+    stateDirectory: path.join(serviceOptions.managerDataDirectory ?? path.join(providerRoots.userHome, '.xingmang-ai-manager'), 'claude-desktop-components'),
+    userHome: providerRoots.userHome,
+    isOff: () => serviceOptions.remoteFeatureOff?.('claude-desktop-workspace-seed') === true,
+    linuxCode: createClaudeDesktopVmCodeSeeder({ fetch: downloadFetch, userHome: providerRoots.userHome, platform, log: componentLog }),
+    log: componentLog,
+  })
   const externalClientRuntime = serviceOptions.externalClientRuntime ?? createExternalClientRuntime({
     installationQueue, platform, userHome: providerRoots.userHome, runCommand: executeCommand, windowsExecutionMode,
     // Mac 上一键装桌面端自己下官方包：和命令行工具一样走系统代理、临时加速，下之前先看盘。
@@ -198,8 +257,14 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       buildExternalClientDetectionErrorLogDetail(failure, providerRoots.userHome)),
     // 客户说「打开还是慢」，客服在反馈报告里看这一行：慢在排队、PowerShell 启动、读安装记录、核签名，还是交出去以后客户端自己慢。
     onLaunchTiming: (timing) => runtimeLog?.log('info', 'system', 'external-client.launch-timing', '打开桌面客户端前各段用时', { ...timing }),
-    onLaunched: (tool, clientPath) => { launchedClientPaths.set(tool, clientPath) },
-    prepareClaudeDesktopLaunch: (client) => claudeDesktopCodeSeeder.prepare(client),
+    onLaunched: (tool, clientPath) => {
+      launchedClientPaths.set(tool, clientPath)
+      if (tool === 'claudeDesktop') void claudeDesktopWorkspaceSeeder.seed(clientPath)
+    },
+    prepareClaudeDesktopLaunch: async (client) => {
+      if (platform !== 'darwin') return claudeDesktopCodeSeeder.prepare(client)
+      await claudeDesktopMacCodeSeeder.prepare(client)
+    },
   })
 
   let externalConfigQueue: Promise<unknown> = Promise.resolve()
@@ -400,6 +465,8 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       }
     }
     const status = await (request ? externalClientRuntime.install(tool, forward, request) : externalClientRuntime.install(tool, forward))
+    // 装好或更新好 Claude Desktop 就在后台把它的工作区下好，不等客户点进 Cowork（yoyo 2026-11-20）。
+    if (tool === 'claudeDesktop' && status.installed && status.path && !status.detectionError) void claudeDesktopWorkspaceSeeder.seed(status.path)
     const described = await describeExternalClient(status)
     // 就地替换而不是追加：这份快照的顺序就是反馈报告与界面读到的顺序。
     latestExternalClients = latestExternalClients?.some((entry) => entry.tool === tool)
@@ -453,7 +520,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
   async function assertAutomaticTarget(tool: ExternalToolId, status: ExternalClientRuntimeStatus | undefined): Promise<void> {
     // WorkBuddy 开着也写：它盯着 models.json，改了自己就同步（2026-11-18 拆安装包核实）。另两家开着时不碰。
     const described = status?.installed && (!status.running || tool === 'workbuddy') && !status.detectionError ? await describeExternalClient(status) : null
-    if (!described?.pristine) throw new Error(`${externalClientNames[tool]} 已经有配置了或者正开着，这次没有自动连接`)
+    if (!described?.pristine) throw new Error(`${externalClientNames[tool]} 已有配置或正在运行，本次未自动连接`)
   }
   function configureExternalTool(
     tool: ExternalToolId,
@@ -527,12 +594,27 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       if (owner) await externalOwnership.write(tool, owner, activeSite.providerBaseUrls.codex, apiKey, keySource)
       const connection = await verifySavedExternalClient(tool, latestExternalClients?.find((entry) => entry.tool === tool))
       return { tool, model, path: result.path, files: result.files, backups: result.backups, outcome: 'configured',
-        message: tool === 'workbuddy' ? '配置已写入 WorkBuddy 桌面端。重新进入“设置 → 模型”选择此模型；列表未刷新时请重启 WorkBuddy。'
-          : '已经连好了。关掉 OpenCode 再打开就能用；要是你在某个项目里单独给 OpenCode 配过模型，那个项目里以你自己配的为准。',
+        message: tool === 'workbuddy' ? '配置已写入 WorkBuddy 桌面端。请重新进入「设置 → 模型」选择该模型；如列表未刷新，请重启 WorkBuddy。'
+          : '已连接完成。请关闭 OpenCode 后重新打开即可使用；如您在某个项目中单独为 OpenCode 配置过模型，该项目以您自己的配置为准。',
         restartRequired: tool === 'opencode',
         connectionVerified: connection?.ok === true, connection }
     }
     return queueExternalConfigWork(work)
+  }
+  /**
+   * 开机替已经装着的 Claude Desktop 把工作区下好（升到这一版之前装的、从开始菜单直接打开从不点星芒「打开」的，
+   * 也能补上）。只看这台电脑装没装、装在哪，不看登录、不管开没开；永不抛错，原因只进运行日志。
+   */
+  async function seedClaudeDesktopWorkspace(): Promise<void> {
+    try {
+      const status = (await externalClientRuntime.scan()).find((entry) => entry.tool === 'claudeDesktop')
+      if (!status?.installed || !status.path || status.detectionError) return
+      await claudeDesktopWorkspaceSeeder.seed(status.path)
+    } catch (error) {
+      runtimeLog?.log('warn', 'install', 'claude-desktop.workspace-seed.skipped', '开机没认出 Claude Desktop 装在哪，这次不放工作区', {
+        reason: 'target-unresolved', cause: redactHomeDirectory(error instanceof Error ? error.message : String(error), providerRoots.userHome, platform),
+      })
+    }
   }
   // 开机补型号正在跑的那一次：main.ts 开机只叫一次，这里再挡一下同时叫两次。
   let toppingUpClaudeDesktopModels: Promise<void> | null = null
@@ -578,6 +660,8 @@ export function createExternalClientRouteService(context: ServiceContext, depend
           buildGatewayMessagesProbe(name, baseUrl, model, menu.apiKey),
           { fetch: serviceOptions.relayFetch, timeoutMs: claudeDesktopModelProbeTimeoutMs },
         )).ok,
+        // 试到一半换了账号、退出了：剩下的不再拿上一个账号的密钥试（总单 #67）。
+        assertCurrent: assertContext,
         add: (models) => queueExternalConfigWork(async () => {
           assertContext()
           // 动文件之前再盘点一次开没开（同换线路）：客户可能是在试型号那几秒里打开的。
@@ -620,13 +704,13 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       const { activeSite, owner, baseUrl, belongsToCurrentAccount, ownedOnRoute } = externalClientContext(tool)
       const status = (await externalClientRuntime.scan()).find((entry) => entry.tool === tool)
       assertBeforeWrite?.()
-      if (!status?.installed) throw new Error(`还没有检测到 ${externalClientNames[tool]}`)
+      if (!status?.installed) throw new Error(`尚未检测到 ${externalClientNames[tool]}`)
       const gateway = await claudeDesktopConfig(status, assertBeforeWrite)
       if (target === 'official') {
         const result = await gateway.useOfficialLogin(belongsToCurrentAccount)
         runtimeLog?.log('info', 'config', 'external-client.source-switched', 'Claude Desktop 已切回官方登录', { target, running: status.running })
         return { tool, target, outcome: 'switched', backups: result.backups,
-          message: '已切回官方账号，原来的配置已备份。下次打开 Claude Desktop 时用你自己的 Claude 账号登录；现在开着的话，要完全退出再打开。用星芒时的聊天记录不会删，切回当前账号还能看到。' }
+          message: '已切回官方账号，原配置已备份。下次打开 Claude Desktop 时请使用您自己的 Claude 账号登录；如 Claude Desktop 正在运行，请完全退出后重新打开。使用星芒期间的聊天记录不会删除，切回当前账号后仍可查看。' }
       }
       const routes = relaySiteProviderBaseUrlVariants(activeSite.id, 'claude')
       const result = await gateway.useGatewayLogin(baseUrl, ownedOnRoute, routes.map((route) => route.baseUrl))
@@ -649,7 +733,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
         }
       }
       return { tool, target, outcome: 'switched', backups: result.backups,
-        message: '已改用当前账号，原来的配置已备份。Claude Desktop 现在开着的话，要完全退出再打开才会换过来。' }
+        message: '已改用当前账号，原配置已备份。如 Claude Desktop 正在运行，请完全退出后重新打开以生效。' }
     }
     return queueExternalConfigWork(work)
   }
@@ -1164,5 +1248,6 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     followManagedKeysNow,
     cancelPendingExternalRouteRecheck,
     topUpClaudeDesktopModels,
+    seedClaudeDesktopWorkspace,
   }
 }

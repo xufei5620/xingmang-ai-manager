@@ -85,8 +85,8 @@ describe('buildConnectionProbe', () => {
     expect(build.kind).toBe('blocked')
     if (build.kind !== 'blocked') return
     expect(build.outcome.layer).toBe('config')
-    expect(build.outcome.summary).toContain('打开会连不上')
-    expect(build.outcome.nextStep).toContain('修好它')
+    expect(build.outcome.summary).toContain('打开后将无法连接')
+    expect(build.outcome.nextStep).toContain('立即修复')
   })
 
   it('builds a one-token Messages request against the configured base URL', () => {
@@ -188,7 +188,7 @@ describe('buildConnectionProbe', () => {
     expect(build.kind).toBe('blocked')
     if (build.kind !== 'blocked') return
     expect(build.outcome.layer).toBe('unconfigured')
-    expect(build.outcome.summary).toContain('还没有密钥')
+    expect(build.outcome.summary).toContain('尚无密钥')
   })
 
   it('keeps a config that exists but points elsewhere on the config layer, not the unconfigured one', () => {
@@ -266,12 +266,12 @@ describe('classifyConnectionResponse', () => {
     for (const status of [401, 403]) {
       const outcome = classifyConnectionResponse(messagesProbe('m'), status, '该令牌额度已用尽 TokenStatusExhausted[sk-***]', {})
       expect(outcome.layer).toBe('quota')
-      expect(outcome.summary).toContain('额度用完了')
-      expect(outcome.nextStep).toContain('调高这个工具的额度')
+      expect(outcome.summary).toContain('额度已用完')
+      expect(outcome.nextStep).toContain('调高该工具的额度')
       expect(outcome.nextStep).not.toContain('重新写入')
     }
     expect(classifyConnectionResponse(messagesProbe('m'), 429, 'API key 额度已用完', {}).layer).toBe('quota')
-    expect(classifyConnectionResponse(messagesProbe('m'), 429, 'API key 额度已用完', {}).summary).toContain('额度用完了')
+    expect(classifyConnectionResponse(messagesProbe('m'), 429, 'API key 额度已用完', {}).summary).toContain('额度已用完')
     expect(classifyConnectionResponse(messagesProbe('m'), 403, '用户额度不足', {}).summary).toContain('账号额度不足')
   })
 

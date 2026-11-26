@@ -75,9 +75,9 @@ export function spendBarHeights(amounts: readonly number[]): number[] {
 
 /** 余额下面那行「还能用多久」，和首页同一个算法（balance-runway），这里只管怎么说。 */
 export function runwayDaysText(days: number): string {
-  if (days > 365) return '按最近用量够用一年以上'
-  if (days < 1) return '按最近用量不到 1 天就会用完'
-  return `按最近用量约还能用 ${days} 天`
+  if (days > 365) return '按近期用量可用一年以上'
+  if (days < 1) return '按近期用量预计不足 1 天'
+  return `按近期用量预计可用 ${days} 天`
 }
 
 export interface SubscriptionOverview {
@@ -86,7 +86,7 @@ export interface SubscriptionOverview {
   /** 已用和总额（美元）；不限额或后台没给能算的数时为 null，就不画进度条。 */
   usedUsd: number | null
   totalUsd: number | null
-  /** 快到期或快用完：标签写「快用完了」，链接写「去续费」。 */
+  /** 快到期或快用完：标签写「快用完了」，链接写「前往续费」。 */
   short: boolean
   preference: AccountSubscriptionBillingPreference | null
 }
@@ -141,19 +141,19 @@ export function subscriptionOverviewText(subscription: Pick<SubscriptionOverview
   return subscription.name ? `${subscription.name}，${ends}` : ends
 }
 
-/** 账号概览「密钥与设备」那一行：「3 把，1 把正在被工具使用」；没有工具在用时只写把数。 */
+/** 账号概览「密钥与设备」那一行：「3 个，其中 1 个正在被工具使用」；没有工具在用时只写个数。 */
 export function keyCountText(total: number, inUse: number): string {
-  return inUse > 0 ? `${total} 把，${inUse} 把正在被工具使用` : `${total} 把`
+  return inUse > 0 ? `${total} 个，其中 ${inUse} 个正在被工具使用` : `${total} 个`
 }
 
 /** 邀请卡、邀请页的那句比例；后台没给比例就不写数。 */
 export function inviteRateText(rate: number | null | undefined): string {
-  return typeof rate === 'number' && Number.isFinite(rate) && rate > 0 ? `好友充值后返你 ${rate}%` : '好友充值后你能拿返利'
+  return typeof rate === 'number' && Number.isFinite(rate) && rate > 0 ? `好友充值后返利 ${rate}%` : '好友充值后可获得返利'
 }
 export function inviteRuleText(rate: number | null | undefined): string {
   return typeof rate === 'number' && Number.isFinite(rate) && rate > 0
-    ? `好友用你的链接注册并充值，你得到充值金额的 ${rate}%。`
-    : '好友用你的链接注册并充值后，你能拿到返利。'
+    ? `好友通过您的链接注册并充值，您将获得充值金额的 ${rate}%。`
+    : '好友通过您的链接注册并充值后，您将获得返利。'
 }
 
 /**
@@ -221,7 +221,7 @@ export function validatePasswordChange(input: { originalPassword: string; passwo
  * 改密码那一下发出去了却没等到准话（N6，主进程那句是 passwordChangeUnconfirmedMessage）：新密码可能已经改好了。
  * 再改一次的话，原密码那格填旧的会被说成「原密码错误」，所以先叫人别改，下次登录先试新的。
  */
-export const passwordChangeUnconfirmedNotice = '没等到账号服务的回话，新密码可能已经改好了。先别再改一次：下次登录时先试新密码，登不上再用原来的密码。'
+export const passwordChangeUnconfirmedNotice = '未收到账号服务的响应，新密码可能已生效。请勿重复修改：下次登录时请先使用新密码，如无法登录再使用原密码。'
 
 /** 修改密码弹窗失败时交给错误框的东西：没等到准话的换成上面那句，别的原样交出去。 */
 export function passwordChangeFailure(error: unknown): unknown {
@@ -352,6 +352,14 @@ export function keyMetaParts(
     currentExpiryText(key.expiredAt, now),
     ...(created ? [`${created}创建`] : []),
   ]
+}
+
+/**
+ * 这一行要不要摆「启用」（总单 Q2）：网页上停用的、到期的、额度用完的都摆。到期和用完的，点了以后主进程
+ * 先看到期时间和额度是不是已经改过，没改就说先改什么。只有星芒账号有；历史账号的后台这里接不上，不摆。
+ */
+export function keyCanEnable(key: Pick<AccountKey, 'status'>, siteId: 'solov' | 'solov-api'): boolean {
+  return siteId !== 'solov-api' && (key.status === 2 || key.status === 3 || key.status === 4)
 }
 
 /**

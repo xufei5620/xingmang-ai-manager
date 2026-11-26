@@ -9,7 +9,7 @@ import type { SystemServiceOptions } from './system-service'
 
 // #1070 第 3 步把卸载那一段搬成了 createCliUninstallService。卸的全过程仍由 system-service 的测试经
 // createSystemService 覆盖；这里钉住搬家新接上的那几处：传进来的读工具状态、装着的时候不让卸、
-// 卸 Codex 后让型号名单那边重新找它、没记下残留时「帮我清理」什么都不动，以及手机遥控还在用 Codex 时不卸。
+// 卸 Codex 后让型号名单那边重新找它、没记下残留时「一键清理」什么都不动，以及手机遥控还在用 Codex 时不卸。
 
 const temporaryDirectories: string[] = []
 
@@ -71,7 +71,7 @@ describe('cli uninstall service', () => {
 
   // #1407 P3-3：Windows 上手机遥控开着的那份 Codex 锁着包目录，正在干活时不卸、原句告诉客户，什么都没动。
   it('leaves Codex installed when the remote control is still using it', async () => {
-    const busy = '手机遥控里的 Codex 正在干活，等它做完再卸载，或者先在设置里关掉手机遥控。'
+    const busy = '遥控中的 Codex 正在处理任务，请待其完成后再卸载，或先在「遥控」页关闭遥控。'
     const releaseCodexRemote = vi.fn(async () => { throw new Error(busy) })
     const packageRoot = path.join(os.tmpdir(), 'npm', 'node_modules', '@openai', 'codex')
     const inspectCliTool = vi.fn(async () => ({

@@ -5,7 +5,7 @@ import { parseDesktopAppUpdateRequest } from '../../external-client-contract'
 import { isInstallCancelledError } from '../../install-cancellation'
 import { runWhenOn } from '../../remote-feature-gate'
 import { toolInstallOffMessage } from '../../remote-features'
-import { parseNodeRuntimeInstallRequest } from '../parsers/system'
+import { parseNodeRuntimeInstallRequest, parseWindowsRestartOptions } from '../parsers/system'
 import { parseCliInstallVersion, parseCliUninstallOptions, parseCodexDesktopLocale } from '../parsers/tools'
 import type { IpcHandlerContext } from './context'
 
@@ -29,9 +29,14 @@ export function registerToolHandlers(ctx: IpcHandlerContext): void {
       throw error
     }
   })
-  registerTrustedHandler('runtime:restart-windows', async () => {
+  registerTrustedHandler('runtime:restart-windows', async (_event, rawOptions: unknown) => {
+    // 重启电脑会把「创作」里在回复的对话、在合成的视频、画布在出的图停下，跟重启装更新是同一批事（D10）：
+    // 新界面的重启框带参数要问，客户点了「等待完成」就这次不发重启；旧回滚界面不带，照旧直接重启。
+    const ask = parseWindowsRestartOptions(rawOptions).askIfWorking === true
     options.runtimeLog.log('info', 'maintenance', 'runtime.windows.restart.requested', '用户请求重启 Windows 完成系统更新')
+    if (ask && options.confirmWindowsRestart && !await options.confirmWindowsRestart()) return { postponed: true as const }
     await service.restartWindows()
+    return {}
   })
   registerTrustedHandler('runtime:install-python', async (event) => {
     options.runtimeLog.log('info', 'maintenance', 'runtime.python.install.started', '开始自动安装 Python 3.12')
@@ -101,7 +106,7 @@ export function registerToolHandlers(ctx: IpcHandlerContext): void {
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     const uninstallOptions = parseCliUninstallOptions(input)
     const providerName = cliCatalog[provider].name
-    // 「换成星芒装的」是先卸后装：装那一半关着时连卸也不做，不然客户手上的那份没了、新的又装不上。
+    // 「改用星芒安装」是先卸后装：装那一半关着时连卸也不做，不然客户手上的那份没了、新的又装不上。
     if (uninstallOptions.reinstall) await options.remoteFeatures?.assertOn(`install:${provider}`, toolInstallOffMessage(providerName))
     options.runtimeLog.log('info', 'maintenance', 'cli.uninstall.started', `开始卸载 ${providerName}`, {
       provider,
