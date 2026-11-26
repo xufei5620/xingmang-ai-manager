@@ -2,8 +2,9 @@
 name: images
 description: >-
   用当前账号生成或编辑位图：照片、插画、海报、Logo、信息图、透明底切图。
-  默认用 OpenAI 的 gpt-image 新款，用户点名时也能用 Nano Banana、Grok。
   当用户说生图、画一张、生成图片、改图时使用。
+  优先调用画图工具 generate_image（Codex 里是 mcp__xingmang_image__generate_image，Claude Code 里是 mcp__xingmang-image__generate_image），没有这个工具时才运行本技能的脚本。
+  默认用 OpenAI 的 gpt-image 新款，用户点名时也能用 Nano Banana、Grok。
   脚本成功写出文件即结束，不要再用绘图库、Identify 或打开文件核对尺寸和内容。
   不要用它改仓库里已有的 SVG/矢量图标，或用 HTML/CSS/canvas 更合适的简单图形。
 ---
@@ -12,13 +13,27 @@ description: >-
 
 用当前账号出图。Key 在登录后自动写入本目录 `config.json`：优先用软件对应的 Codex Key（`GPT`），这次请求失败再自动改用 `图片模型`（别名 `生图分组`）。不要向用户要环境变量，也不要去翻 CLI 配置。你可以改这个技能的说明和脚本；工具只更新还是官方原样的文件，改过的不会覆盖。
 
-如果当前工具里有 `xingmang-image` 的 `generate_image`（画图工具），画图和改图都优先用它：它不受命令沙箱拦截，图直接显示在对话里，参数和下面的脚本一样（`size`、`aspect`、`quality`、`background`、`images`、`model`）。只有没有这个工具、或者要把图存成指定文件时才跑下面的脚本。
-
-**禁止**读取、粘贴或回显 `config.json`。脚本自己读配置，stdout 只打印输出图片路径。
+**禁止**读取、粘贴或回显 `config.json`。画图工具和脚本自己读配置。
 
 没有 `config.json` 或里面没有 Key：提醒用户打开管理工具并登录当前账号。工具会写入 Codex Key，并在账号有图片模型分组时补上那把 Key。
 
-## 怎么出图
+## 第一步：用画图工具
+
+画图和改图都先用画图工具 `generate_image`（服务名 `xingmang-image`）。它不受命令沙箱拦截，图直接显示在对话里，参数和下面的脚本一样：`size`、`aspect`、`quality`、`background`、`images`、`model`。
+
+| 所在工具 | 画图工具的完整名字 |
+|---|---|
+| Codex | `mcp__xingmang_image__generate_image` |
+| Claude Code | `mcp__xingmang-image__generate_image` |
+| 其他工具 | 名字里同时带 `xingmang` 和 `generate_image` 的那一个 |
+
+工具列表里没有看到它时，先用关键词 `xingmang` 搜索一次全部工具（Codex 里是在 `ALL_TOOLS` 里搜），搜到就用。不要因为列表里没有直接看到，就认定没有这个工具。搜不到，或者要把图存成指定文件时，才用第二步的脚本。
+
+改图时把原图的完整路径放进 `images`，可以给几张参考图一起改。
+
+## 第二步：没有画图工具时运行脚本
+
+脚本的 stdout 只打印输出图片的路径。
 
 ```bash
 node "<本技能目录>/scripts/generate.mjs" --prompt "一只橙色猫咪坐在窗台上，电影感光线" --out "./cat.png"

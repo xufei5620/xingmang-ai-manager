@@ -1115,3 +1115,26 @@ test('bundled image skill names neither the brand nor a site address where the A
     assert.deepEqual(text.match(siteAddresses), addresses, file)
   }
 })
+
+test('bundled image skill tells the AI the exact tool names and how to look for the tool before running the script', async () => {
+  const skill = await readFile(path.resolve(__dirname, '..', 'bundled-skills', 'xingmang-ai', 'SKILL.md'), 'utf8')
+  const frontMatter = /^---\n([\s\S]*?)\n---\n/.exec(skill)[1]
+  // Xingmang rewrites this one line for the legacy directory name; it has to stay on its own line.
+  assert.match(frontMatter, /^name: images$/m)
+  const description = frontMatter.slice(frontMatter.indexOf('description: >-') + 'description: >-'.length)
+    .split('\n').map((line) => line.trim()).filter(Boolean).join(' ')
+  // The description is all the AI sees before it opens the skill, so the tool has to be named there.
+  assert.match(description, /优先调用画图工具 generate_image/)
+  // Tools that load skills cap the description length; stay well inside it.
+  assert.ok([...description].length <= 500, `description is ${[...description].length} characters`)
+  for (const expected of [
+    // Codex replaces the dash in the server name; Claude Code keeps it.
+    'mcp__xingmang_image__generate_image',
+    'mcp__xingmang-image__generate_image',
+    '先用关键词 `xingmang` 搜索一次全部工具',
+    '`ALL_TOOLS`',
+  ]) {
+    assert.ok(description.includes(expected) || skill.includes(expected), expected)
+  }
+  assert.ok(skill.indexOf('## 第一步：用画图工具') < skill.indexOf('## 第二步：没有画图工具时运行脚本'))
+})
