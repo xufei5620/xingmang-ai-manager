@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import fs from 'node:fs/promises'
+import path from 'node:path'
 import { isRecord } from './input-guards'
 
 // Antigravity 桌面端显示中文：星芒自己的换字脚本，加一份随包的中文词表。
@@ -10,7 +11,7 @@ import { isRecord } from './input-guards'
 // 也不装（它的更新不核签名、会改快捷方式和注册表、面板按谷歌官方价折算费用，2026-11-26 读码评估过）。
 //
 // 这个文件只管两件事：读出并核对随包词表，把它连同换字脚本拼成一段交给 Antigravity 窗口执行的代码。
-// 怎么带着本机调试口打开 Antigravity、怎么核对口是谁占着、什么时候把这段代码送进去，不在这里。
+// 怎么带着本机调试口打开 Antigravity、怎么核对口是谁占着、什么时候把这段代码送进去，在 antigravity-desktop-cdp.ts。
 
 /** 随包那份词表从哪来。换版本时整份照拷、几项一起改，测试按 sha256 钉住。 */
 export const bundledAntigravityChineseSource = Object.freeze({
@@ -24,9 +25,14 @@ export const bundledAntigravityChineseSource = Object.freeze({
 
 export const BUNDLED_ANTIGRAVITY_CHINESE_RELATIVE_PATH = ['bundled-catalog', 'antigravity-zh-CN', 'zh-CN.json'] as const
 
+/** 随包词表在哪：打包版在 app.asar 里，开发版在仓库根目录下（同 Codex 型号名单）。 */
+export function resolveBundledAntigravityChinesePackPath(appPath: string): string {
+  return path.join(path.resolve(appPath), ...BUNDLED_ANTIGRAVITY_CHINESE_RELATIVE_PATH)
+}
+
 /**
  * 两档：light 保留「Agent、Skill、Terminal」这类常见英文词，deep 连这些也翻。客户大多不熟这些词，
- * 默认 deep（yoyo 定默认值前，这里只是函数的缺省）。
+ * 默认 deep（yoyo 2026-11-26「反重力默认中文」，确认时写明的就是深度）。
  */
 export type AntigravityChineseDepth = 'light' | 'deep'
 

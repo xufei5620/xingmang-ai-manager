@@ -1,6 +1,9 @@
+import http from 'node:http'
+import type { AddressInfo } from 'node:net'
 import path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { chromium, type Browser, type Page } from '@playwright/test'
+import { pickAntigravityDebugPort, watchAntigravityDesktopChinese } from './antigravity-desktop-cdp'
 import {
   BUNDLED_ANTIGRAVITY_CHINESE_RELATIVE_PATH,
   buildAntigravityChineseDictionary,
@@ -144,4 +147,48 @@ describe('Antigravity Chinese runtime in a real Chromium document', () => {
       await page.close()
     }
   })
+})
+
+// The same runtime delivered the way the app delivers it: over a loopback
+// debugging port, through the browser-level connection that stays attached.
+// The served page stands in for Antigravity's own https page, so the test
+// widens acceptsPage to its origin; the port-owner check is unit-tested.
+describe('Antigravity Chinese over the debugging port in a real Chromium', () => {
+  it('translates an open window, keeps it Chinese after a reload, and follows a new window', async () => {
+    const server = http.createServer((_request, response) => {
+      response.setHeader('content-type', 'text/html; charset=utf-8')
+      response.end(fixture)
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    const port = await pickAntigravityDebugPort()
+    const debugged = await chromium.launch({ executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined, args: [`--remote-debugging-port=${port}`] })
+    const watch = watchAntigravityDesktopChinese({
+      port,
+      processId: 4242,
+      injection: buildAntigravityChineseInjection(deep),
+      resolveListeners: async () => [{ processId: 4242, address: `127.0.0.1:${port}` }],
+      acceptsPage: (info) => info.type === 'page' && info.url.startsWith(`${origin}/`),
+    })
+    try {
+      const first = await debugged.newPage()
+      await first.goto(`${origin}/`)
+      await expect(watch.settled).resolves.toEqual(expect.objectContaining({ status: 'applied' }))
+      await first.waitForFunction(() => document.getElementById('new')?.textContent === '新建对话')
+      expect(await textOf(first, 'reply')).toBe('Settings')
+
+      await first.reload()
+      await first.waitForFunction(() => document.getElementById('new')?.textContent === '新建对话')
+      expect(await textOf(first, 'padded')).toBe('  设置  ')
+      expect(await textOf(first, 'code')).toBe('Settings')
+
+      const second = await debugged.newPage()
+      await second.goto(`${origin}/second`)
+      await second.waitForFunction(() => document.getElementById('agent')?.textContent === '智能体')
+    } finally {
+      watch.stop()
+      await debugged.close()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  }, 60_000)
 })
