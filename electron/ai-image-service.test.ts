@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { aiImageKeptInMemoryMessage, aiImageKeptUnsavedMessage, chargedAfterStopAssetTag, createAiImageService, type AiImageAssetWriter } from './ai-image-service'
+import { aiImageKeptInMemoryMessage, aiImageKeptUnsavedMessage, buildImageDownloadFailureLog, chargedAfterStopAssetTag, createAiImageService, type AiImageAssetWriter, type AiImageDownloadFailureLog } from './ai-image-service'
 import { networkFailureMessages } from './network-failure'
 import { relayQuotaFailureMessages } from './relay-quota-failure'
 
@@ -23,7 +23,13 @@ function pngHeader(width: number, height: number): Buffer {
 
 function setup(
   fetchImpl: typeof fetch,
-  queueOptions: { maxActive?: number; maxQueued?: number; timeoutMs?: number; backend?: 'new-api' | 'sub2api' } = {},
+  queueOptions: {
+    maxActive?: number
+    maxQueued?: number
+    timeoutMs?: number
+    backend?: 'new-api' | 'sub2api'
+    onRemoteDownloadFailed?: (entry: AiImageDownloadFailureLog) => void
+  } = {},
 ) {
   const credentials = {
     resolveCredential: vi.fn(async (group: string) => ({
@@ -249,6 +255,51 @@ describe('AI image service', () => {
     expect((error as Error).message).toMatch(/本地保存失败.*请勿立即重复提交.*磁盘的可用空间/)
     // The run log records the store's own reason under the sentence the person reads (S-1).
     expect((error as Error).cause).toBe(writeFailure)
+  })
+
+  it('logs why a paid image link did not download, with the relay request id and without the link itself', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ data: [{ url: 'https://download.example/a.png?token=signed' }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json', 'x-oneapi-request-id': '20261125192800123abc' },
+    })) as unknown as typeof fetch
+    const logged: AiImageDownloadFailureLog[] = []
+    const { service, assets } = setup(fetchImpl, { onRemoteDownloadFailed: (entry) => logged.push(entry) })
+    vi.mocked(assets.storeRemoteUrl).mockRejectedValue(Object.assign(
+      new Error('图片下载失败，服务返回 404'),
+      { code: 'AI_IMAGE_DOWNLOAD_FAILED', attempts: 5, host: 'download.example' },
+    ))
+
+    await expect(service.edit(4, {
+      requestId: 'canvas-edit-1', group: '图片模型', model: 'gpt-image-2', prompt: '换姿势', sourceAssetIds: ['a'.repeat(43)],
+    })).rejects.toThrow(/已生成但下载失败/)
+
+    expect(logged).toEqual([{
+      requestId: 'canvas-edit-1',
+      relayRequestId: '20261125192800123abc',
+      attempts: 5,
+      host: 'download.example',
+      reason: '图片下载失败，服务返回 404',
+    }])
+  })
+
+  it('keeps a link out of the logged reason and logs nothing for failures that are not downloads', () => {
+    const failure = Object.assign(new Error('connect ECONNREFUSED https://download.example/a.png?token=signed'), {
+      code: 'AI_IMAGE_DOWNLOAD_FAILED', attempts: 2, host: 'download.example', networkCode: 'ECONNREFUSED',
+    })
+    expect(buildImageDownloadFailureLog(failure, 'r1', null)).toEqual({
+      requestId: 'r1', attempts: 2, host: 'download.example', networkCode: 'ECONNREFUSED', reason: 'connect ECONNREFUSED [远程地址]',
+    })
+    expect(buildImageDownloadFailureLog(new Error('磁盘已满'), 'r1', 'id')).toBeNull()
+  })
+
+  it('still reports the download failure when the log hook throws', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ url: 'https://download.example/a.png' }] })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl, { onRemoteDownloadFailed: () => { throw new Error('log full') } })
+    vi.mocked(assets.storeRemoteUrl).mockRejectedValue(Object.assign(new Error('图片下载超时'), { code: 'AI_IMAGE_DOWNLOAD_FAILED' }))
+
+    await expect(service.generate(4, {
+      requestId: 'remote-log-throws', group: '生图分组', model: 'gpt-image-2', prompt: '图',
+    })).rejects.toThrow(/已生成但下载失败/)
   })
 
   it('tells the person not to regenerate when the paid image was set aside (S-1)', async () => {

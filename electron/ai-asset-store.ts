@@ -24,6 +24,13 @@ import { fetchWithRedirectAllowlist } from './redirect-allowlist-fetch'
 export const DEFAULT_MAXIMUM_IMAGE_BYTES = 64 * 1024 * 1024
 const MAXIMUM_VIDEO_INPUT_IMAGE_BYTES = 8 * 1024 * 1024
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 120_000
+// 中转回的是临时链接时，链接给出来那一刻图可能还没放好：11-25 一位客户的改图，链接到手约 2 秒去下就失败了，
+// 同一个人几分钟前同样的链接都下成功了（服务端查的渠道 75）。图已经扣过费，再下一次不花钱，所以隔一会儿再试，
+// 整个过程仍算在 downloadTimeoutMs 里，不会比原来等得更久。
+const DEFAULT_DOWNLOAD_RETRY_DELAYS_MS: readonly number[] = [2_000, 5_000, 10_000, 20_000]
+const MAXIMUM_DOWNLOAD_RETRIES = 8
+// 链接可能还没生效（404、403）、对方一时忙（408、425、429、5xx）：过一会儿再要多半就有了。别的状态码是对方说清楚了不给，再要也一样。
+const RETRYABLE_DOWNLOAD_STATUSES = new Set([403, 404, 408, 425, 429])
 const MAXIMUM_REMOTE_URL_LENGTH = 4_096
 const MAXIMUM_REDIRECTS = 3
 const MAXIMUM_REVISED_PROMPT_LENGTH = 40_000
@@ -145,6 +152,8 @@ export interface AiAssetStoreOptions {
   randomBytes?: (size: number) => Buffer
   maximumImageBytes?: number
   downloadTimeoutMs?: number
+  /** 下载一次没成、还能再试时，第几次重试前等多久；用完或总时长到了就不再试。测试里换成很短的。 */
+  downloadRetryDelaysMs?: readonly number[]
   /**
    * 保存位置写不进时「下一步怎么办」那半句。「文档」下的全局保存位置和画布项目自己的
    * 文件夹，用户能做的事不一样，只有宿主知道这个 store 落在哪。
@@ -403,6 +412,63 @@ export function validateAiAssetRemoteUrl(value: string): URL {
   return parsed
 }
 
+/** 下载失败最后交出去的错误上带的东西：试了几次、链接在哪个域名、底层的网络错误码。只进日志，不上屏。 */
+export interface AiAssetDownloadFailureDetail {
+  attempts: number
+  host?: string
+  networkCode?: string
+}
+
+// Failures marked here may clear up on their own; everything else is final.
+// A WeakSet keeps the mark off the error objects themselves, some of which
+// (an abort reason, a fetch error) are not ours to reshape.
+const retryableDownloadFailures = new WeakSet<object>()
+
+function retryableDownloadFailure(error: unknown): Error {
+  const failure = error instanceof Error ? error : new Error(String(error))
+  retryableDownloadFailures.add(failure)
+  return failure
+}
+
+function isRetryableDownloadFailure(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && retryableDownloadFailures.has(error)
+}
+
+function remoteHostOf(url: string): string | undefined {
+  try {
+    return new URL(url).hostname.toLowerCase() || undefined
+  } catch {
+    return undefined
+  }
+}
+
+function downloadFailure(error: unknown, url: string, attempts: number): Error {
+  const failure = new Error(error instanceof Error ? error.message : '图片下载失败')
+  const host = remoteHostOf(url)
+  const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
+  const networkCode = typeof code === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(code) ? code : undefined
+  const detail: AiAssetDownloadFailureDetail = { attempts, ...(host ? { host } : {}), ...(networkCode ? { networkCode } : {}) }
+  return Object.assign(failure, { code: AI_ASSET_DOWNLOAD_ERROR_CODE, ...detail })
+}
+
+/** 生图那边记日志时取：不是下载失败返回 null。 */
+export function describeAiAssetDownloadFailure(error: unknown): AiAssetDownloadFailureDetail | null {
+  if (!error || typeof error !== 'object' || (error as { code?: unknown }).code !== AI_ASSET_DOWNLOAD_ERROR_CODE) return null
+  const { attempts, host, networkCode } = error as { attempts?: unknown; host?: unknown; networkCode?: unknown }
+  return {
+    attempts: typeof attempts === 'number' && Number.isSafeInteger(attempts) && attempts > 0 ? attempts : 1,
+    ...(typeof host === 'string' ? { host } : {}),
+    ...(typeof networkCode === 'string' ? { networkCode } : {}),
+  }
+}
+
+function waitBeforeDownloadRetry(delayMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, delayMs)
+    timer.unref?.()
+  })
+}
+
 async function defaultDnsLookup(hostname: string): Promise<readonly string[]> {
   const literal = hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname
   if (isIP(literal)) return [literal]
@@ -410,7 +476,13 @@ async function defaultDnsLookup(hostname: string): Promise<readonly string[]> {
 }
 
 async function assertPublicRemoteHost(url: URL, dnsLookup: AiAssetDnsLookup): Promise<readonly string[]> {
-  const addresses = await dnsLookup(url.hostname)
+  let addresses: readonly string[]
+  try {
+    addresses = await dnsLookup(url.hostname)
+  } catch (error) {
+    // 解析不出来多半是一时的（断网一下、DNS 慢）；解析到私网是另一回事，下面照拒不重试。
+    throw retryableDownloadFailure(error)
+  }
   if (!addresses.length || addresses.some((address) => !isPublicAiAssetAddress(address))) {
     throw new Error('图片远程地址解析到私网、回环或保留地址')
   }
@@ -483,9 +555,11 @@ function imageHopFetch(
     // proxy-aware network stack resolve this exact HTTPS host so Fake-IP
     // proxies work regardless of their virtual address range. Every other
     // host remains DNS-pinned and private-address-blocked.
-    return PROXY_AWARE_IMAGE_HOSTS.has(hop.hostname.toLowerCase())
-      ? trustedProxyFetchImpl(hop.href, init)
-      : fetchImpl(hop.href, init, await assertPublicRemoteHost(hop, dnsLookup))
+    if (PROXY_AWARE_IMAGE_HOSTS.has(hop.hostname.toLowerCase())) {
+      return trustedProxyFetchImpl(hop.href, init).catch((error: unknown) => { throw retryableDownloadFailure(error) })
+    }
+    const addresses = await assertPublicRemoteHost(hop, dnsLookup)
+    return fetchImpl(hop.href, init, addresses).catch((error: unknown) => { throw retryableDownloadFailure(error) })
   }
 }
 
@@ -516,20 +590,28 @@ async function fetchRemoteImage(
     })
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined)
-      throw new Error(`图片下载失败，服务返回 ${response.status}`)
+      const failure = new Error(`图片下载失败，服务返回 ${response.status}`)
+      throw RETRYABLE_DOWNLOAD_STATUSES.has(response.status) || response.status >= 500 ? retryableDownloadFailure(failure) : failure
     }
     const contentType = normalizeDeclaredMime(response.headers.get('content-type'))
     if (contentType && !['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'application/octet-stream'].includes(contentType)) {
       await response.body?.cancel().catch(() => undefined)
       throw new Error('图片下载响应类型不受支持')
     }
-    const bytes = await readBoundedResponseBytes(response, maximumBytes, '图片下载', {
-      oversizeMessage: '单张图片超过 64 MB 安全上限',
-      requireNonEmpty: { missingBodyMessage: '图片下载响应没有内容', emptyMessage: '图片下载响应为空' },
-    })
+    const oversize = new Error('单张图片超过 64 MB 安全上限')
+    let bytes: Buffer
+    try {
+      bytes = await readBoundedResponseBytes(response, maximumBytes, '图片下载', {
+        oversizeError: () => oversize,
+        requireNonEmpty: { missingBodyMessage: '图片下载响应没有内容', emptyMessage: '图片下载响应为空' },
+      })
+    } catch (error) {
+      // 读到一半断了、内容还是空的：过一会儿再要。太大是图本身的事，再要也一样大。
+      throw error === oversize ? error : retryableDownloadFailure(error)
+    }
     return { bytes, declaredMime: contentType }
   } catch (error) {
-    if (controller.signal.aborted) throw new Error('图片下载超时')
+    if (controller.signal.aborted) throw retryableDownloadFailure(new Error('图片下载超时'))
     throw error
   } finally {
     clearTimeout(timer)
@@ -573,6 +655,7 @@ export class AiAssetStore {
   private readonly randomBytes: (size: number) => Buffer
   private readonly maximumImageBytes: number
   private readonly downloadTimeoutMs: number
+  private readonly downloadRetryDelaysMs: readonly number[]
   private readonly unwritableGuidance: string
   private readonly readDiskSpace: (target: string) => Promise<DiskSpaceReading | null>
   private readonly keepUnsaved: ((userId: number, bytes: Buffer) => Promise<AiImageKeptPlace | null>) | undefined
@@ -589,6 +672,7 @@ export class AiAssetStore {
     this.randomBytes = options.randomBytes ?? nodeRandomBytes
     this.maximumImageBytes = options.maximumImageBytes ?? DEFAULT_MAXIMUM_IMAGE_BYTES
     this.downloadTimeoutMs = options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS
+    this.downloadRetryDelaysMs = [...(options.downloadRetryDelaysMs ?? DEFAULT_DOWNLOAD_RETRY_DELAYS_MS)]
     this.unwritableGuidance = options.unwritableGuidance ?? DEFAULT_UNWRITABLE_GUIDANCE
     this.readDiskSpace = options.readDiskSpace ?? ((target) => readDiskSpace(target))
     this.keepUnsaved = options.keepUnsaved
@@ -598,6 +682,10 @@ export class AiAssetStore {
     }
     if (!Number.isInteger(this.downloadTimeoutMs) || this.downloadTimeoutMs < 1 || this.downloadTimeoutMs > 10 * 60_000) {
       throw new Error('AI 图片下载超时配置无效')
+    }
+    if (this.downloadRetryDelaysMs.length > MAXIMUM_DOWNLOAD_RETRIES
+      || this.downloadRetryDelaysMs.some((delay) => !Number.isInteger(delay) || delay < 0 || delay > 10 * 60_000)) {
+      throw new Error('AI 图片下载重试配置无效')
     }
   }
 
@@ -655,22 +743,38 @@ export class AiAssetStore {
 
   async storeRemoteUrl(userId: number, url: string, meta?: AiAssetMetadata): Promise<AiStoredAsset> {
     assertUserId(userId)
-    let source: Awaited<ReturnType<typeof fetchRemoteImage>>
-    try {
-      source = await fetchRemoteImage(
-        url,
-        this.fetchImpl,
-        this.trustedProxyFetchImpl,
-        this.dnsLookup,
-        this.maximumImageBytes,
-        this.downloadTimeoutMs,
-      )
-    } catch (error) {
-      const downloadError = new Error(error instanceof Error ? error.message : '图片下载失败')
-      Object.assign(downloadError, { code: AI_ASSET_DOWNLOAD_ERROR_CODE })
-      throw downloadError
-    }
+    const source = await this.downloadRemoteImage(url)
     return this.persistPaid(userId, source.bytes, source.declaredMime, meta)
+  }
+
+  /**
+   * The picture behind `url` is already paid for, so a failure that may be
+   * momentary (the link not live yet, a dropped connection, a busy server) is
+   * worth another GET after a pause. Every attempt shares the one download
+   * deadline, so retrying never makes the customer wait longer than a single
+   * attempt could, and failures the server or our own checks state plainly
+   * (a private address, an unsupported type, an oversized picture) end at once.
+   */
+  private async downloadRemoteImage(url: string): Promise<Awaited<ReturnType<typeof fetchRemoteImage>>> {
+    const deadline = Date.now() + this.downloadTimeoutMs
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await fetchRemoteImage(
+          url,
+          this.fetchImpl,
+          this.trustedProxyFetchImpl,
+          this.dnsLookup,
+          this.maximumImageBytes,
+          Math.max(1, deadline - Date.now()),
+        )
+      } catch (error) {
+        const delay = this.downloadRetryDelaysMs[attempt - 1]
+        if (!isRetryableDownloadFailure(error) || delay === undefined || Date.now() + delay >= deadline) {
+          throw downloadFailure(error, url, attempt)
+        }
+        await waitBeforeDownloadRetry(delay)
+      }
+    }
   }
 
   async storeLocalFile(userId: number, filePath: string): Promise<AiStoredAsset> {
