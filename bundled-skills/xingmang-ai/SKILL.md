@@ -5,7 +5,7 @@ description: >-
   当用户说生图、画一张、生成图片、改图时使用。
   优先调用画图工具 generate_image（Codex 里是 mcp__xingmang_image__generate_image，Claude Code 里是 mcp__xingmang-image__generate_image），没有这个工具时才运行本技能的脚本。
   默认用 OpenAI 的 gpt-image 新款，用户点名时也能用 Nano Banana、Grok。
-  脚本成功写出文件即结束，不要再用绘图库、Identify 或打开文件核对尺寸和内容。
+  画好后把文件的完整路径告诉用户即可，不要再用绘图库、Identify 或打开文件核对尺寸和内容。
   不要用它改仓库里已有的 SVG/矢量图标，或用 HTML/CSS/canvas 更合适的简单图形。
 ---
 
@@ -19,7 +19,7 @@ description: >-
 
 ## 第一步：用画图工具
 
-画图和改图都先用画图工具 `generate_image`（服务名 `xingmang-image`）。它不受命令沙箱拦截，图直接显示在对话里，参数和下面的脚本一样：`size`、`aspect`、`quality`、`background`、`images`、`model`。
+画图和改图都先用画图工具 `generate_image`（服务名 `xingmang-image`）。它不受命令沙箱拦截，画好后把原图保存成文件，结果里给出文件的完整路径和一张小预览图。参数和下面的脚本一样：`size`、`aspect`、`quality`、`background`、`images`、`model`。
 
 | 所在工具 | 画图工具的完整名字 |
 |---|---|
@@ -27,9 +27,20 @@ description: >-
 | Claude Code | `mcp__xingmang-image__generate_image` |
 | 其他工具 | 名字里同时带 `xingmang` 和 `generate_image` 的那一个 |
 
-工具列表里没有看到它时，先用关键词 `xingmang` 搜索一次全部工具（Codex 里是在 `ALL_TOOLS` 里搜），搜到就用。不要因为列表里没有直接看到，就认定没有这个工具。搜不到，或者要把图存成指定文件时，才用第二步的脚本。
+工具列表里没有看到它时，先用关键词 `xingmang` 搜索一次全部工具（Codex 里是在 `ALL_TOOLS` 里搜），搜到就用。不要因为列表里没有直接看到，就认定没有这个工具。搜不到，才用第二步的脚本。
 
-改图时把原图的完整路径放进 `images`，可以给几张参考图一起改。
+在 Codex 里调用画图工具时，照抄下面这段代码，只改参数。第二行把结果里的预览图和文字交给对话，不要删、不要改写：
+
+```js
+const r = await tools.mcp__xingmang_image__generate_image({ prompt: "<描述>", images: ["<参考图完整路径，没有就删掉这一项>"], size: "1K", aspect: "1:1" });
+for (const c of (r?.content || [])) c.type === "image" ? image(c) : c.type === "text" ? text(c.text) : null;
+```
+
+Claude Code 这类直接调用 MCP 工具的，不需要这段代码，直接调用即可。
+
+改图时把原图的完整路径放进 `images`，可以给几张参考图一起改。要接着改刚画好的图，就把结果里给出的文件路径放进 `images`。
+
+画图工具自己决定保存位置：有工作目录时放在工作目录的 `outputs/` 下，没有时放在系统图片文件夹里。用户要放到指定位置时，画好后把文件复制过去。`size` 已经写了宽高时不用再填 `aspect`。
 
 ## 第二步：没有画图工具时运行脚本
 
@@ -75,7 +86,7 @@ node "<本技能目录>/scripts/generate.mjs" --image "./ref.png" --image "./sty
 
 - 4K 比 1K、2K 贵，用户没要求高分辨率时别用 4K。
 - Nano Banana 和 Grok 只能用图片模型分组的 Key。账号没有这个分组时脚本会直接报错，照报错提醒用户登录或开通，不要硬试。
-- Nano Banana、Grok 回的是 JPEG，输出文件会是 `.jpg`，以 stdout 打出的路径为准。
+- Nano Banana、Grok 回的是 JPEG，输出文件会是 `.jpg`，以结果给出的文件路径为准。
 - `gpt-image-1`、`gpt-image-1.5` 已经下线，不要用。
 - 点名了认不出的型号，脚本会列出能用的，照着换一个，不要乱猜型号名。
 
@@ -83,7 +94,11 @@ node "<本技能目录>/scripts/generate.mjs" --image "./ref.png" --image "./sty
 
 ## 完成后
 
-`generate.mjs` 退出码 0 并且 stdout 打出路径 = 已经完成。stderr 最后一行是「已用 <模型> 出图」。立刻把路径和用的模型告诉用户，然后停。
+画图工具画好后，结果里的文字写着文件的完整路径（「文件：…」）。脚本退出码 0 时，stdout 打出的就是文件路径，stderr 最后一行是「已用 <模型> 出图」。拿到路径就是已经完成，立刻回复用户，然后停。
+
+- 最终回复里逐张写出结果给的文件路径，原样照抄，并说明用的模型。
+- 不要只列图片的名字，不要自己拼路径，不要引用 `.codex/visualizations` 这类自己猜的路径。
+- 用户说没看到图时，只告诉他文件在哪里，不要重新生成：重新生成会再扣一次费。
 
 不要做这些：
 
@@ -92,7 +107,7 @@ node "<本技能目录>/scripts/generate.mjs" --image "./ref.png" --image "./sty
 - 为了对齐 16:9 再裁一次或重跑一次
 - 回显 Key 或读取 `config.json`
 
-比例和尺寸在调用时用 `--size`、`--aspect` 一次说清。脚本失败（退出码不是 0）才看 stderr，不要在成功之后追加校验。
+比例和尺寸在调用时用 `size`、`aspect`（脚本是 `--size`、`--aspect`）一次说清。脚本失败（退出码不是 0）才看 stderr，不要在成功之后追加校验。
 
 ## 失败时
 

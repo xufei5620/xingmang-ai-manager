@@ -1,11 +1,15 @@
 const assert = require('node:assert/strict')
 const http = require('node:http')
-const { copyFile, mkdir, mkdtemp, readFile, realpath, writeFile, rm, symlink } = require('node:fs/promises')
+const { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, writeFile, rm, symlink } = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
 const { spawn } = require('node:child_process')
 const { pathToFileURL } = require('node:url')
 const test = require('node:test')
+// Independent decoders for the previews the server makes with its own encoders. These two come with
+// Playwright (already a dev dependency) through an internal path; if a Playwright upgrade moves it,
+// the require fails loudly here rather than the previews going unchecked.
+const { PNG, jpegjs } = require('playwright-core/lib/utilsBundle')
 
 const serverPath = path.resolve(__dirname, '..', 'bundled-skills', 'xingmang-ai', 'scripts', 'mcp-server.mjs')
 const fixture = Buffer.from('fixture-image').toString('base64')
@@ -37,8 +41,15 @@ function createLineReader(child) {
  * request and decides the reply, so each test can script its own relay.
  */
 async function withServer(config, respond, run, options = {}) {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'xingmang-image-mcp-'))
+  // The server reports the real path of where it saved the image, and macOS tmpdir sits behind a symlink.
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'xingmang-image-mcp-')))
   const configPath = path.join(root, 'config.json')
+  // The server saves every finished image. It gets a working directory and a home of its own, so
+  // nothing lands in this repository or in the real pictures folder of whoever runs the tests.
+  const home = path.join(root, 'home')
+  const work = path.join(root, 'work')
+  await mkdir(home)
+  await mkdir(work)
   const requests = []
   const httpServer = http.createServer((req, res) => {
     const chunks = []
@@ -79,10 +90,20 @@ globalThis.fetch = function (input, init) {
     argv.unshift('--import', pathToFileURL(preloadPath).href)
   }
   const child = spawn(process.execPath, argv, {
+    // 'home' stands for a desktop app that starts the server outside any project.
+    cwd: options.cwd === 'home' ? home : work,
     env: {
       ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      APPDATA: path.join(home, 'AppData', 'Roaming'),
+      LOCALAPPDATA: path.join(home, 'AppData', 'Local'),
+      OneDrive: '',
+      OneDriveConsumer: '',
+      OneDriveCommercial: '',
       XINGMANG_IMAGE_CONFIG_PATH: configPath,
       XINGMANG_IMAGE_MCP_ALLOW_INSECURE_LOCAL: options.mockFetch ? '' : '1',
+      ...(options.env ? options.env({ root, home, work }) : {}),
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
@@ -100,7 +121,7 @@ globalThis.fetch = function (input, init) {
     } finally { clearTimeout(timer) }
   }
   try {
-    await run({ call, requests, root, child, next })
+    await run({ call, requests, root, child, next, home, work })
   } finally {
     child.kill()
     await closed
@@ -287,8 +308,8 @@ test('MCP server falls back to gpt-image-2 when the picked model is refused by t
   await withServer(config, respond, async ({ call, requests }) => {
     const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
     assert.equal(generated.result.isError, undefined, JSON.stringify({ result: generated.result, requests: requests.map((request) => [request.authorization, request.body.toString('utf8').slice(0, 80)]) }))
-    assert.match(generated.result.content[1].text, /已用 gpt-image-2 画好图片/)
-    assert.match(generated.result.content[1].text, /gpt-image-2\.5-flare 目前无法使用，已改用 gpt-image-2。/)
+    assert.match(generated.result.content[1].text, /^已用 gpt-image-2 画好。/)
+    assert.match(generated.result.content[1].text, /gpt-image-2\.5-flare 目前无法使用，已改用 gpt-image-2。$/)
     assert.deepEqual(requests.map((request) => [
       request.authorization,
       JSON.parse(request.body.toString('utf8')).model,
@@ -461,7 +482,7 @@ test('MCP server falls through the account default chain in order and stops at t
   await withServer(chain, refuseNewModels, async ({ call, requests }) => {
     const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
     assert.equal(generated.result.isError, undefined)
-    assert.match(generated.result.content[1].text, /已用 gpt-image-2 画好图片/)
+    assert.match(generated.result.content[1].text, /^已用 gpt-image-2 画好。/)
     assert.deepEqual(requests.map((request) => jsonBody(request).model), ['gpt-image-2.6-flare', 'gpt-image-2.5-flare', 'gpt-image-2'])
   })
   // The account lists nothing else: do not spend a request on a model it does not have.
@@ -483,6 +504,11 @@ test('MCP server converts 1K 2K 4K with an aspect ratio into gpt-image-2 sizes a
       [{ size: '2K', aspect: '2:3' }, '1344x2016'],
       [{ aspect: '9:16' }, '720x1280'],
       [{ size: '1536x864' }, '1536x864'],
+      // Width and height already say the ratio: an aspect that agrees with them is simply not needed.
+      [{ size: '1536x864', aspect: '16:9' }, '1536x864'],
+      [{ size: '800x800', aspect: '1:1' }, '800x800'],
+      // Rounding to multiples of 16 moves the ratio a little; that still counts as the same ratio.
+      [{ size: '1920x1088', aspect: '16:9' }, '1920x1088'],
     ]
     for (const [options] of cases) {
       const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'x', ...options } })
@@ -490,8 +516,9 @@ test('MCP server converts 1K 2K 4K with an aspect ratio into gpt-image-2 sizes a
     }
     assert.deepEqual(requests.map((request) => jsonBody(request).size), cases.map(([, size]) => size))
     assert.equal(jsonBody(requests[0]).quality, 'high')
-    const both = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'x', size: '1536x864', aspect: '16:9' } })
+    const both = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'x', size: '1024x768', aspect: '16:9' } })
     assert.equal(both.result.isError, true)
+    assert.equal(both.result.content[0].text, 'size 写的 1024x768 比例是 4:3，aspect 写的是 16:9，两边不一致。请只保留其中一个，或把两边改成同一个比例。')
     const badAspect = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'x', aspect: '5:7' } })
     assert.equal(badAspect.result.isError, true)
     assert.equal(requests.length, cases.length)
@@ -508,7 +535,7 @@ test('MCP server draws Nano Banana through the Gemini native endpoint with only 
     assert.equal(generated.result.isError, undefined)
     assert.equal(generated.result.content[0].mimeType, 'image/jpeg')
     assert.equal(generated.result.content[0].data, jpegBytes.toString('base64'))
-    assert.match(generated.result.content[1].text, /已用 nano-banana-2 画好图片/)
+    assert.match(generated.result.content[1].text, /^已用 nano-banana-2 画好。文件：.+\.jpg。/)
     assert.equal(requests[0].url, '/v1beta/models/nano-banana-2:generateContent')
     assert.equal(requests[0].googleKey, 'sk-image-not-real')
     assert.equal(requests[0].authorization, undefined)
@@ -525,6 +552,13 @@ test('MCP server draws Nano Banana through the Gemini native endpoint with only 
     assert.equal(edited.result.isError, undefined)
     const editBody = jsonBody(requests[1])
     assert.deepEqual(editBody.generationConfig.imageConfig, { aspectRatio: '3:2', imageSize: '1K' })
+    // A rounded size has no usable ratio of its own; the aspect that agrees with it supplies one.
+    const rounded = await call('tools/call', {
+      name: 'generate_image',
+      arguments: { prompt: 'a lighthouse', model: 'nano-banana-2', size: '1920x1088', aspect: '16:9' },
+    })
+    assert.equal(rounded.result.isError, undefined)
+    assert.deepEqual(jsonBody(requests[2]).generationConfig.imageConfig, { aspectRatio: '16:9', imageSize: '2K' })
     assert.deepEqual(editBody.contents[0].parts.slice(1), [
       { inlineData: { mimeType: 'image/png', data: pngBytes.toString('base64') } },
       { inlineData: { mimeType: 'image/png', data: pngBytes.toString('base64') } },
@@ -595,7 +629,7 @@ test('MCP server draws Grok images through the Images API asking for base64 and 
     })
     assert.equal(generated.result.isError, undefined)
     assert.equal(generated.result.content[0].mimeType, 'image/jpeg')
-    assert.match(generated.result.content[1].text, /已用 grok-imagine-image 画好图片（Grok 不能指定尺寸和比例/)
+    assert.match(generated.result.content[1].text, /^已用 grok-imagine-image 画好。文件：.+不要重新生成。Grok 不能指定尺寸和比例，这张图按它的默认尺寸生成。$/)
     assert.equal(requests[0].url, '/v1/images/generations')
     assert.equal(requests[0].authorization, 'Bearer sk-image-not-real')
     assert.deepEqual(jsonBody(requests[0]), { model: 'grok-imagine-image', prompt: 'a lighthouse', n: 1, response_format: 'b64_json' })
@@ -998,8 +1032,15 @@ test('generate script converts size tiers, aspect ratios and background', async 
   })
   const uhd = await runGenerate({ apiKey: 'sk-test-not-real' }, ok, ['--size', '4K', '--aspect', '16:9'])
   assert.equal(jsonBody(uhd.requests[0]).size, '3840x2160')
-  const both = await runGenerate({ apiKey: 'sk-test-not-real' }, ok, ['--size', '1536x864', '--aspect', '16:9'])
+  // Width and height already say the ratio: an aspect that agrees with them is simply not needed.
+  for (const [size, aspect] of [['1536x864', '16:9'], ['800x800', '1:1'], ['1920x1088', '16:9']]) {
+    const agreed = await runGenerate({ apiKey: 'sk-test-not-real' }, ok, ['--size', size, '--aspect', aspect])
+    assert.equal(agreed.code, 0, agreed.stderr)
+    assert.equal(jsonBody(agreed.requests[0]).size, size)
+  }
+  const both = await runGenerate({ apiKey: 'sk-test-not-real' }, ok, ['--size', '1024x768', '--aspect', '16:9'])
   assert.equal(both.code, 1)
+  assert.equal(both.stderr.trim(), '--size 写的 1024x768 比例是 4:3，--aspect 写的是 16:9，两边不一致。请只保留其中一个，或把两边改成同一个比例。')
   assert.equal(both.requests.length, 0)
   const odd = await runGenerate({ apiKey: 'sk-test-not-real' }, ok, ['--size', '1000x1000'])
   assert.equal(odd.code, 1)
@@ -1088,6 +1129,8 @@ test('generate script size helpers keep exact ratios inside the gpt-image-2 pixe
   assert.deepEqual(resolveImageSize('gemini', '', ''), { imageSize: '1K', aspectRatio: '1:1' })
   assert.throws(() => resolveImageSize('gemini', '1000x700', ''), /不是能用的比例/)
   assert.deepEqual(resolveImageSize('grok', '2K', '16:9'), {})
+  assert.deepEqual(resolveImageSize('gemini', '1920x1088', '16:9'), { imageSize: '2K', aspectRatio: '16:9' })
+  assert.throws(() => resolveImageSize('openai', '1023x767', '1:1'), /比例是 约 1\.33:1，--aspect 写的是 1:1/)
   assert.equal(outputPathFor('/tmp/x.png', jpegBytes), path.resolve('/tmp/x.jpg'))
   assert.equal(outputPathFor('/tmp/x.jpeg', jpegBytes), path.resolve('/tmp/x.jpeg'))
   assert.equal(outputPathFor('/tmp/x', pngBytes), path.resolve('/tmp/x.png'))
@@ -1108,10 +1151,16 @@ test('bundled image skill names neither the brand nor a site address where the A
   const expectedAddresses = {
     'generate.mjs': ['https://xm.solov.cc'],
     'mcp-server.mjs': ['https://xm.solov.cc', 'https://api.solov.cc', 'https://xm-direct.solov.cc'],
+    'image-preview.mjs': null,
   }
+  // The one place the brand is allowed: the name of the folder inside the user's pictures folder where
+  // finished images go (yoyo, 2026-11-26). It is a folder name in a path, not a sentence anyone says.
+  const picturesFolder = "const PICTURES_FOLDER_NAME = '星芒AI'"
   for (const [file, addresses] of Object.entries(expectedAddresses)) {
     const text = await readFile(path.join(skillRoot, 'scripts', file), 'utf8')
-    assert.doesNotMatch(text, /星芒/, file)
+    const checked = file === 'mcp-server.mjs' ? text.replace(picturesFolder, '') : text
+    if (file === 'mcp-server.mjs') assert.equal(text.split(picturesFolder).length, 2, 'the pictures folder name is defined exactly once')
+    assert.doesNotMatch(checked, /星芒/, file)
     assert.deepEqual(text.match(siteAddresses), addresses, file)
   }
 })
@@ -1137,4 +1186,188 @@ test('bundled image skill tells the AI the exact tool names and how to look for 
     assert.ok(description.includes(expected) || skill.includes(expected), expected)
   }
   assert.ok(skill.indexOf('## 第一步：用画图工具') < skill.indexOf('## 第二步：没有画图工具时运行脚本'))
+})
+
+/**
+ * A real PNG with a colour ramp (red grows to the right, green grows downwards) under noise, so it is
+ * far too large to pass as its own preview and a decoded preview can be told from garbage.
+ */
+function rampPng(width, height, options = {}) {
+  const png = new PNG({ width, height })
+  let seed = 20261126
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff
+      const noise = (seed >> 16) & 0x3f
+      const base = (y * width + x) * 4
+      png.data[base] = Math.floor((x / width) * 192) + noise
+      png.data[base + 1] = Math.floor((y / height) * 192) + noise
+      png.data[base + 2] = 96 + noise
+      // A disc in the middle on a fully transparent background, like a sticker cut-out.
+      const outside = Math.hypot(x - width / 2, y - height / 2) > Math.min(width, height) * 0.4
+      png.data[base + 3] = options.transparent && outside ? 0 : 255
+    }
+  }
+  return PNG.sync.write(png)
+}
+
+function respondWithImage(bytes) {
+  return function respond() {
+    return { status: 200, body: { data: [{ b64_json: bytes.toString('base64') }] } }
+  }
+}
+
+// Mean of one colour channel over a rectangle given as fractions of the picture.
+function channelMean(image, channel, left, top, right, bottom) {
+  let sum = 0
+  let count = 0
+  for (let y = Math.floor(top * image.height); y < Math.floor(bottom * image.height); y += 1) {
+    for (let x = Math.floor(left * image.width); x < Math.floor(right * image.width); x += 1) {
+      sum += image.data[(y * image.width + x) * 4 + channel]
+      count += 1
+    }
+  }
+  return sum / count
+}
+
+function savedPath(text) {
+  return /文件：(.+?)。回复客户时请原样给出这个路径/.exec(text)[1]
+}
+
+const PREVIEW_MAX_BYTES = 300 * 1024
+
+test('MCP server saves the original as a file and returns only a small JPEG preview with the fixed sentence', async () => {
+  // 2K 16:9 and a 768x1024 portrait: the two sizes that showed up as raw JSON in the Codex desktop app.
+  for (const [width, height, previewWidth, previewHeight] of [[2048, 1152, 1024, 576], [768, 1024, 768, 1024]]) {
+    const original = rampPng(width, height)
+    assert.ok(original.length > 1024 * 1024, 'the fixture is larger than what the desktop app still shows as a picture')
+    await withServer({ apiKey: 'sk-test-not-real' }, respondWithImage(original), async ({ call, work }) => {
+      const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a ramp' } })
+      assert.equal(generated.result.isError, undefined)
+      assert.deepEqual(generated.result.content.map((entry) => entry.type), ['image', 'text'])
+
+      const text = generated.result.content[1].text
+      const filePath = savedPath(text)
+      assert.equal(text, `已用 gpt-image-2 画好，${width}x${height}。文件：${filePath}。回复客户时请原样给出这个路径，不要自己拼路径；客户说看不到图时，告诉他文件在哪，不要重新生成。`)
+      assert.equal(path.dirname(filePath), path.join(work, 'outputs'))
+      assert.match(path.basename(filePath), /^\d{8}-\d{6}-gpt-image-2\.png$/)
+      assert.ok((await readFile(filePath)).equals(original), 'the file is the untouched original')
+
+      const preview = generated.result.content[0]
+      assert.equal(preview.mimeType, 'image/jpeg')
+      const previewBytes = Buffer.from(preview.data, 'base64')
+      assert.ok(previewBytes.length <= PREVIEW_MAX_BYTES, `preview is ${previewBytes.length} bytes`)
+      // What goes back into the conversation is an order of magnitude smaller than the original was.
+      assert.ok(JSON.stringify(generated.result).length < original.length / 3)
+      assert.ok(JSON.stringify(generated.result).length < 450 * 1024)
+      const decoded = jpegjs.decode(previewBytes, { useTArray: true })
+      assert.ok(Math.max(decoded.width, decoded.height) <= 1024)
+      // Smaller than the first step only if the size cap forced it, and never a different shape.
+      assert.ok(decoded.width <= previewWidth && decoded.height <= previewHeight)
+      assert.ok(Math.abs(decoded.width * height - decoded.height * width) <= Math.max(width, height))
+      // It is the same picture: red still grows to the right and green still grows downwards.
+      assert.ok(channelMean(decoded, 0, 0.7, 0, 1, 1) - channelMean(decoded, 0, 0, 0, 0.3, 1) > 80)
+      assert.ok(channelMean(decoded, 1, 0, 0.7, 1, 1) - channelMean(decoded, 1, 0, 0, 1, 0.3) > 80)
+      assert.ok(Math.abs(channelMean(decoded, 2, 0, 0, 1, 1) - 127) < 12)
+    })
+  }
+})
+
+test('MCP server previews a transparent image as a smaller PNG that keeps the transparency', async () => {
+  const original = rampPng(1536, 1536, { transparent: true })
+  await withServer({ apiKey: 'sk-test-not-real' }, respondWithImage(original), async ({ call }) => {
+    const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a sticker', background: 'transparent' } })
+    assert.equal(generated.result.isError, undefined)
+    const preview = generated.result.content[0]
+    assert.equal(preview.mimeType, 'image/png')
+    const previewBytes = Buffer.from(preview.data, 'base64')
+    assert.ok(previewBytes.length <= PREVIEW_MAX_BYTES, `preview is ${previewBytes.length} bytes`)
+    const decoded = PNG.sync.read(previewBytes)
+    assert.ok(Math.max(decoded.width, decoded.height) <= 1024)
+    assert.equal(decoded.width, decoded.height)
+    const centre = (Math.floor(decoded.height / 2) * decoded.width + Math.floor(decoded.width / 2)) * 4
+    assert.equal(decoded.data[3], 0, 'the corner is still transparent')
+    assert.equal(decoded.data[centre + 3], 255, 'the middle is still opaque')
+    assert.ok(channelMean(decoded, 0, 0.6, 0.4, 0.8, 0.6) - channelMean(decoded, 0, 0.2, 0.4, 0.4, 0.6) > 40)
+    assert.match(generated.result.content[1].text, /^已用 gpt-image-2 画好，1536x1536。文件：/)
+    assert.ok((await readFile(savedPath(generated.result.content[1].text))).equals(original))
+  })
+})
+
+test('MCP server never overwrites an earlier image and keeps each one under its own name', async () => {
+  await withServer({ apiKey: 'sk-test-not-real', model: 'gpt-image-2.6-flare' }, ok, async ({ call, work }) => {
+    const paths = []
+    for (let index = 0; index < 3; index += 1) {
+      const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
+      paths.push(savedPath(generated.result.content[1].text))
+    }
+    assert.equal(new Set(paths).size, 3)
+    // Three images inside two seconds: at least two share a timestamp, and the later one gets a suffix.
+    assert.ok(paths.some((filePath) => /^\d{8}-\d{6}-gpt-image-2\.6-flare-2\.png$/.test(path.basename(filePath))), paths.join('\n'))
+    assert.deepEqual((await readdir(path.join(work, 'outputs'))).sort(), paths.map((filePath) => path.basename(filePath)).sort())
+    for (const filePath of paths) assert.equal(await readFile(filePath, 'utf8'), 'fixture-image')
+  })
+})
+
+test('MCP server saves into the pictures folder when it was not started inside a project', async () => {
+  // A desktop app starts the server in the home directory (or a system one): no outputs folder there.
+  await withServer({ apiKey: 'sk-test-not-real' }, ok, async ({ call, home }) => {
+    const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
+    const filePath = savedPath(generated.result.content[1].text)
+    assert.equal(path.dirname(filePath), path.join(home, 'Pictures', '星芒AI'))
+    assert.equal(await readFile(filePath, 'utf8'), 'fixture-image')
+    assert.deepEqual(await readdir(home), ['Pictures'])
+  }, { cwd: 'home' })
+
+  // Windows with OneDrive backup: the pictures folder lives under OneDrive and carries its localized name.
+  function oneDrive({ root }) {
+    return { OneDrive: path.join(root, 'OneDrive') }
+  }
+  await withServer({ apiKey: 'sk-test-not-real' }, ok, async ({ call, root }) => {
+    await mkdir(path.join(root, 'OneDrive', '图片'), { recursive: true })
+    const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
+    assert.equal(path.dirname(savedPath(generated.result.content[1].text)), path.join(root, 'OneDrive', '图片', '星芒AI'))
+  }, { cwd: 'home', env: oneDrive })
+
+  // Inside a project, but something that is not a folder already has the name: nothing is replaced.
+  await withServer({ apiKey: 'sk-test-not-real' }, ok, async ({ call, home, work }) => {
+    await writeFile(path.join(work, 'outputs'), 'not a folder')
+    const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
+    assert.equal(path.dirname(savedPath(generated.result.content[1].text)), path.join(home, 'Pictures', '星芒AI'))
+    assert.equal(await readFile(path.join(work, 'outputs'), 'utf8'), 'not a folder')
+  })
+})
+
+test('MCP server tells the AI in the tool description that the image is saved as a file', async () => {
+  await withServer({ apiKey: 'sk-test-not-real' }, ok, async ({ call }) => {
+    const listed = await call('tools/list')
+    const description = listed.result.tools[0].description
+    assert.match(description, /图片会保存成文件，结果里给出文件路径和一张预览图。/)
+    // The old promise is what made the AI assume the customer had already seen the picture.
+    assert.doesNotMatch(description, /直接显示在对话里/)
+    assert.equal(listed.result.tools[0].inputSchema.properties.out, undefined, 'the caller cannot choose where the file goes')
+  })
+})
+
+test('bundled image skill gives Codex the exact call to copy and says how to hand the file to the customer', async () => {
+  const skill = await readFile(path.resolve(__dirname, '..', 'bundled-skills', 'xingmang-ai', 'SKILL.md'), 'utf8')
+  // The second line is what puts the preview and the sentence with the file path into the conversation.
+  // Codex reaches MCP tools from code it writes itself, and left alone it often dropped the result.
+  assert.ok(skill.includes([
+    '```js',
+    'const r = await tools.mcp__xingmang_image__generate_image({ prompt: "<描述>", images: ["<参考图完整路径，没有就删掉这一项>"], size: "1K", aspect: "1:1" });',
+    'for (const c of (r?.content || [])) c.type === "image" ? image(c) : c.type === "text" ? text(c.text) : null;',
+    '```',
+  ].join('\n')))
+  const finished = skill.slice(skill.indexOf('## 完成后'), skill.indexOf('## 失败时'))
+  for (const rule of [
+    '最终回复里逐张写出结果给的文件路径',
+    '不要只列图片的名字',
+    '`.codex/visualizations`',
+    '只告诉他文件在哪里，不要重新生成',
+  ]) {
+    assert.ok(finished.includes(rule), rule)
+  }
+  // The tool no longer shows the picture by itself, so the skill must not promise that either.
+  assert.doesNotMatch(skill, /直接显示在对话里/)
 })

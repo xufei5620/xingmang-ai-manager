@@ -276,7 +276,7 @@ function printUsage() {
     '选项：',
     '  --model       默认用登录时按当前账号挑好的 OpenAI 图片模型；也可以点名 Nano Banana、Grok（只走图片模型分组）',
     '  --size        1K|2K|4K，或 宽x高（gpt-image-2 系列宽高须为 16 的倍数），默认 1K',
-    '  --aspect      16:9|9:16|1:1|4:3|3:4|3:2|2:3，配 1K/2K/4K 用，默认 1:1',
+    '  --aspect      16:9|9:16|1:1|4:3|3:4|3:2|2:3，配 1K/2K/4K 用，默认 1:1；--size 已经写了宽高时不用传',
     `  --quality     low|medium|high|auto，仅 gpt-image，默认 ${DEFAULT_QUALITY}`,
     '  --background  opaque|transparent|auto，仅 gpt-image；要透明底传 transparent',
     '  --image       参考图路径，改图用；可以给多张（最多 4 张）',
@@ -334,9 +334,11 @@ export function resolveImageSize(family, sizeInput = '', aspectInput = '') {
   const tier = size && SIZE_TIERS[size] ? size : ''
   const dimensions = size && !tier ? /^(\d{2,5})X(\d{2,5})$/.exec(size) : null
   if (size && !tier && !dimensions) fail(`尺寸无效：${sizeInput}。写 1K、2K、4K，或者 宽x高`)
-  if (dimensions && aspect) fail('已经用 --size 写了宽高，就不要再给 --aspect')
   const width = dimensions ? Number(dimensions[1]) : 0
   const height = dimensions ? Number(dimensions[2]) : 0
+  if (dimensions && aspect && !sizeMatchesAspect(width, height, aspect)) {
+    fail(`--size 写的 ${width}x${height} 比例是 ${ratioText(width, height)}，--aspect 写的是 ${aspect}，两边不一致。请只保留其中一个，或把两边改成同一个比例。`)
+  }
   const ratio = dimensions ? ratioOf(width, height) : ''
 
   if (family === 'openai') {
@@ -345,7 +347,8 @@ export function resolveImageSize(family, sizeInput = '', aspectInput = '') {
     return { text: `${picked.width}x${picked.height}`, ...picked }
   }
   if (family === 'grok') return {}
-  if (dimensions && !ASPECT_RATIOS.includes(ratio)) {
+  // 同时给了对得上的 --aspect 就用它：1920x1088 这种凑整的宽高自己约不出能用的比例。
+  if (dimensions && !aspect && !ASPECT_RATIOS.includes(ratio)) {
     fail(`这个模型按比例出图，${width}x${height} 不是能用的比例。改用 --size 1K|2K|4K 加 --aspect ${ASPECT_RATIOS.join('|')}`)
   }
   const longSide = Math.max(width, height)
@@ -356,6 +359,18 @@ export function resolveImageSize(family, sizeInput = '', aspectInput = '') {
 function ratioOf(width, height) {
   const divisor = greatestCommonDivisor(width, height) || 1
   return `${width / divisor}:${height / divisor}`
+}
+
+function ratioText(width, height) {
+  const divisor = greatestCommonDivisor(width, height) || 1
+  const [left, right] = [width / divisor, height / divisor]
+  return left <= 64 && right <= 64 ? `${left}:${right}` : `约 ${(width / height).toFixed(2)}:1`
+}
+
+// --size 已经写了宽高、又给了 --aspect：比例对得上就照 --size 画，对不上才报错。宽高凑成 16 的倍数时比例会差一点，容 2%。
+function sizeMatchesAspect(width, height, aspect) {
+  const [ratioWidth, ratioHeight] = aspect.split(':').map(Number)
+  return Math.abs(width * ratioHeight - height * ratioWidth) <= 0.02 * height * ratioWidth
 }
 
 function isGptImage2(model) {

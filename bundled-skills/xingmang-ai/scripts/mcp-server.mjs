@@ -2,10 +2,13 @@
 // Image MCP server for this skill. The client (Codex, Claude Code, Gemini CLI, Grok)
 // starts it outside its command sandbox, so everything that crosses that line is
 // narrowed here: the only network peer is the account's own image endpoint, the
-// only files read are the skill config and images the user asked to edit, and
-// the API key never leaves this process except in that one auth header.
+// only files read are the skill config and images the user asked to edit, the
+// only file written is the finished image (always a new file, in a place this
+// script picks, never a path from the caller), and the API key never leaves this
+// process except in that one auth header.
 
-import { open, lstat, readFile } from 'node:fs/promises'
+import { open, lstat, mkdir, readFile, stat, unlink } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 
 const MAX_LINE_BYTES = 256 * 1024
@@ -15,6 +18,11 @@ const MAX_INPUT_IMAGE_BYTES = 20 * 1024 * 1024
 const REQUEST_TIMEOUT_MS = 300_000
 const DEFAULT_MODEL = 'gpt-image-2'
 const DEFAULT_QUALITY = 'high'
+// 画好的原图存成文件：有工作目录就放它下面的这个目录，没有就放系统图片文件夹里以产品名命名的目录。
+// 原图不再放进工具结果：它会跟着对话历史每一轮重传（单张中位 3.5MB），新版 Codex 桌面端还会把 1MB 以上的图显示成一大段 JSON。
+const OUTPUT_DIRECTORY_NAME = 'outputs'
+const PICTURES_FOLDER_NAME = '星芒AI'
+const MAX_SAME_NAME_FILES = 99
 // 认型号三处同一套（主程序 xingmang-ai-skill.ts、技能脚本 generate.mjs、这里），测试钉住。
 // 以前这里只认写死的 5 个，站上换代后主程序写进来的新型号会被悄悄换回 gpt-image-2（#1059）。
 // 默认只用 OpenAI 的 gpt-image 系列；Nano Banana 和 Grok 要点名才用，只走图片模型分组的 Key。
@@ -238,7 +246,7 @@ function schema(model) {
         description: '一般不填，用登录时按当前账号挑好的 OpenAI 模型。用户点名时可写 gpt-image- 开头的型号、nano-banana-2、nano-banana-pro、grok-imagine-image',
       },
       size: { type: 'string', description: '1K、2K、4K，或 宽x高（如 1536x1024）；gpt-image-2 系列宽高要是 16 的倍数。4K 多收钱' },
-      aspect: { type: 'string', enum: ASPECT_RATIOS, description: '画面比例，配 1K/2K/4K 用，默认 1:1' },
+      aspect: { type: 'string', enum: ASPECT_RATIOS, description: '画面比例，配 1K/2K/4K 用，默认 1:1；size 已经写了宽高时不用填' },
       quality: { type: 'string', enum: ['low', 'medium', 'high', 'auto'], default: DEFAULT_QUALITY },
       background: { type: 'string', enum: ['opaque', 'transparent', 'auto'], default: 'opaque' },
     },
@@ -249,7 +257,7 @@ function schema(model) {
 function toolList(model) {
   return [{
     name: 'generate_image',
-    description: '用当前账号画图或改图。用户要画一张图、生成图片，或者修改、编辑一张已有图片时调用；改图时把原图的完整路径放进 images。结果直接显示在对话里。不要自己写脚本或命令去调图片接口。',
+    description: '用当前账号画图或改图。用户要画一张图、生成图片，或者修改、编辑一张已有图片时调用；改图时把原图的完整路径放进 images。图片会保存成文件，结果里给出文件路径和一张预览图。不要自己写脚本或命令去调图片接口。',
     inputSchema: schema(model),
   }]
 }
@@ -275,7 +283,6 @@ function parseArguments(argumentsValue) {
   }
   const aspect = textValue(argumentsValue.aspect, '', 8)
   if (aspect && !ASPECT_RATIOS.includes(aspect)) throw new ImageError(`图片比例只能是 ${ASPECT_RATIOS.join('、')}`)
-  if (aspect && /x/i.test(size)) throw new ImageError('已经用 size 写了宽高，就不要再给 aspect')
   const quality = textValue(argumentsValue.quality, DEFAULT_QUALITY, 16)
   if (!['low', 'medium', 'high', 'auto'].includes(quality)) throw new ImageError('图片质量参数错误')
   const background = textValue(argumentsValue.background, 'opaque', 16)
@@ -292,6 +299,18 @@ function parseArguments(argumentsValue) {
 
 function greatestCommonDivisor(left, right) {
   return right === 0 ? left : greatestCommonDivisor(right, left % right)
+}
+
+function ratioText(width, height) {
+  const divisor = greatestCommonDivisor(width, height) || 1
+  const [left, right] = [width / divisor, height / divisor]
+  return left <= 64 && right <= 64 ? `${left}:${right}` : `约 ${(width / height).toFixed(2)}:1`
+}
+
+// size 已经写了宽高、又给了 aspect：比例对得上就照 size 画，对不上才报错。宽高凑成 16 的倍数时比例会差一点，容 2%。
+function sizeMatchesAspect(width, height, aspect) {
+  const [ratioWidth, ratioHeight] = aspect.split(':').map(Number)
+  return Math.abs(width * ratioHeight - height * ratioWidth) <= 0.02 * height * ratioWidth
 }
 
 // 与 generate.mjs 的 tierDimensions 同一套换算，测试钉住两边结果一样。
@@ -312,6 +331,9 @@ function tierDimensions(tier, aspect) {
 function resolveImageSize(family, size, aspect) {
   const tier = SIZE_TIERS[size.toUpperCase()] ? size.toUpperCase() : ''
   const dimensions = /^(\d{2,5})x(\d{2,5})$/i.exec(size)
+  if (dimensions && aspect && !sizeMatchesAspect(Number(dimensions[1]), Number(dimensions[2]), aspect)) {
+    throw new ImageError(`size 写的 ${dimensions[1]}x${dimensions[2]} 比例是 ${ratioText(Number(dimensions[1]), Number(dimensions[2]))}，aspect 写的是 ${aspect}，两边不一致。请只保留其中一个，或把两边改成同一个比例。`)
+  }
   if (family === 'openai') {
     if (size === 'auto') return { size: 'auto' }
     if (dimensions) return { size: `${dimensions[1]}x${dimensions[2]}` }
@@ -324,7 +346,8 @@ function resolveImageSize(family, size, aspect) {
     const height = Number(dimensions[2])
     const divisor = greatestCommonDivisor(width, height) || 1
     ratio = `${width / divisor}:${height / divisor}`
-    if (!ASPECT_RATIOS.includes(ratio)) {
+    // 同时给了对得上的 aspect 就用它：1920x1088 这种凑整的宽高自己约不出能用的比例。
+    if (!aspect && !ASPECT_RATIOS.includes(ratio)) {
       throw new ImageError(`这个模型按比例出图，${size} 不是能用的比例。改用 size 填 1K、2K、4K，aspect 填 ${ASPECT_RATIOS.join('、')}`)
     }
   }
@@ -527,6 +550,210 @@ async function requestImage(origin, apiKey, input, images) {
   return { encoded, mimeType: imageMimeType(Buffer.from(encoded.slice(0, 32), 'base64')) ?? 'image/png' }
 }
 
+/**
+ * 读出图片的宽高（PNG 读 IHDR，JPEG 找 SOF 段，WebP 读画布大小），认不出返回 null。只看文件头，不解码。
+ */
+function readImageDimensions(bytes) {
+  const mimeType = imageMimeType(bytes)
+  if (mimeType === 'image/png' && bytes.length >= 24 && bytes.toString('latin1', 12, 16) === 'IHDR') {
+    return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) }
+  }
+  if (mimeType === 'image/jpeg') {
+    let offset = 2
+    while (offset + 9 < bytes.length) {
+      if (bytes[offset] !== 0xff) return null
+      const marker = bytes[offset + 1]
+      if (marker === 0xff) {
+        offset += 1
+        continue
+      }
+      // SOF0..SOF15, except DHT (C4), JPG (C8) and DAC (CC), carry the frame size.
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+        return { width: bytes.readUInt16BE(offset + 7), height: bytes.readUInt16BE(offset + 5) }
+      }
+      offset += 2 + bytes.readUInt16BE(offset + 2)
+    }
+    return null
+  }
+  if (mimeType === 'image/webp' && bytes.length >= 30) {
+    const format = bytes.toString('latin1', 12, 16)
+    if (format === 'VP8X') return { width: bytes.readUIntLE(24, 3) + 1, height: bytes.readUIntLE(27, 3) + 1 }
+    if (format === 'VP8L' && bytes[20] === 0x2f) {
+      const bits = bytes.readUInt32LE(21)
+      return { width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1 }
+    }
+    if (format === 'VP8 ' && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a) {
+      return { width: bytes.readUInt16LE(26) & 0x3fff, height: bytes.readUInt16LE(28) & 0x3fff }
+    }
+  }
+  return null
+}
+
+function isInside(child, parent) {
+  const relative = path.relative(parent, child)
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
+function homeDirectory() {
+  try {
+    const home = os.homedir()
+    return home && path.isAbsolute(home) ? home : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 当前目录算不算一个「工作目录」。命令行里的 AI 工具在项目目录里启动本工具，图就该放进项目；桌面端启动时的当前目录
+ * 却是盘符根、系统目录、软件自己的安装目录或用户主目录，图放进去客户找不到，也不该往那里写。不算时返回空。
+ */
+function workingDirectory() {
+  let cwd
+  try {
+    cwd = process.cwd()
+  } catch {
+    return ''
+  }
+  if (!path.isAbsolute(cwd) || path.parse(cwd).root === cwd) return ''
+  const home = homeDirectory()
+  if (home && isInside(cwd, home)) {
+    // 主目录本身，和它下面放软件数据的目录（.codex、.claude、AppData、Library 这些）。
+    const first = path.relative(home, cwd).split(path.sep)[0].toLowerCase()
+    if (!first || first.startsWith('.') || first === 'appdata' || first === 'library') return ''
+  }
+  const env = process.env
+  const systemDirectories = process.platform === 'win32'
+    ? [env.SystemRoot, env.windir, env.ProgramFiles, env['ProgramFiles(x86)'], env.ProgramW6432, env.ProgramData, env.APPDATA, env.LOCALAPPDATA]
+    : ['/Applications', '/System', '/Library', '/usr', '/bin', '/sbin', '/etc', '/dev', '/proc', '/sys', '/boot', '/lib', '/snap']
+  if (systemDirectories.some((entry) => entry && path.isAbsolute(entry) && isInside(cwd, entry))) return ''
+  return cwd
+}
+
+async function isDirectory(directory) {
+  try {
+    return (await stat(directory)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+async function picturesDirectory(home) {
+  const candidates = [path.join(home, 'Pictures')]
+  // Windows 开了 OneDrive 备份时「图片」文件夹被挪到 OneDrive 下面，主目录里那个不一定还在。
+  for (const key of ['OneDrive', 'OneDriveConsumer', 'OneDriveCommercial']) {
+    const root = process.env[key]?.trim()
+    if (root && path.isAbsolute(root)) candidates.push(path.join(root, 'Pictures'), path.join(root, '图片'))
+  }
+  candidates.push(path.join(home, '图片'))
+  for (const candidate of candidates) {
+    if (await isDirectory(candidate)) return candidate
+  }
+  return candidates[0]
+}
+
+// 依次试：工作目录下的 outputs、系统图片文件夹里的目录、系统临时目录。前一个写不进去才用后一个。
+async function outputDirectories() {
+  const directories = []
+  const cwd = workingDirectory()
+  if (cwd) directories.push(path.join(cwd, OUTPUT_DIRECTORY_NAME))
+  const home = homeDirectory()
+  if (home) directories.push(path.join(await picturesDirectory(home), PICTURES_FOLDER_NAME))
+  directories.push(path.join(os.tmpdir(), PICTURES_FOLDER_NAME))
+  return directories
+}
+
+function twoDigits(value) {
+  return String(value).padStart(2, '0')
+}
+
+// 文件名带时间和型号：20261126-173005-gpt-image-2.6-flare.png。
+function outputFileBase(model, now) {
+  const day = `${now.getFullYear()}${twoDigits(now.getMonth() + 1)}${twoDigits(now.getDate())}`
+  const time = `${twoDigits(now.getHours())}${twoDigits(now.getMinutes())}${twoDigits(now.getSeconds())}`
+  return `${day}-${time}-${model.replace(/[^A-Za-z0-9._-]/g, '-')}`
+}
+
+async function writeNewFile(directory, base, extension, bytes) {
+  for (let attempt = 1; attempt <= MAX_SAME_NAME_FILES; attempt += 1) {
+    const filePath = path.join(directory, attempt === 1 ? `${base}${extension}` : `${base}-${attempt}${extension}`)
+    let handle
+    try {
+      // wx: fails when the name is taken, so an existing file is never overwritten and an
+      // existing link is never written through. Same second, same model gets -2, -3, ...
+      handle = await open(filePath, 'wx')
+    } catch (error) {
+      if (error?.code === 'EEXIST') continue
+      throw error
+    }
+    try {
+      await handle.writeFile(bytes)
+    } catch (error) {
+      await handle.close().catch(() => undefined)
+      await unlink(filePath).catch(() => undefined)
+      throw error
+    }
+    await handle.close()
+    return filePath
+  }
+  throw new Error('too many files with the same name')
+}
+
+/**
+ * 把原图存成文件，返回完整路径；哪里都写不进去返回 null。保存位置只由这里决定，不收调用方给的路径：
+ * 本工具在命令沙箱外面运行，收路径就等于给了 AI 一个在沙箱外任意位置写文件的口子。
+ */
+async function saveOriginal(bytes, model, mimeType) {
+  const base = outputFileBase(model, new Date())
+  const extension = { 'image/jpeg': '.jpg', 'image/webp': '.webp' }[mimeType] ?? '.png'
+  for (const directory of await outputDirectories()) {
+    try {
+      await mkdir(directory, { recursive: true })
+      // 这个名字被一个链接或文件占着就换下一个位置，不顺着链接写到别处去。
+      if (!(await lstat(directory)).isDirectory()) continue
+      return await writeNewFile(directory, base, extension, bytes)
+    } catch (error) {
+      process.stderr.write(`图片没能存进 ${directory}：${error?.code ?? '写入失败'}\n`)
+    }
+  }
+  return null
+}
+
+// 预览做不出来（模块读不到、图解不开）不算失败：照样给文件路径。
+async function buildPreview(bytes, mimeType, dimensions) {
+  try {
+    const { buildImagePreview } = await import('./image-preview.mjs')
+    return await buildImagePreview(bytes, mimeType, dimensions)
+  } catch (error) {
+    process.stderr.write(`预览图没有做出来：${redactUpstream(error instanceof Error ? error.message : '')}\n`)
+    return null
+  }
+}
+
+/**
+ * 画好以后交回去的内容：原图存成文件，结果里只有一张小预览和一段固定的话。那段话是写给 AI 看的：
+ * 路径照抄给客户，客户说看不到图时指给他文件在哪，不要重画（重画一次扣一次钱）。
+ */
+async function finishedContent(image, model, notes) {
+  const bytes = Buffer.from(image.encoded, 'base64')
+  const dimensions = readImageDimensions(bytes)
+  const done = `已用 ${model} 画好${dimensions ? `，${dimensions.width}x${dimensions.height}` : ''}。`
+  const filePath = await saveOriginal(bytes, model, image.mimeType)
+  if (!filePath) {
+    // 图已经画好、钱已经扣了，哪里都存不进去时原图照旧放在结果里，不能丢。
+    return [
+      { type: 'image', data: image.encoded, mimeType: image.mimeType },
+      { type: 'text', text: `${done}图片未能保存成文件，原图在这条结果里。${notes}` },
+    ]
+  }
+  const text = `${done}文件：${filePath}。回复客户时请原样给出这个路径，不要自己拼路径；客户说看不到图时，告诉他文件在哪，不要重新生成。${notes}`
+  const preview = await buildPreview(bytes, image.mimeType, dimensions)
+  if (!preview) return [{ type: 'text', text: `${text}这张图没有预览。` }]
+  return [
+    { type: 'image', data: preview.bytes.toString('base64'), mimeType: preview.mimeType },
+    { type: 'text', text },
+  ]
+}
+
 async function generateImage(argumentsValue) {
   const input = parseArguments(argumentsValue)
   const config = await readConfig()
@@ -549,17 +776,11 @@ async function generateImage(argumentsValue) {
     for (let index = 0; index < keys.length; index += 1) {
       try {
         const image = await requestImage(config.origin, keys[index].value, { ...input, model, family, resolved }, images)
-        const done = images.length ? `已用 ${model} 改好图片` : `已用 ${model} 画好图片`
         const notes = [
-          resolved.ignored ? '（Grok 不能指定尺寸和比例，按它自己的默认尺寸出的）' : '',
-          model === requested ? '' : `。${requested} 目前无法使用，已改用 ${model}。`,
+          model === requested ? '' : `${requested} 目前无法使用，已改用 ${model}。`,
+          resolved.ignored ? 'Grok 不能指定尺寸和比例，这张图按它的默认尺寸生成。' : '',
         ]
-        return {
-          content: [
-            { type: 'image', data: image.encoded, mimeType: image.mimeType },
-            { type: 'text', text: `${done}${notes.join('')}` },
-          ],
-        }
+        return { content: await finishedContent(image, model, notes.join('')) }
       } catch (error) {
         lastError = error
         if (!(error instanceof ImageError) || !error.switchKey) break
@@ -578,7 +799,7 @@ async function handle(message) {
     return resultMessage(message.id, {
       protocolVersion: '2024-11-05',
       capabilities: { tools: {} },
-      serverInfo: { name: 'xingmang-image', version: '1.3.0' },
+      serverInfo: { name: 'xingmang-image', version: '1.4.0' },
     })
   }
   if (message.method === 'tools/list') return resultMessage(message.id, { tools: toolList(await defaultModel()) })
