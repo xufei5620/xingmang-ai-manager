@@ -50,7 +50,7 @@ export function resolveRemoteFeatureId(value: unknown): RemoteFeatureId | null {
 }
 
 /** 每句停用的话都带着这半句：渲染层靠它认出是开关关的，不是真出了错（operation-error.ts）。 */
-export const remoteFeatureOffMarker = '修好以后会自动恢复'
+export const remoteFeatureOffMarker = '修复后将自动恢复'
 
 // Electron 只把 `${name}: ${message}` 交过 IPC，名字是唯一原样过去的字段（external-url-blocked.ts 同理）；
 // 渲染层的 rawErrorMessage 会把它剥掉，上屏的只有那句话。
@@ -72,16 +72,16 @@ function possessive(name: string): string {
   return /[A-Za-z0-9]$/.test(name) ? `${name} 的` : `${name}的`
 }
 
-// 客户看得到的这几句是 yoyo 2026-10-28 回「停用改」批的，改字要先问他。
-export const videoStudioOffMessage = `视频剪辑暂时停用了，${remoteFeatureOffMarker}。`
-export const codexRemoteOffMessage = `遥控暂时停用了，${remoteFeatureOffMarker}。`
-export const accelerationOffMessage = `网络加速暂时停用了，${remoteFeatureOffMarker}。`
-export const codexDesktopChineseOffMessage = `Codex 已经打开，中文界面暂时停用了，这次先用英文界面，${remoteFeatureOffMarker}。`
+// 客户看得到的这几句是 yoyo 2026-10-28 回「停用改」批的，正式口吻那版 11-23 随正式化补漏 2 一起请他确认；改字要先问他。
+export const videoStudioOffMessage = `视频剪辑已暂时停用，${remoteFeatureOffMarker}。`
+export const codexRemoteOffMessage = `遥控已暂时停用，${remoteFeatureOffMarker}。`
+export const accelerationOffMessage = `网络加速已暂时停用，${remoteFeatureOffMarker}。`
+export const codexDesktopChineseOffMessage = `Codex 已打开，中文界面已暂时停用，本次使用英文界面，${remoteFeatureOffMarker}。`
 
 export function toolInstallOffMessage(toolName: string): string {
-  return `${possessive(toolName)}安装和更新暂时停用了，${remoteFeatureOffMarker}。`
+  return `${possessive(toolName)}安装和更新已暂时停用，${remoteFeatureOffMarker}。`
 }
 
 export function toolLaunchOffMessage(toolName: string): string {
-  return `暂时不能从星芒打开 ${toolName}，${remoteFeatureOffMarker}。`
+  return `暂时无法从星芒打开 ${toolName}，${remoteFeatureOffMarker}。`
 }

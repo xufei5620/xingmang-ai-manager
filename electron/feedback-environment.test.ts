@@ -340,13 +340,13 @@ describe('buildFeedbackRuntimeLines', () => {
   it('says why the app was treated as an ordinary user when the startup probe learned nothing', () => {
     const lines = buildFeedbackRuntimeLines(runtimeInput({ executionMode: 'same-user', executionProbeFailure: 'blocked' }))
 
-    expect(lines).toContain('运行权限: 普通用户（没能确认是不是管理员：确认权限这一步被安全软件或电脑的管控策略拦下了，已按普通用户处理）')
+    expect(lines).toContain('运行权限: 普通用户（没能确认是不是管理员：权限确认被安全软件或电脑的管控策略拦截，已按普通用户处理）')
   })
 
   it('says why an administrator run kept the strict handling when the startup probe failed', () => {
     const lines = buildFeedbackRuntimeLines(runtimeInput({ executionMode: 'trusted-only', executionProbeFailure: 'timeout' }))
 
-    expect(lines).toContain('运行权限: 以管理员身份运行（细节没能确认：确认权限这一步超过 15 秒没做完，常见于电脑较慢或刚开机，已按管理员处理）')
+    expect(lines).toContain('运行权限: 以管理员身份运行（细节没能确认：权限确认超过 15 秒未完成，常见于电脑运行较慢或刚开机，已按管理员处理）')
   })
 
   it('states a real administrator run plainly once the probe is known to have succeeded', () => {

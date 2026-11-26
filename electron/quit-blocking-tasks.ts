@@ -158,7 +158,7 @@ export async function confirmWindowsRestartWork(steps: WindowsRestartConfirmatio
 
 export interface ChatReplyQuitPrompt {
   message: string
-  /** 0 = 等它说完（这次不退），1 = 仍然退出。 */
+  /** 0 = 等待完成（这次不退），1 = 仍然退出。 */
   buttons: [string, string]
 }
 
@@ -169,7 +169,7 @@ export interface ChatReplyQuitPrompt {
  */
 export function buildChatReplyQuitPrompt(running: Iterable<UnfinishedRestartWork>): ChatReplyQuitPrompt | null {
   for (const kind of running) {
-    if (kind === 'chat') return { message: '正在回复，退出会停下这条回复。', buttons: ['等它说完', '仍然退出'] }
+    if (kind === 'chat') return { message: '对话仍在回复，现在退出将中断本次回复。', buttons: ['等待完成', '仍然退出'] }
   }
   return null
 }
@@ -189,7 +189,7 @@ export interface QuitInterruptionConfirmation {
 
 /**
  * 托盘、菜单「退出」和「直接退出」偏好放行前，先问会被打断的事：工具在装（已知31），聊天在回复（D39）。
- * 两问说的是不同的东西会被停下，跟重启装更新一样都问；哪一问点了「继续安装」「等它说完」这次就不退。
+ * 两问说的是不同的东西会被停下，跟重启装更新一样都问；哪一问点了「继续安装」「等待完成」这次就不退。
  * 问过的人不再接着被问要不要顺手装更新（返回 quit），下好的更新留到下次。
  */
 export async function confirmQuitInterruptions(steps: QuitInterruptionConfirmation): Promise<QuitInterruptionAnswer> {

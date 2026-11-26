@@ -83,7 +83,7 @@ export const sub2ApiManagedKeyStoppedMessage = '该工具的密钥已停用或�
 
 /**
  * AI 工作台聊天自己那把 Key 的上限用完了：同样停下，不去换一把不限额的。用的是
- * relay-quota-failure 里那句现成的话，聊天页认得它，会在旁边给「去调额度」。
+ * relay-quota-failure 里那句现成的话，聊天页认得它，会在旁边给「前往调整额度」。
  */
 export const chatKeyQuotaExhaustedMessage = relayQuotaFailureMessages.keyLimit
 

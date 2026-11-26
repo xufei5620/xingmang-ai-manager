@@ -132,7 +132,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
 
   return <section className="v2-page video-studio" data-page-id="video" data-testid="page-video">
     {studio.error && <Notice tone="bad" title="未完成" body={studio.error} onDismiss={() => studio.setError('')}
-      actions={quotaAction ? <Button size="sm" variant="primary" onClick={() => onOpenAccount?.(/额度上限/.test(studio.error) ? 'keys' : 'recharge')}>{/额度上限/.test(studio.error) ? '去调额度' : '前往充值'}</Button> : undefined} testId="video-error" />}
+      actions={quotaAction ? <Button size="sm" variant="primary" onClick={() => onOpenAccount?.(/额度上限/.test(studio.error) ? 'keys' : 'recharge')}>{/额度上限/.test(studio.error) ? '前往调整额度' : '前往充值'}</Button> : undefined} testId="video-error" />}
     {studio.notice && <Notice tone="accent" title="提示" body={studio.notice} onDismiss={() => studio.setNotice('')}
       actions={folderAction ? <Button size="sm" icon={FolderOpen} onClick={() => void studio.openFolder()} testId="video-notice-folder">打开文件夹</Button> : undefined} testId="video-notice" />}
     {studio.storageWarning && <Notice tone="warn" title="无法保存此分镜" body={studio.storageWarning} testId="video-storage-warning" />}
@@ -187,7 +187,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
       <div className="video-studio-options">
         <Select label="清晰度" value={String(settings.resolution)} disabled={composing} options={videoStudioResolutions.map((resolution) => ({ value: String(resolution), label: `${resolution}p` }))}
           onChange={(event) => { const resolution = Number(event.target.value); if (isVideoStudioResolution(resolution)) studio.changeSettings({ resolution }) }} testId="video-resolution" />
-        <Select label="画面对不上时" value={settings.fit} disabled={composing} options={videoStudioFits.map((fit) => ({ value: fit, label: videoStudioFitNames[fit] }))}
+        <Select label="画面比例不一致时" value={settings.fit} disabled={composing} options={videoStudioFits.map((fit) => ({ value: fit, label: videoStudioFitNames[fit] }))}
           onChange={(event) => { if (isVideoStudioFit(event.target.value)) studio.changeSettings({ fit: event.target.value }) }} testId="video-fit" />
         <Select label="镜头之间" value={settings.transition} disabled={composing} options={videoStudioTransitions.map((transition) => ({ value: transition, label: videoStudioTransitionNames[transition] }))}
           onChange={(event) => { if (isVideoStudioTransition(event.target.value)) studio.changeSettings({ transition: event.target.value }) }} testId="video-transition" />

@@ -2472,7 +2472,7 @@ test('a connection added in Claude Code is copied to the tools that do not have 
     await page.getByTestId('hub-tab-custom').click()
     await page.getByTestId('hub-add-mcp-docs').click()
     const dialog = page.getByRole('dialog', { name: '安装「docs」', exact: true })
-    await dialog.getByText('连接里填过的密钥、环境变量和请求头会原样带过去，装在那些工具的「我的（全局）」里，下次打开工具时生效。', { exact: true }).waitFor()
+    await dialog.getByText('连接中填写的密钥、附加设置和请求头将原样复制，并安装到这些工具的「我的（全局）」中，下次打开工具时生效。', { exact: true }).waitFor()
     const tools = dialog.getByRole('group', { name: '装到哪里', exact: true })
     await expect(tools.getByTestId('hub-install-tools-codex')).toBeDisabled()
     await expect(tools.getByTestId('hub-install-tools-codex')).toContainText('已安装')

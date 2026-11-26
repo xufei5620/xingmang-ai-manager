@@ -142,7 +142,7 @@ export function dnsCheckOutcome(input: {
     }
     return {
       state: 'warn',
-      summary: `${lead}。您选择了「只用${badName}」，AI 工具将无法连接：请点击「去处理」改为「自动」，或${dnsSettingsAdvice}。${dnsSettingsGuidance(platform)}`,
+      summary: `${lead}。您选择了「只用${badName}」，AI 工具将无法连接：请点击「前往处理」改为「自动」，或${dnsSettingsAdvice}。${dnsSettingsGuidance(platform)}`,
       details: { ...details, ...dnsSettingsFix(platform), reroute: 'auto' },
     }
   }

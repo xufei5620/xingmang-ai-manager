@@ -110,8 +110,8 @@ describe('resolveStarterWorkspaceContainer', () => {
   })
 
   it('refuses a parent it cannot place', () => {
-    expect(() => resolveStarterWorkspaceContainer('', 'win32')).toThrow('找不到可以放项目的文件夹')
-    expect(() => resolveStarterWorkspaceContainer('Documents', 'darwin')).toThrow('找不到可以放项目的文件夹')
+    expect(() => resolveStarterWorkspaceContainer('', 'win32')).toThrow('未找到可存放项目的文件夹')
+    expect(() => resolveStarterWorkspaceContainer('Documents', 'darwin')).toThrow('未找到可存放项目的文件夹')
   })
 })
 
@@ -188,7 +188,7 @@ describe('createStarterWorkspace', () => {
   it('does not create a parent folder the system reported but never made', () => {
     const missing = path.join(home, 'Missing Documents')
 
-    expect(() => createStarterWorkspace(missing, context())).toThrow('找不到可以放项目的文件夹')
+    expect(() => createStarterWorkspace(missing, context())).toThrow('未找到可存放项目的文件夹')
     expect(fs.existsSync(missing)).toBe(false)
   })
 

@@ -299,7 +299,7 @@ export function HubInstallDialog({
       {curated && stage === 'details' && <CuratedDetails item={curated} hideScope />}
       {!curated && entry.summary && <p>{entry.summary}</p>}
       {!curated && entry.kind === 'mcp' && (
-        <p>连接里填过的密钥、环境变量和请求头会原样带过去，装在那些工具的「我的（全局）」里，下次打开工具时生效。</p>
+        <p>连接中填写的密钥、附加设置和请求头将原样复制，并安装到这些工具的「我的（全局）」中，下次打开工具时生效。</p>
       )}
       {!curated && entry.kind === 'skill' && (
         <dl className="v2-business-kv">

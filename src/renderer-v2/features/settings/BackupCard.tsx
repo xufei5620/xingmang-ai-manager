@@ -98,7 +98,7 @@ function RestoreCheckNotice({ check, navigate }: { check: RestoreCheck; navigate
       tone={view.tone}
       title={`${name} · ${view.statusLabel}`}
       body={<><div>{view.title}</div><div>{view.body}</div></>}
-      actions={target && navigate ? <Button size="sm" onClick={() => navigate(target, section)} testId="backups-restore-check-fix">去处理</Button> : undefined}
+      actions={target && navigate ? <Button size="sm" onClick={() => navigate(target, section)} testId="backups-restore-check-fix">前往处理</Button> : undefined}
       testId="backups-restore-check"
     />
   )

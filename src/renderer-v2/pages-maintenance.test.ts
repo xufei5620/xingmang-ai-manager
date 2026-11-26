@@ -215,8 +215,8 @@ function tutorialText(id: string): string {
 describe('tutorial topics', () => {
   it('covers the three extension pages with a chapter each', () => {
     // #1993 起侧栏只剩一页「插件」，三章的标题不再跟旧页名一一对应，照 yoyo 回「插件教程改」那份逐字稿：
-    // 外接工具那章改叫「连上浏览器和文件夹」，免得跟页面名「插件」撞；插件那章改叫「官方插件和插件市场」。
-    const titles: Record<string, string> = { mcp: '连上浏览器和文件夹', skills: '技能', plugins: '官方插件和插件市场' }
+    // 外接工具那章改叫「连接浏览器和文件夹」，免得跟页面名「插件」撞；插件那章改叫「官方插件和插件市场」。
+    const titles: Record<string, string> = { mcp: '连接浏览器和文件夹', skills: '技能', plugins: '官方插件和插件市场' }
     for (const id of ['mcp', 'skills', 'plugins']) {
       const topic = tutorialTopics.find((entry) => entry.id === id)
       expect(topic, `缺少 ${id} 教程章节`).toBeDefined()
