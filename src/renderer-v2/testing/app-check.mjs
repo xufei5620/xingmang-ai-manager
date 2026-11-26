@@ -7470,7 +7470,7 @@ test('a stalled update check offers the download page next to retrying', async (
   } finally { await page.close() }
 })
 
-// 磁盘快满时新版本先不下：版本更新卡和首页气泡都说清差多少，「怎么清理」就地展开步骤，
+// 磁盘快满时新版本先不下：版本更新卡和首页气泡都说清差多少，「查看清理方法」就地展开步骤，
 //「仍要下载」跳过这一次的空间预检。
 test('the version card explains a full disk and still lets the user download', async () => {
   const page = await open('updateCheckFail=1')
@@ -7485,7 +7485,7 @@ test('the version card explains a full disk and still lets the user download', a
     await notice.waitFor()
     await notice.getByText('还需清理出 220 MB', { exact: false }).waitFor()
     await page.getByRole('status').getByText('新版本暂不下载', { exact: true }).waitFor()
-    await notice.getByRole('button', { name: '怎么清理', exact: true }).click()
+    await notice.getByRole('button', { name: '查看清理方法', exact: true }).click()
     await notice.getByTestId('updates-disk-cleanup').waitFor()
     await notice.getByRole('button', { name: '仍要下载', exact: true }).click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'downloadUpdate'))
@@ -11990,7 +11990,7 @@ test('the backup card in settings lists a backup made while it was hidden once i
     // 设置页去过以后只是藏起来，再点「设置」还停在「备份迁移」那组，露面时自己重读一次。
     await page.getByTestId('nav-settings').click()
     await expect(page.getByTestId('page-settings').getByRole('tab', { name: '备份迁移', exact: true })).toHaveAttribute('aria-selected', 'true')
-    await expect(backups.getByTestId('backups-row-backup-before-switch')).toContainText('改 Codex CLI 配置前自动备份')
+    await expect(backups.getByTestId('backups-row-backup-before-switch')).toContainText('修改 Codex CLI 配置前自动备份')
     await expect(backups.getByTestId('backups-empty')).toHaveCount(0)
     await clean(page)
   } finally { await page.close() }
@@ -12040,7 +12040,7 @@ test('the help dialog shortcuts close the dialog and land on the tutorial, the f
       return dialog
     }
     const first = await openHelp()
-    await expect(first.getByTestId('support-more').getByRole('button')).toHaveText(['使用教程', '留言反馈', '跑一遍检查', '运行日志', '打开下载页', '重开软件'])
+    await expect(first.getByTestId('support-more').getByRole('button')).toHaveText(['使用教程', '留言反馈', '运行检查', '运行日志', '打开下载页', '重开软件'])
     await page.keyboard.press('Escape')
     await expect(page.getByTestId('support-dialog')).toHaveCount(0)
     const feedbackTab = (name) => page.getByTestId('page-feedback').getByRole('tab', { name })
