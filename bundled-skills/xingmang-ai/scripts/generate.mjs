@@ -2,6 +2,7 @@
 // Image generation helper for this skill. Never prints API keys.
 
 import { Buffer } from 'node:buffer'
+import diagnosticsChannel from 'node:diagnostics_channel'
 import { open, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -13,6 +14,8 @@ const DEFAULT_TIMEOUT_MS = 300_000
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 const MAX_INPUT_IMAGES = 4
 const MAX_INPUT_IMAGE_BYTES = 20 * 1024 * 1024
+// 这条命令连不上网络时用这个退出码，和别的失败（1）分开：AI 只在看到它时申请联网后重跑一次。
+const NETWORK_EXIT_CODE = 3
 
 // 认型号三处同一套（主程序 xingmang-ai-skill.ts、画图工具 mcp-server.mjs、这里），测试钉住。
 // 默认只用 OpenAI 的 gpt-image 系列；Nano Banana 和 Grok 要点名才用，只走图片模型分组的 Key。
@@ -110,6 +113,36 @@ const MODEL_UNAVAILABLE_PATTERN = /model_not_found|无可用渠道|no available 
 
 export function isModelUnavailable(status, code, message) {
   return status === 404 || MODEL_UNAVAILABLE_CODES.has(code) || MODEL_UNAVAILABLE_PATTERN.test(typeof message === 'string' ? message : '')
+}
+
+// 请求一个字节都没发出去就失败了：这条命令连不上网络。AI 在命令沙箱里跑脚本时多半是这种情况，以前只打一句
+// 「fetch failed」，AI 看不出原因，接着换各种办法试上几分钟。
+class NetworkError extends GenerateError {
+  constructor() {
+    super(networkFailureMessage(process.env))
+  }
+}
+
+/**
+ * 连不上时给 AI 和客户的那句话。Codex 在禁止联网的沙箱里跑命令时会带上 CODEX_SANDBOX_NETWORK_DISABLED，
+ * 有它就把原因说死；没有就两种可能都说，不替客户猜。
+ */
+export function networkFailureMessage(env) {
+  return env?.CODEX_SANDBOX_NETWORK_DISABLED
+    ? '无法连接图片服务：这条命令被沙箱禁止联网。请允许这条命令联网后重新运行一次。'
+    : '无法连接图片服务：这条命令可能被沙箱禁止联网，也可能是当前网络不通。请允许这条命令联网后重新运行一次；仍然失败请检查网络。'
+}
+
+// 请求头发出去过几次。连不上和「发出去了、没等到回复」要分开说：后一种服务端可能已经出图并扣费，不能叫 AI 重跑。
+// 这个频道由 Node 自带的 fetch 发布；万一哪个版本没有，计数一直是 0，一律按连不上处理。
+let requestHeadersSent = 0
+try {
+  diagnosticsChannel.subscribe('undici:client:sendHeaders', (message) => {
+    // 走代理时先发给代理的 CONNECT 不算：那时图片服务还什么都没收到。
+    if (message?.request?.method !== 'CONNECT') requestHeadersSent += 1
+  })
+} catch {
+  // 订阅不上不影响出图。
 }
 
 // 不在这里 process.exit：Windows 上 fetch 的连接还在关，直接退出会打出 libuv 的 Assertion 并以 127 退出。
@@ -252,6 +285,8 @@ function printUsage() {
     'Key 从本技能目录的 config.json 读取，登录后自动写入。',
     '先用软件签发的 Codex Key，失败再改用生图分组 Key。',
     '不要把 Key 打进日志。',
+    '',
+    `退出码：0 成功；${NETWORK_EXIT_CODE} 这条命令连不上网络（多半是被沙箱禁止联网）；1 其他失败。`,
     '',
   ].join('\n'))
 }
@@ -406,6 +441,7 @@ async function readResponseLimited(response) {
 async function send(url, init, timeoutMessage) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
+  const sentBefore = requestHeadersSent
   try {
     const response = await fetch(url, { ...init, signal: controller.signal })
     if (response.status >= 300 && response.status < 400) {
@@ -416,7 +452,8 @@ async function send(url, init, timeoutMessage) {
   } catch (error) {
     if (error instanceof GenerateError) throw error
     if (error && error.name === 'AbortError') throw new GenerateError(timeoutMessage)
-    throw new GenerateError(error instanceof Error ? error.message : '请求失败')
+    if (requestHeadersSent === sentBefore) throw new NetworkError()
+    throw new GenerateError('与图片服务的连接中途断开，这次请求可能已经送达并扣费。请先在管理工具的用量记录中确认，再决定是否重新生成。')
   } finally {
     clearTimeout(timer)
   }
@@ -491,7 +528,14 @@ async function downloadImage(url) {
     throw new GenerateError('上游返回了无效图片地址')
   }
   if (parsed.protocol !== 'https:') throw new GenerateError('图片地址必须是 https')
-  const result = await send(parsed.href, { method: 'GET', redirect: 'follow' }, '下载图片超时')
+  let result
+  try {
+    result = await send(parsed.href, { method: 'GET', redirect: 'follow' }, '下载图片超时')
+  } catch (error) {
+    // 图已经画出来、钱已经扣了：不能按「连不上」退出，那会让 AI 申请联网后重画一张。
+    if (error instanceof NetworkError) throw new GenerateError('图片已经生成，但下载失败。这次已经扣费，请不要立即重新生成。')
+    throw error
+  }
   if (!result.ok) throw new GenerateError(`下载图片失败：HTTP ${result.status}`)
   return result.bytes
 }
@@ -645,7 +689,8 @@ async function main() {
   if (!bytes && lastError instanceof GenerateError && lastError.unexplained) {
     fail(unexplainedFailureMessage(lastModel, family, images.length > 0))
   }
-  if (!bytes) fail(lastError ? lastError.message : '生成失败')
+  // 原样抛出：连不上网络的那一种要带着它的退出码出去。
+  if (!bytes) throw lastError ?? new GenerateError('生成失败')
   if (usedModel !== requested) process.stderr.write(`${requested} 目前无法使用，已改用 ${usedModel}。\n`)
 
   const finalPath = outputPathFor(options.out, bytes)
@@ -657,6 +702,6 @@ async function main() {
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : '生成失败'}\n`)
-    process.exitCode = 1
+    process.exitCode = error instanceof NetworkError ? NETWORK_EXIT_CODE : 1
   })
 }

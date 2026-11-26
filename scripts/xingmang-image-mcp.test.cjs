@@ -645,7 +645,7 @@ const generatePath = path.resolve(__dirname, '..', 'bundled-skills', 'xingmang-a
  * relay. Every fetch is redirected before the script loads, so the production
  * origin in config.json never reaches DNS or a real backend.
  */
-async function runGenerate(config, respond, args) {
+async function runGenerate(config, respond, args, options = {}) {
   // generate.mjs only runs main() when argv[1] matches its own resolved URL, and
   // macOS tmpdir sits behind the /var -> /private/var symlink.
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'xingmang-image-generate-')))
@@ -683,11 +683,16 @@ globalThis.fetch = function (input, init) {
 `)
     // A function lets a test drop reference images into the throwaway root first.
     const extra = typeof args === 'function' ? await args(root) : args
+    // Nothing listens on the port any more: the same refusal a command sandbox without network gives.
+    if (options.unreachable) await new Promise((resolve) => httpServer.close(resolve))
     const child = spawn(process.execPath, [
       '--import', pathToFileURL(preloadPath).href,
       path.join(root, 'scripts', 'generate.mjs'),
       '--prompt', 'a cat', '--out', path.join(root, 'out.png'), ...extra,
-    ], { stdio: ['ignore', 'pipe', 'pipe'] })
+    ], {
+      env: { ...process.env, CODEX_SANDBOX_NETWORK_DISABLED: '', ...options.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
     let stdout = ''
     let stderr = ''
     child.stdout.on('data', (chunk) => { stdout += chunk })
@@ -817,6 +822,35 @@ test('generate script and the MCP server agree on what counts as an empty balanc
     assert.ok(generate.includes(shared), shared)
     assert.ok(server.includes(shared), shared)
   }
+})
+
+test('generate script exits with code 3 and a fixed diagnosis when the command cannot reach the network', async () => {
+  const config = {
+    codexApiKey: 'sk-codex-not-real',
+    apiKey: 'sk-image-not-real',
+    model: 'gpt-image-2.6-flare',
+    fallbackModels: ['gpt-image-2'],
+  }
+  const blocked = await runGenerate(config, ok, [], { unreachable: true })
+  assert.equal(blocked.code, 3)
+  assert.equal(blocked.stdout, '')
+  assert.equal(blocked.stderr.trim(), '无法连接图片服务：这条命令可能被沙箱禁止联网，也可能是当前网络不通。请允许这条命令联网后重新运行一次；仍然失败请检查网络。')
+
+  // Codex marks commands it runs without network; then the reason is not a guess.
+  const sandboxed = await runGenerate(config, ok, [], { unreachable: true, env: { CODEX_SANDBOX_NETWORK_DISABLED: '1' } })
+  assert.equal(sandboxed.code, 3)
+  assert.equal(sandboxed.stderr.trim(), '无法连接图片服务：这条命令被沙箱禁止联网。请允许这条命令联网后重新运行一次。')
+
+  // The request went out and no answer came back: it may have been drawn and charged, so this is
+  // not the "run it again with network" exit code, and neither the other key nor the next model is tried.
+  const dropped = await runGenerate(config, () => null, [])
+  assert.equal(dropped.code, 1)
+  assert.equal(dropped.stderr.trim(), '与图片服务的连接中途断开，这次请求可能已经送达并扣费。请先在管理工具的用量记录中确认，再决定是否重新生成。')
+  assert.equal(dropped.requests.length, 1)
+
+  // Every other failure keeps exit code 1.
+  const refused = await runGenerate(config, () => ({ status: 400, body: { error: { message: 'bad prompt' } } }), [])
+  assert.equal(refused.code, 1)
 })
 
 test('generate script turns a relay error without a reason into a plain sentence', async () => {
