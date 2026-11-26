@@ -56,10 +56,13 @@ export const XINGMANG_AI_USER_SKILL_ROOTS = [
   ...XINGMANG_AI_OPTIONAL_SKILL_ROOTS,
 ] as const
 
+// 画图工具要用到 image-preview.mjs（做小预览）：排在 mcp-server.mjs 前面，写到一半被打断时不会只有新的
+// mcp-server.mjs 而没有它（mcp-server.mjs 按需加载它，缺了也只是不出预览）。
 export const XINGMANG_AI_BUNDLED_FILES = [
   'SKILL.md',
   'references.md',
   path.join('scripts', 'generate.mjs'),
+  path.join('scripts', 'image-preview.mjs'),
   path.join('scripts', 'mcp-server.mjs'),
 ] as const
 
@@ -598,6 +601,30 @@ function skillDirectoriesForConfig(userHome: string): string[] {
       bundledSkillFileExists(path.join(directory, 'SKILL.md'))
       || bundledSkillFileExists(path.join(directory, XINGMANG_AI_CONFIG_FILE))
     ))
+}
+
+/**
+ * 开机补登记画图工具用：第一个已经写好账号 Key、又装着画图工具脚本的技能目录（找的顺序和登录同步写配置时一样）。
+ * 退出登录后 config.json 只剩地址和分组，不算；没有就返回 null，等登录同步时再登记。
+ */
+export async function resolveXingmangAiImageMcpSkillDirectory(userHome: string): Promise<string | null> {
+  for (const directory of skillDirectoriesForConfig(userHome)) {
+    if (!bundledSkillFileExists(path.join(directory, 'scripts', 'mcp-server.mjs'))) continue
+    let raw: string | null
+    try {
+      raw = await readSafeUtf8File(path.join(directory, XINGMANG_AI_CONFIG_FILE), '星芒AI Skill 配置', MAX_SKILL_CONFIG_BYTES)
+    } catch {
+      continue
+    }
+    if (!raw) continue
+    try {
+      const config = parseXingmangAiSkillConfig(JSON.parse(raw))
+      if (config.apiKey || config.codexApiKey) return directory
+    } catch {
+      // A damaged config is rewritten by the next login sync, which registers the tool itself.
+    }
+  }
+  return null
 }
 
 function directoryFailureMessage(error: unknown): string {

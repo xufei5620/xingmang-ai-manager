@@ -2,10 +2,13 @@
 // Image MCP server for this skill. The client (Codex, Claude Code, Gemini CLI, Grok)
 // starts it outside its command sandbox, so everything that crosses that line is
 // narrowed here: the only network peer is the account's own image endpoint, the
-// only files read are the skill config and images the user asked to edit, and
-// the API key never leaves this process except in that one auth header.
+// only files read are the skill config and images the user asked to edit, the
+// only files written are new image files (never an existing file), and the API
+// key never leaves this process except in that one auth header.
 
-import { open, lstat, readFile } from 'node:fs/promises'
+import { access, lstat, mkdir, open, readFile, stat } from 'node:fs/promises'
+import { constants as fsConstants } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 
 const MAX_LINE_BYTES = 256 * 1024
@@ -42,16 +45,61 @@ const ALLOWED_RELAY_ORIGINS = new Set([
   'https://api.solov.cc',
   'https://xm-direct.solov.cc',
 ])
-// 这几种状态换一把 Key 可能就过了（没这个分组、额度、限流、上游忙），与生图技能一致。
-const RETRYABLE_STATUSES = new Set([401, 403, 429, 503])
+// 这几种状态换一把 Key 可能就过了（没这个分组、限流、上游忙）。403 里余额不足的除外：两把 Key 是同一个账户。
+// 与生图技能脚本一致，测试钉住。
+const KEY_SWITCH_STATUSES = new Set([401, 403, 429, 503])
+// 「这个型号现在用不了」才换下一个型号：找不到型号、分组里没有渠道、站上还没定价、上游没有能用的账号。
+// 内容审核、没给参考图、尺寸超限这些换型号也没用，换了只是让客户多等、参考图多传一遍。
+const MODEL_UNAVAILABLE_PATTERN = /model_not_found|无可用渠道|no available (?:channel|compatible account)|倍率或价格未配置|price not configured|ratio or price not set|\bmodel\b[^.。]{0,80}does not exist/i
+const INSUFFICIENT_BALANCE_PATTERN = /额度不足|预扣费额度失败/
+const DEFAULT_OUTPUT_FOLDER = 'AI图片'
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp'])
+const EXTENSION_BY_MIME = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp' }
+// 预览放不进对话时（不是 PNG，又大于这个数）就只给文件路径，不把原图塞回对话。
+const INLINE_ORIGINAL_MAX_BYTES = 200 * 1024
 
 class ImageError extends Error {
-  constructor(message, retryable = false, upstream = false) {
+  constructor(message, options = {}) {
     super(message)
-    this.retryable = retryable
-    // 中转明确回了错误（不是连不上、超时）：自动挑的默认模型这样失败时，按顺序换下一个再试。
-    this.upstream = upstream
+    // 换一把 Key 可能就过（见 KEY_SWITCH_STATUSES）。
+    this.switchKey = options.switchKey === true
+    // 这个型号现在用不了：自动挑的默认模型这样失败时，按顺序换下一个再试。
+    this.switchModel = options.switchModel === true
   }
+}
+
+/**
+ * 中转回错以后下一步怎么走（与生图技能脚本一致，测试钉住）：余额不足立刻停，不换 Key、不换型号；
+ * 型号用不了才换型号；401、429、503 和余额以外的 403 才换 Key；其余直接交回去。
+ */
+function classifyRelayFailure(status, code, message) {
+  const text = typeof message === 'string' ? message : ''
+  if (code === 'insufficient_user_quota' || INSUFFICIENT_BALANCE_PATTERN.test(text)) {
+    return { insufficientBalance: true, switchKey: false, switchModel: false }
+  }
+  return {
+    insufficientBalance: false,
+    switchKey: KEY_SWITCH_STATUSES.has(status),
+    switchModel: status === 404 || code === 'model_not_found' || MODEL_UNAVAILABLE_PATTERN.test(text),
+  }
+}
+
+function moneyText(match) {
+  if (!match || !match[1]) return ''
+  const symbol = match[1] === '＄' ? '$' : match[1] === '￥' ? '¥' : match[1]
+  return `${symbol}${Number(match[2]).toFixed(2)}`
+}
+
+/**
+ * 余额不足时给 AI 和客户的那句话（与生图技能脚本一致，测试钉住）。金额从中转的原话里取，
+ * 取不到就不写金额；不带货币符号的数字可能是站上的额度单位，不当钱写出来。
+ */
+function insufficientBalanceMessage(text) {
+  const said = typeof text === 'string' ? text : ''
+  const needed = moneyText(/需要预扣费额度[:：]\s*([＄$￥¥])?\s*(\d+(?:\.\d+)?)/.exec(said))
+  const remaining = moneyText(/剩余额度[:：]\s*([＄$￥¥])?\s*(-?\d+(?:\.\d+)?)/.exec(said))
+  const amounts = needed && remaining ? `（需要 ${needed}，剩余 ${remaining}）` : remaining ? `（剩余 ${remaining}）` : ''
+  return `当前账号余额不足，无法完成这张图${amounts}。请在管理工具中充值后再试。`
 }
 
 function writeMessage(message) {
@@ -193,6 +241,10 @@ function schema(model) {
       aspect: { type: 'string', enum: ASPECT_RATIOS, description: '画面比例，配 1K/2K/4K 用，默认 1:1' },
       quality: { type: 'string', enum: ['low', 'medium', 'high', 'auto'], default: DEFAULT_QUALITY },
       background: { type: 'string', enum: ['opaque', 'transparent', 'auto'], default: 'opaque' },
+      out: {
+        type: 'string',
+        description: '一般不填。要存到指定位置时写完整路径（文件或文件夹）；不填就存到用户「图片」文件夹里的 AI图片 文件夹',
+      },
     },
     required: ['prompt'],
   }
@@ -201,7 +253,7 @@ function schema(model) {
 function toolList(model) {
   return [{
     name: 'generate_image',
-    description: '用当前账号画图或改图。用户要画一张图、生成图片，或者修改、编辑一张已有图片时调用；改图时把原图的完整路径放进 images。结果直接显示在对话里。不要自己写脚本或命令去调图片接口。',
+    description: '用当前账号画图或改图。用户要画一张图、生成图片，或者修改、编辑一张已有图片时调用；改图时把原图的完整路径放进 images。画好的图会存成文件，结果里给出文件的完整路径，回复用户时原样给出这个路径。不要自己写脚本或命令去调图片接口。',
     inputSchema: schema(model),
   }]
 }
@@ -239,7 +291,9 @@ function parseArguments(argumentsValue) {
     throw new ImageError(`原图最多 ${MAX_INPUT_IMAGES} 张，每张都要写完整路径`)
   }
   const images = (imagesValue ?? []).map((entry) => entry.trim())
-  return { prompt, model, size, aspect, quality, background, images }
+  const out = textValue(argumentsValue.out, '', 4096)
+  if (out && (out.includes('\0') || !path.isAbsolute(out))) throw new ImageError('保存位置要写完整路径')
+  return { prompt, model, size, aspect, quality, background, images, out }
 }
 
 function greatestCommonDivisor(left, right) {
@@ -444,7 +498,8 @@ async function requestImage(origin, apiKey, input, images) {
   } catch (error) {
     if (error instanceof ImageError) throw error
     if (error?.name === 'AbortError') throw new ImageError('画图超时（300 秒），可以把画质调低再试')
-    throw new ImageError('连不上图片服务，请检查网络后再试', true)
+    // 连不上是这台电脑的网络问题，换 Key、换型号都一样连不上。
+    throw new ImageError('连不上图片服务，请检查网络后再试')
   } finally {
     clearTimeout(timer)
   }
@@ -453,14 +508,19 @@ async function requestImage(origin, apiKey, input, images) {
   if (!response.ok) {
     // xAI 这类上游把原因直接写成字符串 error，也算说了原因。
     const message = typeof payload?.error === 'string' ? payload.error : payload?.error?.message || payload?.message
-    const retryable = RETRYABLE_STATUSES.has(response.status)
+    const code = typeof payload?.error?.code === 'string' ? payload.error.code : typeof payload?.code === 'string' ? payload.code : ''
+    const next = classifyRelayFailure(response.status, code, message)
+    if (next.insufficientBalance) {
+      process.stderr.write(`画图失败，余额不足（HTTP ${response.status}）\n`)
+      throw new ImageError(insufficientBalanceMessage(message))
+    }
     if (typeof message !== 'string' || isUnexplainedUpstreamMessage(message)) {
       // 原话只进日志（MCP 的 stderr 由宿主记进日志，不进对话），AI 和客户看到的是一句人话。
       const said = typeof message === 'string' && message.trim() ? redactUpstream(message) : '没有内容'
       process.stderr.write(`画图失败，图片服务回了 HTTP ${response.status}：${said}\n`)
-      throw new ImageError(unexplainedFailureMessage(input.model, input.family, images.length > 0), retryable, true)
+      throw new ImageError(unexplainedFailureMessage(input.model, input.family, images.length > 0), next)
     }
-    throw new ImageError(redactUpstream(message), retryable, true)
+    throw new ImageError(redactUpstream(message), next)
   }
   const encoded = encodedImage(payload, input.family)
   if (typeof encoded !== 'string' || !encoded || encoded.length > MAX_RESPONSE_BYTES
@@ -471,10 +531,169 @@ async function requestImage(origin, apiKey, input, images) {
   return { encoded, mimeType: imageMimeType(Buffer.from(encoded.slice(0, 32), 'base64')) ?? 'image/png' }
 }
 
+function picturesDirectory() {
+  const home = os.homedir()
+  return path.join(home, 'Pictures')
+}
+
+async function isDirectory(directory) {
+  try {
+    return (await stat(directory)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 不填 out 时存到用户「图片」文件夹里的 AI图片：位置固定，客户自己也找得到。画图工具的工作目录
+ * 不一定是对话所在的文件夹（桌面端可能在它自己的目录里起这个工具），所以不按工作目录存。
+ */
+async function defaultOutputDirectory() {
+  const pictures = picturesDirectory()
+  return path.join(await isDirectory(pictures) ? pictures : os.homedir(), DEFAULT_OUTPUT_FOLDER)
+}
+
+function timestamp(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`
+}
+
+/**
+ * out 是文件夹（已经存在，或者末尾带分隔符）就在里面按时间和型号起名；是文件就用它，
+ * 扩展名换成和图片内容一致的那个。
+ */
+async function outputTarget(out, model, extension) {
+  if (!out) return { directory: await defaultOutputDirectory(), name: '' }
+  const resolved = path.resolve(out)
+  if (/[\\/]$/.test(out) || await isDirectory(resolved)) return { directory: resolved, name: '' }
+  const current = path.extname(resolved)
+  const lower = current.toLowerCase()
+  const base = IMAGE_EXTENSIONS.has(lower) ? resolved.slice(0, -current.length) : resolved
+  return { directory: path.dirname(resolved), name: `${path.basename(base)}${extension}` }
+}
+
+/**
+ * Settles where the file will go before any request is sent, so an unusable
+ * location fails before the account is charged rather than after.
+ */
+async function prepareOutputDirectory(out) {
+  if (!out) return
+  const directory = /[\\/]$/.test(out) || await isDirectory(path.resolve(out)) ? path.resolve(out) : path.dirname(path.resolve(out))
+  try {
+    await mkdir(directory, { recursive: true })
+    await access(directory, fsConstants.W_OK)
+  } catch {
+    throw new ImageError(`这个位置无法保存图片：${directory}。请换一个位置，或不填 out，存到默认位置。`)
+  }
+}
+
+/**
+ * Writes a new file and never replaces one: 'wx' fails on any existing entry,
+ * a symbolic link included, so a bad out can only add an image file next to
+ * what is there. A taken name gets -2, -3 ... appended.
+ */
+async function writeNewImageFile(directory, name, bytes) {
+  await mkdir(directory, { recursive: true })
+  const extension = path.extname(name)
+  const stem = name.slice(0, name.length - extension.length)
+  for (let attempt = 1; attempt <= 100; attempt += 1) {
+    const filePath = path.join(directory, attempt === 1 ? name : `${stem}-${attempt}${extension}`)
+    let handle
+    try {
+      handle = await open(filePath, 'wx')
+    } catch (error) {
+      if (error?.code === 'EEXIST') continue
+      throw error
+    }
+    try {
+      await handle.writeFile(bytes)
+    } finally {
+      await handle.close().catch(() => undefined)
+    }
+    return filePath
+  }
+  throw new Error('no free name')
+}
+
+/**
+ * 图已经画好（钱已经扣了），存文件这一步不能把它弄丢：指定的位置写不进就存默认位置，再不行存临时目录。
+ * 都不行返回 null，调用方把原图照旧放回对话。
+ */
+async function saveImage(bytes, mimeType, out, model) {
+  const extension = EXTENSION_BY_MIME[mimeType] ?? '.png'
+  const fallbackName = `${timestamp()}-${model}${extension}`
+  const targets = []
+  if (out) targets.push(await outputTarget(out, model, extension))
+  targets.push({ directory: await defaultOutputDirectory(), name: '' })
+  targets.push({ directory: path.join(os.tmpdir(), DEFAULT_OUTPUT_FOLDER), name: '' })
+  for (const target of targets) {
+    try {
+      return await writeNewImageFile(target.directory, target.name || fallbackName, bytes)
+    } catch (error) {
+      process.stderr.write(`图片没能存到 ${target.directory}：${error?.code || '写入失败'}\n`)
+    }
+  }
+  return null
+}
+
+async function previewFor(bytes, mimeType) {
+  if (mimeType === 'image/png') {
+    try {
+      const { buildImagePreview } = await import(new URL('./image-preview.mjs', import.meta.url).href)
+      const preview = await buildImagePreview(bytes)
+      if (preview) return preview
+    } catch (error) {
+      process.stderr.write(`预览没做出来：${error instanceof Error ? error.message : '未知原因'}\n`)
+    }
+  }
+  return bytes.length <= INLINE_ORIGINAL_MAX_BYTES ? { bytes, mimeType } : null
+}
+
+async function dimensionsOf(bytes) {
+  try {
+    const { readImageDimensions } = await import(new URL('./image-preview.mjs', import.meta.url).href)
+    return readImageDimensions(bytes)
+  } catch {
+    return null
+  }
+}
+
+async function finishedResult(image, context) {
+  const bytes = Buffer.from(image.encoded, 'base64')
+  const savedPath = await saveImage(bytes, image.mimeType, context.out, context.model)
+  const dimensions = await dimensionsOf(bytes)
+  const done = `已用 ${context.model} ${context.editing ? '改好图片' : '画好图片'}${dimensions ? `，${dimensions.width}x${dimensions.height}` : ''}。`
+  const notes = []
+  if (context.model !== context.requested) notes.push(`${context.requested} 目前无法使用，已改用 ${context.model}。`)
+  if (context.ignoredSize) notes.push('Grok 不能指定尺寸和比例，按它自己的默认尺寸出图。')
+  if (!savedPath) {
+    // 存不成文件时把原图原样放回对话，至少不丢。
+    return {
+      content: [
+        { type: 'image', data: image.encoded, mimeType: image.mimeType },
+        { type: 'text', text: [done, ...notes, '图片没能存成文件，只能在对话里查看。'].join('') },
+      ],
+    }
+  }
+  const preview = await previewFor(bytes, image.mimeType)
+  const text = [
+    done,
+    ...notes,
+    `文件：${savedPath}`,
+    '\n请在回复中原样给出这个完整路径，不要引用其他路径。用户表示看不到图片时，告知文件位置即可，不要重新生成。',
+  ].join('')
+  return {
+    content: [
+      ...(preview ? [{ type: 'image', data: preview.bytes.toString('base64'), mimeType: preview.mimeType }] : []),
+      { type: 'text', text },
+    ],
+  }
+}
+
 async function generateImage(argumentsValue) {
   const input = parseArguments(argumentsValue)
   const config = await readConfig()
-  // AI 没点名、或点的就是主程序挑好的那个：按账号列表里有的顺序往下退（站上新开的这次没画出来：还没定价、渠道没好）。
+  // AI 没点名、或点的就是主程序挑好的那个：只在型号用不了时按账号列表里有的顺序往下退（站上新开的还没定价、渠道没好）。
   // 点名要别的就只用它，失败原样交回去让 AI 自己换。
   const requested = input.model ?? config.chain[0]
   const family = modelFamily(requested)
@@ -488,24 +707,27 @@ async function generateImage(argumentsValue) {
   }
   const images = []
   for (const filePath of input.images) images.push(await readInputImage(filePath))
+  await prepareOutputDirectory(input.out)
   let lastError = null
   for (const model of models) {
     for (let index = 0; index < keys.length; index += 1) {
+      let image
       try {
-        const image = await requestImage(config.origin, keys[index].value, { ...input, model, family, resolved }, images)
-        const done = images.length ? `已用 ${model} 改好图片` : `已用 ${model} 画好图片`
-        return {
-          content: [
-            { type: 'image', data: image.encoded, mimeType: image.mimeType },
-            { type: 'text', text: resolved.ignored ? `${done}（Grok 不能指定尺寸和比例，按它自己的默认尺寸出的）` : done },
-          ],
-        }
+        image = await requestImage(config.origin, keys[index].value, { ...input, model, family, resolved }, images)
       } catch (error) {
         lastError = error
-        if (!(error instanceof ImageError) || !error.retryable) break
+        if (!(error instanceof ImageError) || !error.switchKey) break
+        continue
       }
+      return finishedResult(image, {
+        model,
+        requested,
+        out: input.out,
+        editing: images.length > 0,
+        ignoredSize: resolved.ignored === true,
+      })
     }
-    if (!(lastError instanceof ImageError) || !lastError.upstream) break
+    if (!(lastError instanceof ImageError) || !lastError.switchModel) break
   }
   throw lastError ?? new ImageError('画图失败')
 }

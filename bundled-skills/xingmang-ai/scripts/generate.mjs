@@ -35,15 +35,65 @@ const GPT_IMAGE_MAX_PIXELS = 8_294_400
 const QUALITIES = ['low', 'medium', 'high', 'auto']
 const BACKGROUNDS = ['opaque', 'transparent', 'auto']
 
+// 连不上网络时用单独的退出码：多半是命令沙箱禁止联网，AI 看到 3 就知道该申请联网再试一次，而不是自己乱试。
+export const NETWORK_EXIT_CODE = 3
+export const NETWORK_FAILURE_MESSAGE = '连不上图片服务：这条命令可能被禁止联网。请允许它联网运行后重试一次；已经允许联网仍然连不上时，请检查网络后再试。'
+const INTERRUPTED_RESPONSE_MESSAGE = '图片服务的回复中途断开，这次可能已经扣费。请先在管理工具的用量记录中确认，再决定是否重新生成。'
+const DOWNLOAD_FAILURE_MESSAGE = '图片已经生成，但下载失败，这次可能已经扣费，请不要立即重试。'
+
+// 这几种状态换一把 Key 可能就过了（没这个分组、限流、上游忙）。403 里余额不足的除外：两把 Key 是同一个账户。
+// 与画图工具一致，测试钉住。
+const KEY_SWITCH_STATUSES = new Set([401, 403, 429, 503])
+// 「这个型号现在用不了」才换下一个型号：找不到型号、分组里没有渠道、站上还没定价、上游没有能用的账号。
+// 内容审核、没给参考图、尺寸超限这些换型号也没用，换了只是让客户多等、参考图多传一遍。
+const MODEL_UNAVAILABLE_PATTERN = /model_not_found|无可用渠道|no available (?:channel|compatible account)|倍率或价格未配置|price not configured|ratio or price not set|\bmodel\b[^.。]{0,80}does not exist/i
+const INSUFFICIENT_BALANCE_PATTERN = /额度不足|预扣费额度失败/
+
 class GenerateError extends Error {
-  constructor(message, retryable = false, upstream = false, unexplained = false) {
+  constructor(message, options = {}) {
     super(message)
-    this.retryable = retryable
-    // 中转明确回了错误（不是连不上、超时）：自动挑的默认模型这样失败时，按顺序换下一个再试。
-    this.upstream = upstream
+    // 换一把 Key 可能就过（见 KEY_SWITCH_STATUSES）。
+    this.switchKey = options.switchKey === true
+    // 这个型号现在用不了：自动挑的默认模型这样失败时，按顺序换下一个再试。
+    this.switchModel = options.switchModel === true
     // 中转回了错误却没说原因：报错时换成一句人话，不把状态码或错误类别名交给 AI 转述。
-    this.unexplained = unexplained
+    this.unexplained = options.unexplained === true
+    this.exitCode = options.exitCode ?? 1
   }
+}
+
+/**
+ * 中转回错以后下一步怎么走（与画图工具一致，测试钉住）：余额不足立刻停，不换 Key、不换型号；
+ * 型号用不了才换型号；401、429、503 和余额以外的 403 才换 Key；其余直接交回去。
+ */
+export function classifyRelayFailure(status, code, message) {
+  const text = typeof message === 'string' ? message : ''
+  if (code === 'insufficient_user_quota' || INSUFFICIENT_BALANCE_PATTERN.test(text)) {
+    return { insufficientBalance: true, switchKey: false, switchModel: false }
+  }
+  return {
+    insufficientBalance: false,
+    switchKey: KEY_SWITCH_STATUSES.has(status),
+    switchModel: status === 404 || code === 'model_not_found' || MODEL_UNAVAILABLE_PATTERN.test(text),
+  }
+}
+
+function moneyText(match) {
+  if (!match || !match[1]) return ''
+  const symbol = match[1] === '＄' ? '$' : match[1] === '￥' ? '¥' : match[1]
+  return `${symbol}${Number(match[2]).toFixed(2)}`
+}
+
+/**
+ * 余额不足时给 AI 和客户的那句话（与画图工具一致，测试钉住）。金额从中转的原话里取，
+ * 取不到就不写金额；不带货币符号的数字可能是站上的额度单位，不当钱写出来。
+ */
+export function insufficientBalanceMessage(text) {
+  const said = typeof text === 'string' ? text : ''
+  const needed = moneyText(/需要预扣费额度[:：]\s*([＄$￥¥])?\s*(\d+(?:\.\d+)?)/.exec(said))
+  const remaining = moneyText(/剩余额度[:：]\s*([＄$￥¥])?\s*(-?\d+(?:\.\d+)?)/.exec(said))
+  const amounts = needed && remaining ? `（需要 ${needed}，剩余 ${remaining}）` : remaining ? `（剩余 ${remaining}）` : ''
+  return `当前账号余额不足，无法完成这张图${amounts}。请在管理工具中充值后再试。`
 }
 
 // new-api 拿不到上游的原因时，拿错误类别名充当原因（relaykit/types/error.go 的 ToOpenAIError：
@@ -358,11 +408,14 @@ async function readResponseLimited(response) {
 }
 
 // 超时管到读完响应体为止：只管到响应头的话，上游慢慢吐数据能拖过 300 秒。
-async function send(url, init, timeoutMessage) {
+// 连不上分两种说：回复头还没来就断（多半是沙箱不让联网），退出码 3；回复读到一半断了，图可能已经画了、钱可能已经扣了。
+async function send(url, init, timeoutMessage, phase = 'request') {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
+  let answered = false
   try {
     const response = await fetch(url, { ...init, signal: controller.signal })
+    answered = true
     if (response.status >= 300 && response.status < 400) {
       await response.body?.cancel().catch(() => undefined)
       throw new GenerateError('上游返回了重定向，已拒绝')
@@ -371,7 +424,9 @@ async function send(url, init, timeoutMessage) {
   } catch (error) {
     if (error instanceof GenerateError) throw error
     if (error && error.name === 'AbortError') throw new GenerateError(timeoutMessage)
-    throw new GenerateError(error instanceof Error ? error.message : '请求失败')
+    if (phase === 'download') throw new GenerateError(DOWNLOAD_FAILURE_MESSAGE)
+    if (answered) throw new GenerateError(INTERRUPTED_RESPONSE_MESSAGE)
+    throw new GenerateError(NETWORK_FAILURE_MESSAGE, { exitCode: NETWORK_EXIT_CODE })
   } finally {
     clearTimeout(timer)
   }
@@ -397,11 +452,13 @@ function upstreamFailure(result) {
   }
   // xAI 这类上游把原因直接写成字符串 error，也算说了原因。
   const message = typeof payload?.error === 'string' ? payload.error : payload?.error?.message || payload?.message
-  const retryable = [401, 403, 429, 503].includes(result.status)
+  const code = typeof payload?.error?.code === 'string' ? payload.error.code : typeof payload?.code === 'string' ? payload.code : ''
+  const next = classifyRelayFailure(result.status, code, message)
+  if (next.insufficientBalance) return new GenerateError(insufficientBalanceMessage(message), { insufficientBalance: true })
   if (typeof message !== 'string' || isUnexplainedUpstreamMessage(message)) {
-    return new GenerateError(`图片服务没说原因（HTTP ${result.status}）`, retryable, true, true)
+    return new GenerateError(`图片服务没说原因（HTTP ${result.status}）`, { ...next, unexplained: true })
   }
-  return new GenerateError(redactUpstream(message), retryable, true)
+  return new GenerateError(redactUpstream(message), next)
 }
 
 function extractImagePayload(payload) {
@@ -439,7 +496,7 @@ async function downloadImage(url) {
     throw new GenerateError('上游返回了无效图片地址')
   }
   if (parsed.protocol !== 'https:') throw new GenerateError('图片地址必须是 https')
-  const result = await send(parsed.href, { method: 'GET', redirect: 'follow' }, '下载图片超时')
+  const result = await send(parsed.href, { method: 'GET', redirect: 'follow' }, '下载图片超时', 'download')
   if (!result.ok) throw new GenerateError(`下载图片失败：HTTP ${result.status}`)
   return result.bytes
 }
@@ -583,18 +640,18 @@ async function main() {
       } catch (error) {
         lastError = error instanceof Error ? error : new GenerateError('生成失败')
         lastModel = model
-        const retryable = error instanceof GenerateError && error.retryable
-        if (!retryable || index === keys.length - 1) break
+        const switchKey = error instanceof GenerateError && error.switchKey
+        if (!switchKey || index === keys.length - 1) break
         process.stderr.write('Codex Key 未能出图，已改用生图分组 Key。\n')
       }
     }
-    if (bytes || !(lastError instanceof GenerateError) || !lastError.upstream) break
+    if (bytes || !(lastError instanceof GenerateError) || !lastError.switchModel) break
   }
   if (!bytes && lastError instanceof GenerateError && lastError.unexplained) {
-    fail(unexplainedFailureMessage(lastModel, family, images.length > 0))
+    throw new GenerateError(unexplainedFailureMessage(lastModel, family, images.length > 0))
   }
-  if (!bytes) fail(lastError ? lastError.message : '生成失败')
-  if (usedModel !== requested) process.stderr.write(`${requested} 没能出图，已改用 ${usedModel}。\n`)
+  if (!bytes) throw lastError ?? new GenerateError('生成失败')
+  if (usedModel !== requested) process.stderr.write(`${requested} 目前无法使用，已改用 ${usedModel}。\n`)
 
   const finalPath = outputPathFor(options.out, bytes)
   await writeFile(finalPath, bytes)
@@ -605,6 +662,6 @@ async function main() {
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : '生成失败'}\n`)
-    process.exitCode = 1
+    process.exitCode = error instanceof GenerateError ? error.exitCode : 1
   })
 }

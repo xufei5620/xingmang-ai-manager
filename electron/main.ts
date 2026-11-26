@@ -163,10 +163,11 @@ import { removeMacLoginItem, removeMacManagedTools, resolveMacAppBundlePath, run
 import { clearLoginAndChatRecords, clearUpdaterCache, removeCliHooksRememberingRestore, resolveUpdaterCacheDirectory } from './uninstall-cleanup'
 import {
   installXingmangAiSkillFiles,
+  resolveXingmangAiImageMcpSkillDirectory,
   resolveXingmangAiBundledSkillRoot,
   XINGMANG_IMAGE_MCP_NO_NODE_WARNING,
 } from './xingmang-ai-skill'
-import { buildXingmangImageMcpInvocation } from './xingmang-ai-mcp'
+import { buildXingmangImageMcpInvocation, resolveXingmangImageNodeExecutable } from './xingmang-ai-mcp'
 import { resolveClaudeStatusLineScriptPath } from './claude-status-line'
 import { cliHookEventsDirectory, resolveCliHookScriptPath } from './cli-hooks'
 import { resolveBundledCodexModelCatalogPath } from './codex-model-catalog'
@@ -2476,12 +2477,39 @@ if (!hasSingleInstanceLock) {
       packaged: app.isPackaged,
       resourcesPath: process.resourcesPath,
     })
+    // 登记画图工具（星芒画图 MCP）：登录同步写好配置以后走一次，开机装完技能文件以后也走一次。
+    // Node 先找电脑上自己装的，没有再用 Codex 桌面端自带的那份（画图优化需求 A1）。
+    async function syncXingmangImageMcp(input: { skillDirectory: string; officialCodex: boolean }): Promise<string[]> {
+      const node = await resolveXingmangImageNodeExecutable({
+        userHome: os.homedir(),
+        findSystemNode: () => findExecutable('node', { env: process.env }),
+        isExecutableFile: async (filePath) => Boolean(await findExecutable(filePath, { env: process.env })),
+      })
+      if (!node) return [XINGMANG_IMAGE_MCP_NO_NODE_WARNING]
+      runtimeLog.log('info', 'account', 'xingmang-ai-skill.image-mcp.node', '画图工具的运行环境已找到', { source: node.source })
+      const invocation = buildXingmangImageMcpInvocation(node.executable, input.skillDirectory)
+      // 改的是 Codex、Grok 的 config.toml 和 Claude 的 settings.json、.claude.json，和保存配置排同一队（#1061 第 1 条）。
+      const register = async () => syncXingmangImageMcpConfigs(rootedOptions.system.providerRoots, invocation, {
+        codex: !input.officialCodex,
+      }).warnings
+      return systemService.serializeToolConfigWrite ? systemService.serializeToolConfigWrite(register) : register()
+    }
     void installXingmangAiSkillFiles(bundledXingmangAiSkillRoot, os.homedir(), {
       officialCodex: (systemService.readStoredConfig().officialProviders ?? []).includes('codex'),
       serializeConfigWrite: systemService.serializeToolConfigWrite,
-    }).then((result) => {
+    }).then(async (result) => {
       for (const warning of result.warnings) {
         runtimeLog.log('warn', 'account', 'xingmang-ai-skill.install', warning)
+      }
+      // 已经登录过的电脑开机时补登记：登录以后才装的 Codex，不重新登录也有画图工具。登记过的、内容一样的不重写。
+      const skillDirectory = await resolveXingmangAiImageMcpSkillDirectory(os.homedir())
+      if (!skillDirectory) return
+      const warnings = await syncXingmangImageMcp({
+        skillDirectory,
+        officialCodex: (systemService.readStoredConfig().officialProviders ?? []).includes('codex'),
+      })
+      for (const warning of warnings) {
+        runtimeLog.log('warn', 'account', 'xingmang-ai-skill.image-mcp', `images 工具未登记：${warning}`)
       }
     }).catch((error) => {
       runtimeLog.log(
@@ -2908,16 +2936,7 @@ if (!hasSingleInstanceLock) {
       xingmangAiSkill: {
         bundledRoot: bundledXingmangAiSkillRoot,
         userHome: os.homedir(),
-        syncImageMcp: async (input) => {
-          const nodeExecutable = await findExecutable('node', { env: process.env })
-          if (!nodeExecutable) return [XINGMANG_IMAGE_MCP_NO_NODE_WARNING]
-          const invocation = buildXingmangImageMcpInvocation(nodeExecutable, input.skillDirectory)
-          // 改的是 Codex、Grok 的 config.toml 和 Claude 的 settings.json、.claude.json，和保存配置排同一队（#1061 第 1 条）。
-          const register = async () => syncXingmangImageMcpConfigs(rootedOptions.system.providerRoots, invocation, {
-            codex: !input.officialCodex,
-          }).warnings
-          return systemService.serializeToolConfigWrite ? systemService.serializeToolConfigWrite(register) : register()
-        },
+        syncImageMcp: syncXingmangImageMcp,
       },
       ...(manualUninstallVisualFixtureEnabled
         ? {

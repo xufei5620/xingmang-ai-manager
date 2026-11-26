@@ -40,6 +40,7 @@ import {
   moveLegacyXingmangAiSkillCodexEntries,
   resolveXingmangAiBundledSkillRoot,
   resolveXingmangAiCodexSkillPath,
+  resolveXingmangAiImageMcpSkillDirectory,
   resolveXingmangAiSkillDirectories,
   selectImageSkillGroup,
   selectXingmangAiImageModel,
@@ -466,6 +467,30 @@ describe('xingmang-ai-skill', () => {
     expect(syncImageMcp).toHaveBeenCalledTimes(2)
     expect(result.directoryWarnings).toBeUndefined()
     expect(result.imageMcpWarnings).toBeUndefined()
+  })
+
+  it('installs the preview helper the image tool loads next to the tool script', async () => {
+    const userHome = await temporaryHome()
+    await installXingmangAiSkillFiles(bundledRoot, userHome)
+    const scripts = path.join(resolveXingmangAiSkillDirectories(userHome)[0], 'scripts')
+    expect(await readFile(path.join(scripts, 'image-preview.mjs'), 'utf8')).toContain('export async function buildImagePreview')
+    expect(await readFile(path.join(scripts, 'mcp-server.mjs'), 'utf8')).toContain("new URL('./image-preview.mjs', import.meta.url)")
+  })
+
+  it('finds the skill directory to register the image tool from at startup only once an account key is in it', async () => {
+    const userHome = await temporaryHome()
+    await installXingmangAiSkillFiles(bundledRoot, userHome)
+    // Installed but never logged in: nothing to register yet.
+    await expect(resolveXingmangAiImageMcpSkillDirectory(userHome)).resolves.toBeNull()
+
+    const { accountService } = loggedInAccount()
+    await syncXingmangAiSkill({ accountService, bundledRoot, userHome })
+    const shared = resolveXingmangAiSkillDirectories(userHome)[0]
+    await expect(resolveXingmangAiImageMcpSkillDirectory(userHome)).resolves.toBe(shared)
+
+    // Signed out: config.json keeps the address but no key.
+    await clearXingmangAiSkillSecrets(userHome)
+    await expect(resolveXingmangAiImageMcpSkillDirectory(userHome)).resolves.toBeNull()
   })
 
   it('does not retry the image tool registration when the runtime is missing', async () => {

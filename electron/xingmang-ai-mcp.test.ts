@@ -13,9 +13,11 @@ import {
   applyXingmangImageMcpToToml,
   applyXingmangImagePermissionToClaudeSettings,
   buildXingmangImageMcpInvocation,
+  codexBundledNodeCandidates,
   isManagedXingmangImageMcpEntry,
   removeXingmangImageMcpFromJson,
   repointXingmangImageMcpInToml,
+  resolveXingmangImageNodeExecutable,
 } from './xingmang-ai-mcp'
 
 const temporaryHomes: string[] = []
@@ -388,5 +390,47 @@ describe('syncXingmangImageMcpConfigs', () => {
     expect(result.changed).toEqual(['grok'])
     expect(result.warnings).toHaveLength(1)
     expect(result.warnings[0]).toMatch(/^codex：现有 Codex config.toml 无法解析/)
+  })
+})
+
+describe('image tool runtime', () => {
+  it('looks for the Node that Codex desktop ships in its runtime cache on each platform', () => {
+    expect(codexBundledNodeCandidates('/Users/me', 'darwin')).toEqual([
+      '/Users/me/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node',
+    ])
+    expect(codexBundledNodeCandidates('C:\\Users\\me', 'win32')).toEqual([
+      'C:\\Users\\me\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\node\\bin\\node.exe',
+      'C:\\Users\\me\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\node\\node.exe',
+    ])
+  })
+
+  it('prefers the computer\'s own Node and falls back to the Codex desktop copy only when it exists', async () => {
+    const userHome = '/Users/me'
+    const codexNode = codexBundledNodeCandidates(userHome, 'darwin')[0]
+    const checked: string[] = []
+    const isExecutableFile = async (filePath: string) => {
+      checked.push(filePath)
+      return filePath === codexNode
+    }
+    await expect(resolveXingmangImageNodeExecutable({
+      userHome, platform: 'darwin', findSystemNode: async () => '/usr/local/bin/node', isExecutableFile,
+    })).resolves.toEqual({ executable: '/usr/local/bin/node', source: 'system' })
+    expect(checked).toEqual([])
+
+    await expect(resolveXingmangImageNodeExecutable({
+      userHome, platform: 'darwin', findSystemNode: async () => null, isExecutableFile,
+    })).resolves.toEqual({ executable: codexNode, source: 'codex' })
+
+    await expect(resolveXingmangImageNodeExecutable({
+      userHome, platform: 'darwin', findSystemNode: async () => null, isExecutableFile: async () => false,
+    })).resolves.toBeNull()
+  })
+
+  it('never registers the desktop app itself as the image tool runtime', async () => {
+    // The packaged app keeps the RunAsNode fuse off; pointing the tool at it would fail on every customer machine.
+    const builder = fs.readFileSync(path.resolve(__dirname, '..', 'electron-builder.config.cjs'), 'utf8')
+    expect(builder).toMatch(/runAsNode: false/)
+    const source = fs.readFileSync(path.resolve(__dirname, 'xingmang-ai-mcp.ts'), 'utf8')
+    expect(source).not.toMatch(/ELECTRON_RUN_AS_NODE|process\.execPath/)
   })
 })
