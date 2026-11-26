@@ -306,10 +306,10 @@ describe('tutorial topics', () => {
     const plugins = tutorialTopics.find((entry) => entry.id === 'plugins')
     const text = plugins?.steps.flatMap((step) => [step.detail, ...(step.extra ?? []).map((item) => item.detail)]).join('\n') ?? ''
     expect(text).toContain('「Claude 官方」')
-    expect(text).toContain('只能装进 Claude')
+    expect(text).toContain('仅可安装到 Claude')
     expect(text).toContain('添加官方市场')
     expect(text).toContain('「GPT 官方」')
-    expect(text).toContain('只能装进 GPT')
+    expect(text).toContain('仅可安装到 GPT')
     expect(text).toContain('Grok 没有插件市场')
   })
 
