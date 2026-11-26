@@ -1,1 +1,0 @@
-- 2026-11-22 · v4.0 · 自由（只改流程，不改界面）· 界面改动记录改成一个 PR 一个文件：写在 `ui-spec/changes/` 下，发版时 `npm run changelog:collect` 按日期汇总到本文件最上面，`npm run changelog:check` 拦直接往本文件加行的 PR · 并行的界面 PR 都往本文件最上面加行，合进去一个其余的就全冲突、自动合并卡住（#2091、#2097） · 无（`23-governance.md` §2、§3 跟着改）
