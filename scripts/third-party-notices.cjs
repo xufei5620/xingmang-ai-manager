@@ -317,6 +317,7 @@ function buildBundledExtras(projectRoot) {
   const emsdkSource = grabcut.sourceArchives?.find((archive) => typeof archive?.name === 'string' && archive.name.startsWith('emsdk-'))?.url
   if (!grabcut.opencvVersion || !opencvSource || !emsdkSource) throw new Error('画布抠图运行时的构建记录里缺版本或源码地址')
   const codexDirectory = path.join(projectRoot, 'bundled-catalog', 'codex-models')
+  const antigravityChineseDirectory = path.join(projectRoot, 'bundled-catalog', 'antigravity-zh-CN')
   return [
     {
       name: 'Electron',
@@ -369,6 +370,19 @@ function buildBundledExtras(projectRoot) {
         { name: 'LICENSE', text: readRequiredText(path.join(codexDirectory, 'LICENSE'), 'Codex 型号名单许可') },
       ],
       notes: ['The model list written to Codex is copied unmodified from openai/codex.'],
+    },
+    {
+      name: 'Antigravity Usage Monitor simplified Chinese word list',
+      version: 'see bundled-catalog/antigravity-zh-CN',
+      license: 'GPL-3.0',
+      source: 'https://github.com/yuhuan-dev/antigravity-usage-monitor',
+      usedIn: ['main process'],
+      texts: [{ name: 'LICENSE', text: readRequiredText(path.join(antigravityChineseDirectory, 'LICENSE'), 'Antigravity 中文词表许可') }],
+      notes: [
+        'zh-CN.json is copied unmodified from the upstream release tag and read as data only;',
+        'the code that applies it to the Antigravity window is not derived from the plugin.',
+        'The JSON file is its own source form; the tag, commit and sha256 are in the README next to it.',
+      ],
     },
     {
       name: 'Nsis7z plug-in (based on 7-Zip by Igor Pavlov)',

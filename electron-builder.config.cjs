@@ -314,6 +314,9 @@ module.exports = {
     // 官方 Codex 型号名单（原样拷自 openai/codex，Apache-2.0，LICENSE / NOTICE 同目录）。
     // 主进程按账号挑出能用的型号写给 Codex，见 electron/codex-model-catalog.ts。
     'bundled-catalog/codex-models/**/*',
+    // Antigravity 桌面端的中文词表（原样拷自 yuhuan-dev/antigravity-usage-monitor，GPL-3.0，LICENSE 同目录）。
+    // 主进程只当数据读，见 electron/antigravity-desktop-chinese.ts。
+    'bundled-catalog/antigravity-zh-CN/**/*',
     'package.json',
   ],
   extraResources: [

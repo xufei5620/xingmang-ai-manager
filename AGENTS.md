@@ -22,7 +22,7 @@
 
 **商业定位**：不是通用工具。CLI 的 base URL 不让用户填，由登录的账号站点决定（`relay-sites.ts`）：星芒账号是 `xm.solov.cc`（new-api，2026-08-10 起中转与账号后端同一实例），历史账号是 `api.solov.cc`（sub2api，**仍在服役，没有退役**）。每个站点两条线路：线路1 是 CF 入口，线路2 是洛杉矶直连（`xm-direct` / `api-direct`），设置值和日志名仍叫 `primary` / `direct`；选「自动」时星芒账号先走线路2，历史账号先走线路1。主流程是登录星芒账号，登录后自动签发密钥写进工具（也能手动填密钥）。**它的价值 = 降低客户接入门槛、减少客服成本。这条链路断了，用户就退款。**
 
-**管理对象**：Claude Code（`@anthropic-ai/claude-code`）、Codex CLI（`@openai/codex`）、Grok CLI（`@xai-official/grok`），外加 Codex 桌面端；另有三个外部桌面客户端 Claude Desktop、WorkBuddy、OpenCode（`external-client-*`，只管安装、配置和打开，不是 `ProviderId`）。谷歌的 Antigravity 命令行（agy）和桌面端（`antigravity-*`，0.2.25 起，首页两张卡）也不是 `ProviderId`：登录时那一轮不替它签密钥，只在客户点它的安装、打开时按需签 Gemini 分组那一把（跟下线的 Gemini CLI 同一把）；已经写过的那份在换了账号、换了线路以后由主进程跟着改（`antigravity-service.ts` 的 `follow`：是当前账号那把只换地址，不是的才按自动签发那一档取一把）；设置是四个 `AGY_LLM_GATEWAY_*` 环境变量，Windows 写进当前用户的环境变量，Mac 写进产品目录里只有本人能读的文件、由登录 shell 的启动文件读，星芒打开它时另外直接交给它；Linux 先不做。Gemini CLI（`@google/gemini-cli`）2026-10-14 下线：界面不显示、不再装、不再改它的配置，老客户电脑上的不卸不删；代码里它仍是 `ProviderId`，挂在 `catalog.ts` 的退役名单 `retiredProviderIds` 上，「替每个工具做点什么」的地方一律走 `activeProviderIds`。
+**管理对象**：Claude Code（`@anthropic-ai/claude-code`）、Codex CLI（`@openai/codex`）、Grok CLI（`@xai-official/grok`），外加 Codex 桌面端；另有三个外部桌面客户端 Claude Desktop、WorkBuddy、OpenCode（`external-client-*`，只管安装、配置和打开，不是 `ProviderId`）。谷歌的 Antigravity 命令行（agy）和桌面端（`antigravity-*`，0.2.25 起，首页两张卡）也不是 `ProviderId`：登录时那一轮不替它签密钥，只在客户点它的安装、打开时按需签 Gemini 分组那一把（跟下线的 Gemini CLI 同一把）；已经写过的那份在换了账号、换了线路以后由主进程跟着改（`antigravity-service.ts` 的 `follow`：是当前账号那把只换地址，不是的才按自动签发那一档取一把）；设置是四个 `AGY_LLM_GATEWAY_*` 环境变量，Windows 写进当前用户的环境变量，Mac 写进产品目录里只有本人能读的文件、由登录 shell 的启动文件读，星芒打开它时另外直接交给它；Linux 先不做。桌面端没有中文界面：Mac 上星芒自己起它时带一个只在本机的调试口，核对过口上是它再把随包词表的换字脚本送进窗口（`antigravity-desktop-cdp.ts`，yoyo 2026-11-26 亲手同意开口；Windows 那一半还没接）。Gemini CLI（`@google/gemini-cli`）2026-10-14 下线：界面不显示、不再装、不再改它的配置，老客户电脑上的不卸不删；代码里它仍是 `ProviderId`，挂在 `catalog.ts` 的退役名单 `retiredProviderIds` 上，「替每个工具做点什么」的地方一律走 `activeProviderIds`。
 
 **内置的几块能力**：
 - **星芒账号**（2026-08）：对接 `xm.solov.cc`（第三方开源 QuantumNous/new-api 的生产实例）——注册/登录/找回密码/余额/用量/Key 管理/充值，登录后自动签发 CLI Key 并写进 CLI 配置。历史账号站 `api.solov.cc` 走 sub2api（`sub2api-*`），两个账号域由 `realm-account*` 隔开。
@@ -87,7 +87,7 @@ XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium npm test
 XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium npm run test:v2
 ```
 
-别的容器路径可能不同，到 `$PLAYWRIGHT_BROWSERS_PATH` 下找 `chromium` 那份。`npm test` 和 `test:v2` 里起浏览器的套件都认这个变量（`e2e/harness.mjs` 的 `launchFixtureBrowser`、各个 `browser-check.mjs` / `app-check.mjs`，以及 vitest 里的 `electron/codex-desktop-cdp.browser.test.ts`）；CI 不设它，用 Playwright 自己装的那份。
+别的容器路径可能不同，到 `$PLAYWRIGHT_BROWSERS_PATH` 下找 `chromium` 那份。`npm test` 和 `test:v2` 里起浏览器的套件都认这个变量（`e2e/harness.mjs` 的 `launchFixtureBrowser`、各个 `browser-check.mjs` / `app-check.mjs`，以及 vitest 里的 `electron/codex-desktop-cdp.browser.test.ts`、`electron/antigravity-desktop-chinese.browser.test.ts`）；CI 不设它，用 Playwright 自己装的那份。
 
 ---
 
