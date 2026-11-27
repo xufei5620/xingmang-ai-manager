@@ -14,6 +14,7 @@ import {
   libraryKindCount, libraryKindNames, libraryKinds, libraryMatchedAssetIds, libraryPlayerRatio, libraryThumbnailUrl, libraryTitle, type LibraryMeasured, type LibraryOrigin, type LibraryOrigins,
 } from './library'
 import { AddToCanvasMenu, type CanvasIntakeProject } from './canvas-intake'
+import { ImageUpscaleMenu, type ImageUpscaleControl } from './image-upscale'
 import { useCreateLibrary, type CreateLibrary, type CreateLibraryBridge } from './useCreateLibrary'
 
 // 主窗口的作品库（融合第 3 步）：右边那一块、点开一件、从别处叫出来的选择框。字照方案第 2.9 节，
@@ -106,6 +107,8 @@ export interface CreateLibraryActions {
   addClip: (filmId: string | null, source: VideoStudioClipSource, made: ChatVideoMade) => void
   /** 把这张图抄一份进这个画布项目的素材库（融合第 5 步）；projectId 是 null 就新建一个，名字取 description 开头的几个字。 */
   addToCanvas: (projectId: string | null, assetId: string, description: string) => void
+  /** 「变清晰」：放大 2 倍或 4 倍另存一张，原图不动；跟对话里那张图下面的是同一份。 */
+  upscale: ImageUpscaleControl
 }
 
 export interface CreateLibraryPaneProps {
@@ -180,6 +183,7 @@ export function LibraryDetail({ entry, origin, film, originLink = true, videoRea
       {asset && <Button icon={Brush} onClick={() => { onClose(); actions.reuseImage(asset) }} testId="create-library-reuse">基于此图继续编辑</Button>}
       {asset && videoReady && <Button icon={Clapperboard} onClick={() => { onClose(); actions.animateImage(asset, prompt) }} testId="create-library-animate">用此图生成视频</Button>}
       {canvasProjects && <AddToCanvasMenu projects={canvasProjects} onPick={(projectId) => actions.addToCanvas(projectId, entry.assetId, prompt)} testId="create-library-canvas" />}
+      <ImageUpscaleMenu assetId={entry.assetId} prompt={prompt} control={actions.upscale} testId="create-library-upscale" />
       <Button icon={Download} onClick={() => actions.saveImage(entry.assetId)} testId="create-library-save-image">另存图片</Button>
     </>
   return <Dialog open title={title} subtitle={libraryDetailLine(entry, origin, recorded?.width && recorded.height ? recorded : measured)} width={640} onClose={onClose} footer={footer} testId="create-library-detail">

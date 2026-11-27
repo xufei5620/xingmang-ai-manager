@@ -676,6 +676,16 @@ export interface AiChatImageInput extends AiImageGenerateInput {
   sourceAssetIds?: string[]
 }
 
+/**
+ * 「变清晰」（本机放大）：放大哪一张、放大几倍。prompt 是这张图当初的描述，渲染层有就带上，
+ * 存进作品库的清晰版按它显示标题、按它搜得到；没有就不带。
+ */
+export interface AiChatUpscaleInput {
+  assetId: string
+  scale: 2 | 4
+  prompt?: string
+}
+
 export interface AiChatAsset {
   assetId: string
   localUrl: string
@@ -1696,6 +1706,8 @@ export interface XingmangInvokeContract {
   copyAiChatAsset: IpcInvokeDefinition<'chat:copy-asset', [assetId: string], void>
   saveAiChatAsset: IpcInvokeDefinition<'chat:save-asset', [assetId: string], { saved: boolean }>
   showAiChatAssetMenu: IpcInvokeDefinition<'chat:asset-menu', [assetId: string], void>
+  /** 在本机把这张图放大变清晰，另存进作品库（AI 作品文件夹），原图不动；交回新存的那一张。 */
+  upscaleAiChatAsset: IpcInvokeDefinition<'chat:upscale-asset', [input: AiChatUpscaleInput], AiChatAsset>
   pickAiChatImages: IpcInvokeDefinition<'chat:pick-images', [remaining: number], AiChatAsset[]>
   /** Ctrl+V 贴图：剪贴板里的截图，没有截图时是在文件夹里复制的图片文件；remaining 是这条消息还能加几张。 */
   pasteAiChatImage: IpcInvokeDefinition<'chat:paste-image', [remaining: number], AiChatAsset[]>
@@ -2120,6 +2132,7 @@ export const ipcInvokeChannels = {
   copyAiChatAsset: 'chat:copy-asset',
   saveAiChatAsset: 'chat:save-asset',
   showAiChatAssetMenu: 'chat:asset-menu',
+  upscaleAiChatAsset: 'chat:upscale-asset',
   pickAiChatImages: 'chat:pick-images',
   pasteAiChatImage: 'chat:paste-image',
   pickAiChatTextFiles: 'chat:pick-text-files',

@@ -5,7 +5,9 @@ import { loadAccountGroupHints, markRecommendedChatGroup } from '../../managed-c
 import { markImageChatGroups } from '../../ai-chat-protocol'
 import { parseAiChatHistoryScope, parseAiChatHistoryWrite } from '../../ai-chat-history-store'
 import { requiredString } from '../parsers/common'
-import { parseAiChatImageInput, parseAiChatStartInput } from '../parsers/ai-chat'
+import { parseAiChatImageInput, parseAiChatStartInput, parseAiChatUpscaleInput } from '../parsers/ai-chat'
+import { imageUpscaleMessages } from '../../image-upscale-service'
+import type { AiStoredAsset } from '../../ai-asset-store'
 import type { IpcHandlerContext } from './context'
 
 export function registerAiChatHandlers(ctx: IpcHandlerContext): void {
@@ -93,6 +95,29 @@ export function registerAiChatHandlers(ctx: IpcHandlerContext): void {
         if (currentChatUserId() !== userId) throw new Error('账号已切换，请重新打开图片菜单')
       },
     )
+  })
+  // 「变清晰」：按编号读出这个账号的图（对话、作品库、画布项目文件夹里的都认），在本机后台线程里放大，
+  // 清晰版另存进 AI 作品文件夹，原图一个字节不动。渲染层只给编号、倍数和描述，路径和字节都不出主进程。
+  registerTrustedHandler('chat:upscale-asset', async (_event, input: unknown) => {
+    if (!options.aiAssets || !options.imageUpscale) throw new Error('图片变清晰服务未就绪')
+    const userId = currentChatUserId()
+    const { assetId, scale, prompt } = parseAiChatUpscaleInput(input)
+    const holder = options.accountAssets ? (await options.accountAssets.holderOf(userId, 'image', assetId)).images : options.aiAssets
+    const source = await holder.readOwned(userId, assetId)
+    const upscaled = await options.imageUpscale.upscale({ bytes: source.bytes, width: source.asset.width, height: source.asset.height, scale })
+    let stored: AiStoredAsset
+    try {
+      stored = await options.aiAssets.storeLocalBytes(userId, upscaled.png)
+    } catch (error) {
+      throw new Error(imageUpscaleMessages.saveFailed, { cause: error })
+    }
+    // 描述只影响作品库里的标题和搜索；清晰版已经存下了，记不上也不该让这次算失败。
+    if (prompt && options.mediaAssets?.setSource) {
+      await options.mediaAssets.setSource(userId, stored.assetId, 'generated', prompt).catch((error: unknown) => options.runtimeLog.log(
+        'warn', 'ai-chat', 'image-upscale.source.persist-failed', '清晰版已保存，但描述没记上', { reason: error instanceof Error ? error.message : String(error) },
+      ))
+    }
+    return stored
   })
   // The picker and the clipboard are read here, never handed in by the
   // renderer, so a compromised page cannot make the main process read an

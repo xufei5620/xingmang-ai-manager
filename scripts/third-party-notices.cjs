@@ -317,6 +317,17 @@ function buildBundledExtras(projectRoot) {
   const emsdkSource = grabcut.sourceArchives?.find((archive) => typeof archive?.name === 'string' && archive.name.startsWith('emsdk-'))?.url
   if (!grabcut.opencvVersion || !opencvSource || !emsdkSource) throw new Error('画布抠图运行时的构建记录里缺版本或源码地址')
   const codexDirectory = path.join(projectRoot, 'bundled-catalog', 'codex-models')
+  const upscaleDirectory = path.join(projectRoot, 'bundled-catalog', 'image-upscale')
+  const upscaleManifest = readJsonFile(path.join(upscaleDirectory, 'manifest.json'), '本机放大模型的来源记录')
+  const onnxruntimeLicense = readRequiredText(path.join(upscaleDirectory, 'LICENSE.onnxruntime'), 'onnxruntime 许可')
+  const onnxruntimeNotices = readRequiredText(path.join(upscaleDirectory, 'ThirdPartyNotices.onnxruntime.txt'), 'onnxruntime 第三方组件许可')
+  const onnxruntime = ['onnxruntime-web', 'onnxruntime-common'].map((name) => {
+    const packageJson = readJsonFile(path.join(projectRoot, 'node_modules', name, 'package.json'), `${name} 的 package.json`)
+    if (packageJson.version !== upscaleManifest.runtime?.version) {
+      throw new Error(`${name} ${packageJson.version} 与 bundled-catalog/image-upscale 里许可文件的版本 ${upscaleManifest.runtime?.version} 不一致：升级运行库要一起换许可文件`)
+    }
+    return { name, version: packageJson.version }
+  })
   return [
     {
       name: 'Electron',
@@ -369,6 +380,34 @@ function buildBundledExtras(projectRoot) {
         { name: 'LICENSE', text: readRequiredText(path.join(codexDirectory, 'LICENSE'), 'Codex 型号名单许可') },
       ],
       notes: ['The model list written to Codex is copied unmodified from openai/codex.'],
+    },
+    // 名字和版本与 app.asar 里 dist-image-upscale/node_modules 下的 package.json 一致，出包核对
+    // （assertPackagedThirdPartyNotices）按「名字 版本」找得到它们。
+    ...onnxruntime.map(({ name, version }) => ({
+      name,
+      version,
+      license: 'MIT',
+      source: `https://github.com/microsoft/onnxruntime/tree/v${version}`,
+      usedIn: ['image upscaling'],
+      texts: name === 'onnxruntime-web'
+        ? [{ name: 'LICENSE', text: onnxruntimeLicense }, { name: 'ThirdPartyNotices.txt', text: onnxruntimeNotices }]
+        : [{ name: 'LICENSE', text: onnxruntimeLicense }],
+      notes: name === 'onnxruntime-web'
+        ? [
+            'Distributed unmodified: dist/ort.node.min.js and the WebAssembly runtime (ort-wasm-simd-threaded.mjs, .wasm).',
+            'The npm package ships no license file; both texts below are copied from the onnxruntime wheel of the same version.',
+            `The WebAssembly runtime links some of the components listed in ThirdPartyNotices.txt (for example Eigen, MPL-2.0). Source of this exact version: https://github.com/microsoft/onnxruntime/tree/v${version}`,
+          ]
+        : ['Distributed unmodified (dist/cjs). Same license as onnxruntime-web above.'],
+    })),
+    {
+      name: 'Real-ESRGAN realesr-general-x4v3 model',
+      version: upscaleManifest.source?.release || 'unknown',
+      license: 'BSD-3-Clause',
+      source: upscaleManifest.source?.url || 'https://github.com/xinntao/Real-ESRGAN',
+      usedIn: ['image upscaling'],
+      texts: [{ name: 'LICENSE', text: readRequiredText(path.join(upscaleDirectory, 'LICENSE'), 'Real-ESRGAN 许可') }],
+      notes: ['The weights are converted to ONNX without modification (bundled-catalog/image-upscale/convert-realesr-general-x4v3.py).'],
     },
     {
       name: 'Nsis7z plug-in (based on 7-Zip by Igor Pavlov)',
@@ -545,12 +584,16 @@ function assertNonEmptyRegularFile(filePath, label) {
  * 读文件时用 listPackage 原样给的路径（只去掉开头的分隔符）：@electron/asar 按本机的
  * path.sep 拆路径，Windows 上写成正斜杠的多级路径找不到文件，只有比较时才统一成正斜杠。
  */
+// 根上的 node_modules 是生产依赖；「变清晰」的运行库由 scripts/stage-image-upscale-runtime.cjs 另外放在
+// dist-image-upscale/node_modules 下（目录名写死在这里，免得许可脚本反过来依赖打包脚本）。
+const ASAR_PACKAGE_ROOTS = ['node_modules/', 'dist-image-upscale/node_modules/']
+
 function listAsarPackages(asarModule, asarPath) {
   const found = new Set()
   for (const entry of asarModule.listPackage(asarPath)) {
     const archivePath = entry.replace(/^[\\/]+/, '')
     const normalized = toPosix(archivePath)
-    if (!normalized.endsWith('/package.json') || !normalized.startsWith('node_modules/')) continue
+    if (!normalized.endsWith('/package.json') || !ASAR_PACKAGE_ROOTS.some((root) => normalized.startsWith(root))) continue
     const directory = normalized.slice(0, -'/package.json'.length)
     if (resolvePackageDirectoryFromModuleId(`/${directory}/package.json`) !== `/${directory}`) continue
     let packageJson

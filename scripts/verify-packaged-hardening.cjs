@@ -1,7 +1,9 @@
+const { createHash } = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
 const asarModule = require('@electron/asar')
 const { EXPECTED_FUSES, assertElectronFuseHardening } = require('./electron-fuse-hardening.cjs')
+const { OUTPUT_DIRECTORY_NAME: IMAGE_UPSCALE_RUNTIME_DIRECTORY, RUNTIME_FILES: IMAGE_UPSCALE_RUNTIME_FILES } = require('./stage-image-upscale-runtime.cjs')
 const { assertPackagedThirdPartyNotices } = require('./third-party-notices.cjs')
 
 const { extractFile, statFile } = asarModule
@@ -120,6 +122,61 @@ function inspectPackagedReleaseNotes(asarPath) {
   return { version, count: notes === null ? 0 : notes.length }
 }
 
+const IMAGE_UPSCALE_MANIFEST = path.resolve(__dirname, '..', 'bundled-catalog', 'image-upscale', 'manifest.json')
+
+function readImageUpscaleManifest(manifestPath = IMAGE_UPSCALE_MANIFEST) {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  if (typeof manifest?.onnx?.file !== 'string' || !/^[0-9a-f]{64}$/.test(manifest.onnx.sha256 || '')) {
+    throw new Error('bundled-catalog/image-upscale/manifest.json 里缺模型文件名或 sha256')
+  }
+  return manifest
+}
+
+function packagedBytes(asarPath, relativePath, label) {
+  let bytes
+  try {
+    bytes = extractFile(asarPath, relativePath)
+  } catch (error) {
+    throw new Error(`打包产物缺少${label} ${relativePath}：${error instanceof Error ? error.message : String(error)}`)
+  }
+  if (bytes.byteLength === 0) throw new Error(`打包产物里的${label} ${relativePath} 是空的`)
+  return bytes
+}
+
+/**
+ * 「变清晰」要的模型和 onnxruntime 运行库都在 app.asar 里。运行库放在 dist-image-upscale 的
+ * 嵌套 node_modules 下，electron-builder 哪天改了对嵌套 node_modules 的取舍，或者 files 那两行
+ * 被删掉，编译照样过、客户第一次点「变清晰」才失败，所以出包后逐个核对。
+ */
+function inspectPackagedImageUpscale(asarPath, manifest = readImageUpscaleManifest()) {
+  const model = packagedBytes(asarPath, `bundled-catalog/image-upscale/${manifest.onnx.file}`, '本机放大模型')
+  if (createHash('sha256').update(model).digest('hex') !== manifest.onnx.sha256) {
+    throw new Error('打包产物里的本机放大模型与 bundled-catalog/image-upscale/manifest.json 记的 sha256 不一致')
+  }
+  let count = 0
+  for (const [name, entries] of Object.entries(IMAGE_UPSCALE_RUNTIME_FILES)) {
+    const root = `${IMAGE_UPSCALE_RUNTIME_DIRECTORY}/node_modules/${name}`
+    for (const entry of entries) {
+      if (typeof entry === 'string') {
+        packagedBytes(asarPath, `${root}/${entry}`, '本机放大运行库文件')
+        count += 1
+        continue
+      }
+      let directory
+      try {
+        directory = statFile(asarPath, `${root}/${entry.directory}`)
+      } catch {
+        directory = null
+      }
+      const names = Object.keys(directory?.files ?? {}).filter((file) => file.endsWith(entry.extension))
+      if (names.length === 0) throw new Error(`打包产物缺少本机放大运行库目录 ${root}/${entry.directory}`)
+      for (const file of names) packagedBytes(asarPath, `${root}/${entry.directory}/${file}`, '本机放大运行库文件')
+      count += names.length
+    }
+  }
+  return { modelBytes: model.byteLength, runtimeFiles: count }
+}
+
 /**
  * Electron falls back to its bundled welcome page whenever it cannot load the
  * application archive, and that page can create windows and spawn a browser
@@ -195,6 +252,7 @@ async function main() {
   if (path.extname(executable).toLowerCase() === '.exe') assertWindowsUpdateHandoffScript(resourcesDirectory)
   inspectPackagedLaunchBoundary(asar)
   const releaseNotes = inspectPackagedReleaseNotes(asar)
+  const imageUpscale = inspectPackagedImageUpscale(asar)
   // Windows、Linux 的 Electron 与 Chromium 许可文件由 electron-builder 留在安装目录根上，
   // 第三方许可清单在 resources 里（D97）。
   const notices = assertPackagedThirdPartyNotices({
@@ -206,7 +264,7 @@ async function main() {
 
   const fuseCount = await assertElectronFuseHardening(executable, '打包主程序')
 
-  console.log(`Electron 加固校验通过：${path.basename(executable)}，${fuseCount} 项 fuse、app.asar、无默认应用回落与普通用户 CLI 启动边界均符合要求；随包更新说明 ${releaseNotes.version}（${releaseNotes.count} 条）；第三方许可清单 ${notices.listedCount} 项`)
+  console.log(`Electron 加固校验通过：${path.basename(executable)}，${fuseCount} 项 fuse、app.asar、无默认应用回落与普通用户 CLI 启动边界均符合要求；随包更新说明 ${releaseNotes.version}（${releaseNotes.count} 条）；第三方许可清单 ${notices.listedCount} 项；本机放大模型与 ${imageUpscale.runtimeFiles} 个运行库文件`)
 }
 
 if (require.main === module) {
@@ -216,4 +274,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { EXPECTED_FUSES, SYSTEM_SERVICE_FILES, assertNoDefaultAppFallback, assertWindowsUpdateHandoffScript, inspectPackagedLaunchBoundary, inspectPackagedReleaseNotes, main, resolvePackagedExecutable }
+module.exports = { EXPECTED_FUSES, SYSTEM_SERVICE_FILES, assertNoDefaultAppFallback, assertWindowsUpdateHandoffScript, inspectPackagedImageUpscale, inspectPackagedLaunchBoundary, inspectPackagedReleaseNotes, main, readImageUpscaleManifest, resolvePackagedExecutable }

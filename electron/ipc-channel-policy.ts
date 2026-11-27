@@ -302,6 +302,8 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'chat:copy-asset': { log: 'quiet-success', account: 'scoped' },
   'chat:save-asset': { log: 'quiet-success', account: 'scoped' },
   'chat:asset-menu': { log: 'quiet-success', account: 'scoped' },
+  // 本机跑模型，一张要几十秒；成功、失败都记，客服能看到这台电脑跑得动跑不动。入参的描述不进日志（只记编号和倍数）。
+  'chat:upscale-asset': { label: '图片变清晰', log: 'normal', account: 'scoped' },
   'chat:pick-images': { label: '聊天图片选择', log: 'quiet-success', account: 'scoped' },
   'chat:paste-image': { label: '聊天截图粘贴', log: 'quiet-success', account: 'scoped' },
   'chat:pick-text-files': { label: '聊天选文字文件', log: 'quiet-success', account: 'scoped' },

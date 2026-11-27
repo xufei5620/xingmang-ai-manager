@@ -98,6 +98,7 @@ import { registerAiVideoHandlers } from './ipc/handlers/ai-video'
 import { registerDataTransferHandlers } from './ipc/handlers/data-transfer'
 import type { AccountWorksTransfer } from './data-transfer-works'
 import type { CanvasProjectImageIntake } from './canvas-project-image-intake'
+import type { ImageUpscaleService } from './image-upscale-service'
 import { registerCodexRemoteHandlers } from './ipc/handlers/codex-remote'
 import { registerCodexRemoteWeixinHandlers } from './ipc/handlers/codex-remote-weixin'
 
@@ -110,7 +111,7 @@ export type AppWindowMode = 'onboarding' | 'dashboard'
 export interface AccountAssetLookup {
   listLibrary(userId: number, query: CanvasAccountLibraryQuery): Promise<AiMediaLibraryPage>
   holderOf(userId: number, kind: 'image' | 'video', assetId: string): Promise<{
-    images: Pick<AiAssetStore, 'copy' | 'saveAs' | 'contextMenu'>
+    images: Pick<AiAssetStore, 'copy' | 'saveAs' | 'contextMenu' | 'readOwned'>
     videos: Pick<AiVideoAssetStore, 'readOwned' | 'resolveOwnedFilePath' | 'saveAs'>
   }>
 }
@@ -327,7 +328,10 @@ export interface IpcRegistrationOptions {
   videoService?: Pick<AiVideoService, 'generate' | 'resumeRequest' | 'cancel' | 'cancelSender' | 'cancelAll'>
   videoAssets?: Pick<AiVideoAssetStore, 'readOwned' | 'storeComposed' | 'resolveOwnedFilePath' | 'saveAs'>
   // 「创作 › 作品库」列当前账号做过的图片和视频（融合第 3 步）。只用它不读文件的那一个列法；改名、删除这些主窗口不碰。
-  mediaAssets?: Pick<AiMediaAssetService, 'listOwnedLibrary'>
+  // setSource 只给「变清晰」另存的那一张记上当初的描述，作品库按它显示标题。
+  mediaAssets?: Pick<AiMediaAssetService, 'listOwnedLibrary'> & Partial<Pick<AiMediaAssetService, 'setSource'>>
+  // 「变清晰」（本机放大，image-upscale-service.ts）。缺省 = 这条通道报「未就绪」。
+  imageUpscale?: ImageUpscaleService
   // 融合第 5 步：画布项目自己文件夹里生成的图和视频也算当前账号的作品。作品库把它们一起列出来；另存、复制、
   // 用播放器打开、读片段时按编号先找 AI 作品文件夹、再找各个项目文件夹，哪一处都照那一处的库自己的检查。
   // 只有读，没有往项目文件夹里写的。缺省 = 只认 AI 作品文件夹（第 3 步的样子）。

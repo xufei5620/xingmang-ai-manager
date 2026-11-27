@@ -314,6 +314,11 @@ module.exports = {
     // 官方 Codex 型号名单（原样拷自 openai/codex，Apache-2.0，LICENSE / NOTICE 同目录）。
     // 主进程按账号挑出能用的型号写给 Codex，见 electron/codex-model-catalog.ts。
     'bundled-catalog/codex-models/**/*',
+    // 「变清晰」的本机放大模型（Real-ESRGAN，BSD-3，manifest.json 记着来源）。只带模型本身；
+    // 许可进 THIRD-PARTY-NOTICES.txt，转换脚本和说明留在仓库里。
+    'bundled-catalog/image-upscale/realesr-general-x4v3.onnx',
+    // 跑它的 onnxruntime WASM 运行库，compile 时从开发依赖里挑出来（scripts/stage-image-upscale-runtime.cjs）。
+    'dist-image-upscale/**/*',
     'package.json',
   ],
   extraResources: [

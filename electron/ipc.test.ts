@@ -1688,7 +1688,7 @@ describe('registerIpcHandlers', () => {
       const refused = async () => { throw new Error('the account library must not be asked for a project file') }
       const videoAssets = { readOwned: vi.fn(refused), resolveOwnedFilePath: vi.fn(refused), saveAs: vi.fn(refused), storeComposed: vi.fn(async () => ({ ...storedClip, taskId: undefined })) }
       const folder = {
-        images: { copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn() },
+        images: { copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(), readOwned: vi.fn() },
         videos: {
           readOwned: vi.fn(async () => ({ asset: storedClip, bytes: Buffer.from('project-bytes') })),
           resolveOwnedFilePath: vi.fn(async () => projectPath),
@@ -1733,7 +1733,7 @@ describe('registerIpcHandlers', () => {
       const refused = async () => { throw new Error('the account library must not be asked for a project file') }
       const aiAssets = { copy: vi.fn(refused), saveAs: vi.fn(refused), contextMenu: vi.fn(refused) }
       const folder = {
-        images: { copy: vi.fn(async () => undefined), saveAs: vi.fn(async () => true), contextMenu: vi.fn(async (_userId: number, _assetId: string, _authorize: () => void) => undefined) },
+        images: { copy: vi.fn(async () => undefined), saveAs: vi.fn(async () => true), contextMenu: vi.fn(async (_userId: number, _assetId: string, _authorize: () => void) => undefined), readOwned: vi.fn() },
         videos: { readOwned: vi.fn(), resolveOwnedFilePath: vi.fn(), saveAs: vi.fn() },
       }
       const accountAssets = { listLibrary: vi.fn(), holderOf: vi.fn(async () => folder) }
@@ -1764,6 +1764,47 @@ describe('registerIpcHandlers', () => {
       await expect(electronMocks.handlers.get('chat:save-asset')!(trustedEvent(), imageId)).resolves.toEqual({ saved: true })
       expect(own.saveAs).toHaveBeenCalledWith(7, imageId)
       plain.dispose()
+    })
+
+    it('upscales a picture from the folder that holds it into a new work and leaves the original alone', async () => {
+      const original = { assetId: imageId, mimeType: 'image/png' as const, width: 320, height: 200, localUrl: 'xingmang-asset://original', fileName: 'original.png' }
+      const stored = { assetId: 'U'.repeat(43), mimeType: 'image/png' as const, width: 1280, height: 800, localUrl: 'xingmang-asset://upscaled', fileName: 'upscaled.png' }
+      const folder = {
+        images: { copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(), readOwned: vi.fn(async () => ({ asset: original, bytes: Buffer.from('original-bytes') })) },
+        videos: { readOwned: vi.fn(), resolveOwnedFilePath: vi.fn(), saveAs: vi.fn() },
+      }
+      const accountAssets = { listLibrary: vi.fn(), holderOf: vi.fn(async () => folder) }
+      const aiAssets = { readOwned: vi.fn(async () => { throw new Error('the folder that holds the picture answers, not the library') }), storeLocalBytes: vi.fn(async () => stored) }
+      const imageUpscale = { upscale: vi.fn(async () => ({ png: Buffer.from('upscaled-png'), width: 1280, height: 800 })) }
+      const mediaAssets = { listOwnedLibrary: vi.fn(), setSource: vi.fn(async () => undefined) }
+      const accountService = signedIn()
+      const { runtimeLog, dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, { aiAssets: aiAssets as never }, { accountAssets, imageUpscale, mediaAssets: mediaAssets as never })
+      const upscale = electronMocks.handlers.get('chat:upscale-asset')!
+
+      await expect(upscale(trustedEvent(), { assetId: imageId, scale: 4, prompt: '一只猫' })).resolves.toEqual(stored)
+      expect(accountAssets.holderOf).toHaveBeenCalledWith(7, 'image', imageId)
+      expect(imageUpscale.upscale).toHaveBeenCalledWith({ bytes: Buffer.from('original-bytes'), width: 320, height: 200, scale: 4 })
+      expect(aiAssets.storeLocalBytes).toHaveBeenCalledWith(7, Buffer.from('upscaled-png'))
+      expect(mediaAssets.setSource).toHaveBeenCalledWith(7, stored.assetId, 'generated', '一只猫')
+
+      // The copy is already saved; a description that fails to stick only gets logged.
+      mediaAssets.setSource.mockRejectedValueOnce(new Error('disk busy'))
+      await expect(upscale(trustedEvent(), { assetId: imageId, scale: 2, prompt: '一只猫' })).resolves.toEqual(stored)
+      expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'ai-chat', 'image-upscale.source.persist-failed', '清晰版已保存，但描述没记上', { reason: 'disk busy' })
+
+      aiAssets.storeLocalBytes.mockRejectedValueOnce(new Error('ENOSPC'))
+      await expect(upscale(trustedEvent(), { assetId: imageId, scale: 2 })).rejects.toThrow('清晰版保存失败，请检查磁盘空间后重试。')
+      await expect(upscale(trustedEvent(), { assetId: '../secret.png', scale: 2 })).rejects.toThrow('变清晰图片格式错误')
+      await expect(upscale(trustedEvent(), { assetId: imageId, scale: 3 })).rejects.toThrow('放大倍数格式错误')
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: false } as never)
+      await expect(upscale(trustedEvent(), { assetId: imageId, scale: 2 })).rejects.toThrow('请先登录星芒账号')
+      expect(imageUpscale.upscale).toHaveBeenCalledTimes(3)
+      expect(aiAssets.readOwned).not.toHaveBeenCalled()
+      dispose()
+
+      const unavailable = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(), undefined, undefined, { aiAssets: aiAssets as never })
+      await expect(electronMocks.handlers.get('chat:upscale-asset')!(trustedEvent(), { assetId: imageId, scale: 2 })).rejects.toThrow('图片变清晰服务未就绪')
+      unavailable.dispose()
     })
 
     it('stores a song picked in the system dialog for the signed-in account and hands back only its id, name and length', async () => {

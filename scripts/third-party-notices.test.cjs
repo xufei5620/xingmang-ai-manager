@@ -217,7 +217,7 @@ test('writes every entry with its version, license, source and full license text
 test('registers by hand what no build step can see, each with text read from the repository', () => {
   const extras = buildBundledExtras(projectRoot)
   const byName = Object.fromEntries(extras.map((extra) => [extra.name.split(' ')[0], extra]))
-  assert.deepEqual(Object.keys(byName).sort(), ['@lobehub/icons', 'Chromium', 'Electron', 'Mihomo', 'Nsis7z', 'OpenAI', 'OpenCV'])
+  assert.deepEqual(Object.keys(byName).sort(), ['@lobehub/icons', 'Chromium', 'Electron', 'Mihomo', 'Nsis7z', 'OpenAI', 'OpenCV', 'Real-ESRGAN', 'onnxruntime-common', 'onnxruntime-web'])
   assert.equal(byName.Electron.version, require('../node_modules/electron/package.json').version)
   assert.match(byName.Electron.texts[0].text, /Electron contributors/)
   assert.match(byName['@lobehub/icons'].texts[0].text, /LobeHub/)
@@ -226,9 +226,40 @@ test('registers by hand what no build step can see, each with text read from the
   assert.equal(byName.Nsis7z.license, 'LGPL-2.1')
   assert.equal(byName.Mihomo.license, 'GPL-3.0')
   assert.ok(byName.Chromium.notes.some((note) => note.includes('LICENSES.chromium.html')))
+  // The image upscaling runtime is staged outside the root node_modules, so no
+  // dependency walk sees it; its name and version must match the packaged
+  // package.json for assertPackagedThirdPartyNotices to find it.
+  for (const name of ['onnxruntime-web', 'onnxruntime-common']) {
+    assert.equal(byName[name].version, require(`../node_modules/${name}/package.json`).version)
+    assert.match(byName[name].texts[0].text, /Copyright \(c\) Microsoft Corporation/)
+  }
+  assert.deepEqual(byName['onnxruntime-web'].texts.map((entry) => entry.name), ['LICENSE', 'ThirdPartyNotices.txt'])
+  assert.match(byName['onnxruntime-web'].texts[1].text, /Eigen/)
+  assert.equal(byName['Real-ESRGAN'].license, 'BSD-3-Clause')
+  assert.match(byName['Real-ESRGAN'].texts[0].text, /Xintao Wang/)
 })
 
-async function createPackagedFixture(t, { listed = ['dep 1.0.0', 'nested 2.0.0'], chromium = 'GNU LESSER GENERAL PUBLIC LICENSE\nVersion 2.1, February 1999\n', omit = [] } = {}) {
+test('refuses to register onnxruntime license files from another version than the installed runtime', (t) => {
+  const fixtureRoot = temporaryDirectory(t, 'xingmang-notices-onnxruntime-')
+  const read = [
+    'node_modules/electron/package.json', 'node_modules/electron/LICENSE', 'src/renderer-v2/ui/vendor-icons.tsx',
+    'canvas-v2/src/vendor/opencv-grabcut/manifest.json', 'canvas-v2/src/vendor/opencv-grabcut/LICENSES.txt',
+    'bundled-catalog/codex-models/NOTICE', 'bundled-catalog/codex-models/LICENSE',
+    'bundled-catalog/image-upscale/manifest.json', 'bundled-catalog/image-upscale/LICENSE',
+    'bundled-catalog/image-upscale/LICENSE.onnxruntime', 'bundled-catalog/image-upscale/ThirdPartyNotices.onnxruntime.txt',
+    'node_modules/onnxruntime-web/package.json', 'node_modules/onnxruntime-common/package.json',
+  ]
+  for (const relative of read) {
+    fs.mkdirSync(path.dirname(path.join(fixtureRoot, relative)), { recursive: true })
+    fs.copyFileSync(path.join(projectRoot, relative), path.join(fixtureRoot, relative))
+  }
+  assert.equal(buildBundledExtras(fixtureRoot).length, buildBundledExtras(projectRoot).length)
+  const packageJsonPath = path.join(fixtureRoot, 'node_modules', 'onnxruntime-web', 'package.json')
+  fs.writeFileSync(packageJsonPath, JSON.stringify({ ...JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')), version: '9.9.9' }))
+  assert.throws(() => buildBundledExtras(fixtureRoot), /onnxruntime-web 9\.9\.9 与 bundled-catalog\/image-upscale 里许可文件的版本 .* 不一致/)
+})
+
+async function createPackagedFixture(t, { listed = ['dep 1.0.0', 'nested 2.0.0'], chromium = 'GNU LESSER GENERAL PUBLIC LICENSE\nVersion 2.1, February 1999\n', omit = [], extraPackages = {} } = {}) {
   const root = temporaryDirectory(t, 'xingmang-packaged-notices-')
   const unpacked = path.join(root, 'unpacked')
   const resources = path.join(unpacked, 'resources')
@@ -237,6 +268,7 @@ async function createPackagedFixture(t, { listed = ['dep 1.0.0', 'nested 2.0.0']
   writeFile(path.join(source, 'node_modules', 'dep', 'package.json'), JSON.stringify({ name: 'dep', version: '1.0.0' }))
   writeFile(path.join(source, 'node_modules', 'dep', 'lib', 'package.json'), JSON.stringify({ type: 'module' }))
   writeFile(path.join(source, 'node_modules', 'dep', 'node_modules', 'nested', 'package.json'), JSON.stringify({ name: 'nested', version: '2.0.0' }))
+  for (const [directory, packageJson] of Object.entries(extraPackages)) writeFile(path.join(source, ...directory.split('/'), 'package.json'), JSON.stringify(packageJson))
   fs.mkdirSync(resources, { recursive: true })
   await createSettledPackage(source, path.join(resources, 'app.asar'))
   const files = {
@@ -286,6 +318,14 @@ test('reads app.asar entries by the path the archive lists, which uses backslash
 test('rejects a package with a dependency in app.asar that the notices leave out', async (t) => {
   const fixture = await createPackagedFixture(t, { listed: ['dep 1.0.0'] })
   assert.throws(() => checkPackaged(fixture), /app\.asar 里这些包不在第三方许可清单上：nested 2\.0\.0/)
+})
+
+test('also requires the image upscaling runtime staged outside the root node_modules to be listed', async (t) => {
+  const extraPackages = { 'dist-image-upscale/node_modules/onnxruntime-web': { name: 'onnxruntime-web', version: '1.31.1' } }
+  const unlisted = await createPackagedFixture(t, { extraPackages })
+  assert.throws(() => checkPackaged(unlisted), /app\.asar 里这些包不在第三方许可清单上：onnxruntime-web 1\.31\.1/)
+  const listed = await createPackagedFixture(t, { extraPackages, listed: ['dep 1.0.0', 'nested 2.0.0', 'onnxruntime-web 1.31.1'] })
+  assert.equal(checkPackaged(listed).listedCount, 3)
 })
 
 for (const name of [NOTICES_FILE_NAME, 'LICENSE.electron.txt', 'LICENSES.chromium.html']) {

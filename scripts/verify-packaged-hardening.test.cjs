@@ -4,7 +4,8 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 const { createSettledPackage } = require('./asar-fixture.test-support.cjs')
-const { SYSTEM_SERVICE_FILES, assertNoDefaultAppFallback, assertWindowsUpdateHandoffScript, inspectPackagedLaunchBoundary, inspectPackagedReleaseNotes, resolvePackagedExecutable } = require('./verify-packaged-hardening.cjs')
+const { createHash } = require('node:crypto')
+const { SYSTEM_SERVICE_FILES, assertNoDefaultAppFallback, assertWindowsUpdateHandoffScript, inspectPackagedImageUpscale, inspectPackagedLaunchBoundary, inspectPackagedReleaseNotes, readImageUpscaleManifest, resolvePackagedExecutable } = require('./verify-packaged-hardening.cjs')
 
 const currentLaunchBoundary = [
   'WindowsPowerShell',
@@ -199,6 +200,58 @@ test('rejects a package whose bundled release notes are missing, stale or malfor
   assert.throws(() => inspectPackagedReleaseNotes(malformed), /格式无效/)
   const broken = await createFixture(t, { service: 'launchCliPowerShell()', releaseNotes: '{' })
   assert.throws(() => inspectPackagedReleaseNotes(broken), /不是有效的 JSON/)
+})
+
+async function createImageUpscaleFixture(t, { omit = [], model = 'model bytes' } = {}) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-hardening-upscale-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  const source = path.join(root, 'app')
+  const files = {
+    'package.json': '{}',
+    'bundled-catalog/image-upscale/realesr-general-x4v3.onnx': model,
+    'dist-image-upscale/node_modules/onnxruntime-web/package.json': '{"name":"onnxruntime-web","version":"1.31.1"}',
+    'dist-image-upscale/node_modules/onnxruntime-web/dist/ort.node.min.js': 'module.exports = {}',
+    'dist-image-upscale/node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs': 'export default {}',
+    'dist-image-upscale/node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm': 'wasm',
+    'dist-image-upscale/node_modules/onnxruntime-common/package.json': '{"name":"onnxruntime-common","version":"1.31.1","type":"module"}',
+    'dist-image-upscale/node_modules/onnxruntime-common/dist/cjs/package.json': '{"type":"commonjs"}',
+    'dist-image-upscale/node_modules/onnxruntime-common/dist/cjs/index.js': 'module.exports = {}',
+  }
+  for (const [relative, text] of Object.entries(files)) {
+    if (omit.includes(relative)) continue
+    await fs.mkdir(path.dirname(path.join(source, relative)), { recursive: true })
+    await fs.writeFile(path.join(source, relative), text, 'utf8')
+  }
+  const archive = path.join(root, 'app.asar')
+  await createSettledPackage(source, archive)
+  return archive
+}
+
+const fixtureManifest = { onnx: { file: 'realesr-general-x4v3.onnx', sha256: createHash('sha256').update('model bytes').digest('hex') } }
+
+test('accepts a package that carries the upscaling model and every runtime file', async (t) => {
+  assert.deepEqual(inspectPackagedImageUpscale(await createImageUpscaleFixture(t), fixtureManifest), { modelBytes: 11, runtimeFiles: 7 })
+  // The repository's own manifest is what the release job checks against.
+  assert.match(readImageUpscaleManifest().onnx.sha256, /^[0-9a-f]{64}$/)
+})
+
+test('rejects a package whose upscaling model or runtime file is missing or swapped', async (t) => {
+  // 少一样，编译和出包都照样过，客户第一次点「变清晰」才失败，所以在出包这一步拦下。
+  const swapped = await createImageUpscaleFixture(t, { model: 'other bytes' })
+  assert.throws(() => inspectPackagedImageUpscale(swapped, fixtureManifest), /本机放大模型与 .* sha256 不一致/)
+  for (const relative of [
+    'bundled-catalog/image-upscale/realesr-general-x4v3.onnx',
+    'dist-image-upscale/node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm',
+    'dist-image-upscale/node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs',
+    'dist-image-upscale/node_modules/onnxruntime-common/package.json',
+    // Without it Node reads the CommonJS files as ES modules and the runtime never loads.
+    'dist-image-upscale/node_modules/onnxruntime-common/dist/cjs/package.json',
+  ]) {
+    const missing = await createImageUpscaleFixture(t, { omit: [relative] })
+    assert.throws(() => inspectPackagedImageUpscale(missing, fixtureManifest), new RegExp(`打包产物缺少.*${relative.replaceAll('.', '\\.')}`))
+  }
+  const withoutCommon = await createImageUpscaleFixture(t, { omit: ['dist-image-upscale/node_modules/onnxruntime-common/dist/cjs/index.js'] })
+  assert.throws(() => inspectPackagedImageUpscale(withoutCommon, fixtureManifest), /打包产物缺少本机放大运行库目录 .*onnxruntime-common\/dist\/cjs/)
 })
 
 test('finds the one platform executable in an unpacked directory', async (t) => {

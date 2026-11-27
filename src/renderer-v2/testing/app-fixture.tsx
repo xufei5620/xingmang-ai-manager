@@ -1152,6 +1152,15 @@ const methods = {
     }
   },
   saveAiChatAsset: async () => ({ saved: true }),
+  // 「变清晰」：清晰版排进作品库最前面（交回的宽高按 512 见方的原图算）；?upscaleHold 一直不回，看按钮转圈。
+  upscaleAiChatAsset: async (input: { assetId: string, scale: 2 | 4, prompt?: string }) => {
+    if (query.has('upscaleHold')) return new Promise<never>(() => undefined)
+    const assetId = fixtureLibraryId(`upscaled-${input.scale}x-${fixtureLibrary.length}-`)
+    const width = 512 * input.scale
+    const height = 512 * input.scale
+    addFixtureLibraryEntry({ assetId, mediaType: 'image', createdAt: new Date().toISOString(), mimeType: 'image/png', fileName: `xingmang-${assetId}.png`, ...(input.prompt ? { prompt: input.prompt } : {}) })
+    return { assetId, localUrl: `xingmang-asset://${assetId}`, mimeType: 'image/png' as const, fileName: `xingmang-${assetId}.png`, width, height }
+  },
   saveAiVideo: async () => ({ saved: true }),
   openAiVideo: async () => undefined,
   openDiagnosticFolder: async () => true,
