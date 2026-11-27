@@ -19,6 +19,14 @@ import {
 } from './antigravity-cli-installer'
 import { verifyDarwinAntigravityCli, type AntigravityCliDarwinProcess } from './antigravity-cli-macos'
 import { resolveAntigravityCliPlatform } from './antigravity-cli-release'
+import {
+  buildAntigravityDesktopDebugArguments,
+  pickAntigravityDebugPort,
+  resolveMacAntigravityDebugPortListeners,
+  watchAntigravityDesktopChinese,
+  type AntigravityDesktopChineseWatch,
+} from './antigravity-desktop-cdp'
+import { buildAntigravityChineseDictionary, buildAntigravityChineseInjection, readBundledAntigravityChinesePack } from './antigravity-desktop-chinese'
 import { resolveAntigravityDesktopPlatform } from './antigravity-desktop-release'
 import {
   inspectAntigravityDesktopWindowsInstallation,
@@ -181,6 +189,16 @@ export interface AntigravityServiceDependencies {
   launchMacosTerminal?(plan: MacosTerminalLaunchPlan): Promise<void>
   /** 起一个和星芒脱开的进程，答回它的进程号（Mac 上靠它认出开着的那一份是不是星芒带着设置起的）。 */
   launchProcess?(plan: AntigravityDetachedLaunchPlan): Promise<number | null>
+  /**
+   * 随包的中文词表（antigravity-desktop-chinese.ts）。给了它，Mac 上从星芒打开桌面端时带一个只在本机的调试口，
+   * 起来以后把界面换成中文（yoyo 11-26「反重力调试口同意」「反重力默认中文」，深度）。缺省 = 不开口、照旧英文。
+   * Windows 上经资源管理器打开、带不上参数，这一项暂时不管用。
+   */
+  desktopChinesePackPath?: string
+  /** 只给测试换掉：挑调试口。 */
+  pickDebugPort?(): Promise<number>
+  /** 只给测试换掉：核对调试口、送换字脚本那一套。 */
+  watchDesktopChinese?: typeof watchAntigravityDesktopChinese
   /** 只给测试换掉：资源管理器的绝对路径和系统目录（I14，由固定解析器给出）。 */
   resolveWindowsShell?(): { explorer: string, systemRoot: string }
   resolvePowerShellExecutable?(): string
@@ -446,8 +464,13 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
   const isPlainFile = deps.isPlainFile ?? defaultIsPlainFile
   const isPlainDirectory = deps.isPlainDirectory ?? defaultIsPlainDirectory
   const launchProcess = deps.launchProcess ?? defaultLaunchProcess
+  const pickDebugPort = deps.pickDebugPort ?? pickAntigravityDebugPort
+  const watchDesktopChinese = deps.watchDesktopChinese ?? watchAntigravityDesktopChinese
   // Mac 上星芒带着设置起的那一份：开着的主进程就是它、设置也没变，再点打开只把它叫到前面。
   let macSpawn: { bundle: string, pid: number, fingerprint: string } | null = null
+  // 换中文那一段：词表只读一次（随包的，运行中不会变），送脚本的连接跟着星芒起的那一份 Antigravity。
+  let desktopChineseInjection: Promise<string | null> | null = null
+  let macChinese: AntigravityDesktopChineseWatch | null = null
   // Windows 上最近一次改写设置是什么时候（毫秒）：装、打开命令行或桌面端时改的，后台跟账号、跟线路改的，都算。它只认
   // 启动时的设置，起得比这早的那一份拿的是旧的，点「打开」时请客户先关掉，不能只看这一次点击写没写（别处已经写过，这次
   // 是 unchanged）。按进程启动时间判、不记「请关掉过」：客户自己关了、从开始菜单或桌面重新打开的，起得比改写晚，
@@ -842,6 +865,32 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
     return { opened: true }
   }
 
+  /** 读随包词表、拼好要送进窗口的那段；读不出来（包被改过、拷错了）只记一笔，照旧英文。 */
+  function readDesktopChineseInjection(): Promise<string | null> {
+    const packPath = deps.desktopChinesePackPath
+    if (!packPath) return Promise.resolve(null)
+    desktopChineseInjection ??= readBundledAntigravityChinesePack(packPath).then(
+      (pack) => buildAntigravityChineseInjection(buildAntigravityChineseDictionary(pack, 'deep')),
+      (error: unknown) => {
+        log('warn', 'antigravity.desktop.chinese.unavailable', '中文词表读不出来，Antigravity 照旧英文', { error: errorText(error) })
+        return null
+      },
+    )
+    return desktopChineseInjection
+  }
+
+  /** 这次打开要不要带调试口：词表读得出、口挑得出才带，否则照旧不带（英文）。 */
+  async function prepareMacChinese(): Promise<{ port: number, injection: string } | null> {
+    const injection = await readDesktopChineseInjection()
+    if (!injection) return null
+    try {
+      return { port: await pickDebugPort(), injection }
+    } catch (error) {
+      log('warn', 'antigravity.desktop.chinese.skipped', 'Antigravity 没换成中文，照旧英文', { reason: 'no-port', error: errorText(error) })
+      return null
+    }
+  }
+
   async function openDesktopOnMac(resolveKey: AntigravityKeyResolver): Promise<AntigravityDesktopLaunchResult> {
     const bundle = macDesktopBundle()
     if (!bundle) throw new Error(desktopNotInstalledMessage)
@@ -861,16 +910,33 @@ export function createAntigravityService(deps: AntigravityServiceDependencies) {
       return { opened: true }
     }
     // 直接起主程序，设置放在环境里交给它（密钥不进命令行参数）。从程序坞、访达打开的读不到这份设置，
-    // 只有星芒打开的这一种带得上，所以上面认得出自己起的那一个。
+    // 只有星芒打开的这一种带得上，所以上面认得出自己起的那一个。换中文也只有这一种带得上调试口。
+    const chinese = await prepareMacChinese()
     const pid = await launchProcess({
       executable,
-      argv: [],
+      argv: chinese ? buildAntigravityDesktopDebugArguments(chinese.port) : [],
       cwd: userHome,
       env: withAntigravityEnvironment(commandEnvironment(env), environment),
       windowsHide: false,
     })
     macSpawn = pid === null ? null : { bundle, pid, fingerprint }
-    log('info', 'antigravity.desktop.opened', '已打开 Antigravity')
+    log('info', 'antigravity.desktop.opened', '已打开 Antigravity', { chinese: chinese !== null })
+    macChinese?.stop()
+    macChinese = null
+    if (chinese) {
+      // 不知道起来的是哪个进程，就没法核对口上听的是不是它，什么都不送。
+      if (pid === null) {
+        log('warn', 'antigravity.desktop.chinese.skipped', 'Antigravity 没换成中文，照旧英文', { reason: 'no-process-id' })
+      } else {
+        macChinese = watchDesktopChinese({
+          port: chinese.port,
+          processId: pid,
+          injection: chinese.injection,
+          resolveListeners: (port) => resolveMacAntigravityDebugPortListeners(port, { env, run: execute }),
+          log,
+        })
+      }
+    }
     return { opened: true }
   }
 

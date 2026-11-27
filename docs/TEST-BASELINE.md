@@ -185,7 +185,7 @@ click stall evidence, taken 7004ms after the click started (each probe waits at 
 查清后把这一节改成结论。别的套件（`src/renderer-v2/**/browser-check.mjs`、`app-check.mjs` 自己起浏览器，
 不经 harness）想要同样的现场，给它开出来的任意一个页面调一次 `watchClickStalls(page)` 即可，一个进程装一次就够。
 
-> 云端/CI 容器提示：`test:browser`、`test:v2:browser` 里的 Playwright 套件要真浏览器，若容器预装的 Chromium 版本号与 `@playwright/test` 期望不符会报 "Executable doesn't exist"——环境问题不是回归，但也不算跑过：按 `AGENTS.md` 第 3 节设 `XINGMANG_E2E_CHROMIUM` 指向容器那份 Chromium 重跑，照样要 0 失败（scripts 套件不受影响；vitest 里只有 `electron/codex-desktop-cdp.browser.test.ts` 起浏览器，它也认这个变量）。Claude Code 云端容器里是 `XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium npm test`（`npm run selfcheck` 会自己设上，容器里别的坑见 `docs/CLOUD-SANDBOX.md`）；只复跑一条用例时用 `XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium node --test --test-name-pattern=<用例名> <套件文件>`。
+> 云端/CI 容器提示：`test:browser`、`test:v2:browser` 里的 Playwright 套件要真浏览器，若容器预装的 Chromium 版本号与 `@playwright/test` 期望不符会报 "Executable doesn't exist"——环境问题不是回归，但也不算跑过：按 `AGENTS.md` 第 3 节设 `XINGMANG_E2E_CHROMIUM` 指向容器那份 Chromium 重跑，照样要 0 失败（scripts 套件不受影响；vitest 里只有 `electron/codex-desktop-cdp.browser.test.ts` 和 `electron/antigravity-desktop-chinese.browser.test.ts` 起浏览器，它们也认这个变量）。Claude Code 云端容器里是 `XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium npm test`（`npm run selfcheck` 会自己设上，容器里别的坑见 `docs/CLOUD-SANDBOX.md`）；只复跑一条用例时用 `XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium node --test --test-name-pattern=<用例名> <套件文件>`。
 
 > 底线：**不要引入新失败**。
 
@@ -330,6 +330,14 @@ click stall evidence, taken 7004ms after the click started (each probe waits at 
 
 - 修法：只改高、宽留在 1280，侧栏不动，量到的就是纯 CSS 排出来的那一版。1366 × 768 的笔记本侧栏本来就是展开的，这也正是那条改动要守的情形。
 - 写法：用例改窗口尺寸后要量版面的，别让尺寸跨过 1272 这条宽（或 660 这条高）；非跨不可的，先等侧栏到了该有的宽（`.v2-sidebar` 的宽是 60 或 224）再量，不要拿固定的毫秒数去等。
+
+## 画布换皮肤那条：「减少动画」反倒给每个元素开了过渡（2026-11-26）
+
+`e2e/canvas-close-interactions.test.mjs`「canvas applies four skins in both themes…」每换一套皮肤（都带 `reducedMotion: true`）就马上比 `.react-flow` 和 `.canvas-app` 两层的底色。画布内核「减少动画」的两条全局规则（`theme/brand-appearance.css` 的 `[data-reduced-motion='true'] *`、`theme.css` 的 `@media (prefers-reduced-motion: reduce)`）原来写 `transition-duration: 0.01ms !important`，`transition-property` 默认是 `all`，于是每个元素的每个属性都起一段 0.01ms 的过渡。容器里量过：换一次皮肤冒出 250~350 段过渡，两三帧后才收完，这期间 `getComputedStyle` 读到的是上一套甚至上上套的底色。平时两层一样旧，比出来相等就过了（其实没比到新皮肤）；偶尔一层先收完、另一层还没有，就红（指纹：`+ 'rgb(250, 247, 238)' - 'rgb(240, 246, 245)'`，晨曦浅色对雾青浅色；11-20 #2000、11-21 #1936 在 linux-test 上各一次，本机连跑几十次都没红）。
+
+- 修法：在 xingmang-canvas 把两条规则改成 `transition: none !important`（xingmang-canvas #62），同步进 `canvas-v2/`。换完皮肤同一刻读到的就是新底色，一段过渡也没有；顺带平移时 `.react-flow__viewport` 的 `transform` 也不再晚两帧左右才画上。内核新加 `theme/reduced-motion.test.ts`，不许整页通配的规则再设 `transition-duration` 这几项。
+- 看现场：换完皮肤后在页面里看 `document.getAnimations().filter((a) => a.transitionProperty === 'background-color')`，修之前有二三十个、`pending` 都是 `true`，修之后是空的。
+- 写法：「减少动画」这类全局规则要关过渡就写 `transition: none`，别只改时长；用例换外观后要读计算样式的，先确认页面上没有在跑的过渡，别拿固定的毫秒数去等。
 
 ## 随机输入测试红了：是真问题，不是偶发红（2026-11-17）
 
