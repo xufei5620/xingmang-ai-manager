@@ -115,7 +115,7 @@ export function ShotImageDialog({ index, prompt, redrawing, settings, accountSco
   const showSizeRule = Boolean(sizeRule) && (sizeRuleShown || !customSize)
 
   return <Dialog open width={640} title={`为第 ${index + 1} 个镜头生成图片`} onClose={onClose} testId="video-draw-dialog"
-    subtitle={`与对话中的「生成图片」共用同一设置，生成的图片将保存至作品库。${redrawing ? '生成后将替换此镜头当前的图片，原图仍保留在作品库中。' : ''}`}
+    subtitle={`与对话中的「图片生成」共用同一设置，生成的图片将保存至作品库。${redrawing ? '生成后将替换此镜头当前的图片，原图仍保留在作品库中。' : ''}`}
     footer={<>
       <span className="v2-dialog-footer-start video-studio-draw-cost" data-testid="video-draw-cost">按实际用量计费{quote ? `，${quote}` : ''}。{balance ? `当前余额 ${balance}。` : ''}</span>
       <Button onClick={onClose} testId="video-draw-cancel">取消</Button>

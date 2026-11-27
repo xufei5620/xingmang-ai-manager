@@ -1028,7 +1028,7 @@ test('draws a shot picture with AI in the shared picture dialog before paying fo
   await draw.click()
   const dialog = page.getByTestId('video-draw-dialog')
   await dialog.getByRole('heading', { name: '为第 1 个镜头生成图片', exact: true }).waitFor()
-  await dialog.getByText('与对话中的「生成图片」共用同一设置，生成的图片将保存至作品库。', { exact: true }).waitFor()
+  await dialog.getByText('与对话中的「图片生成」共用同一设置，生成的图片将保存至作品库。', { exact: true }).waitFor()
   await dialog.getByText('生成开始后如中途停止，服务端仍可能继续生成并计费。', { exact: true }).waitFor()
   assert.equal(await dialog.getByTestId('video-draw-prompt').inputValue(), '水杯在桌上')
   await dialog.locator('[data-testid="video-image-model"][data-model="gpt-image-2"][data-group="图片模型"]').waitFor()
@@ -1066,7 +1066,7 @@ test('draws a shot picture with AI in the shared picture dialog before paying fo
 
   // 再画一张，中途停下：已经画好的那张留着，不报错。
   await draw.click()
-  await dialog.getByText('与对话中的「生成图片」共用同一设置，生成的图片将保存至作品库。生成后将替换此镜头当前的图片，原图仍保留在作品库中。', { exact: true }).waitFor()
+  await dialog.getByText('与对话中的「图片生成」共用同一设置，生成的图片将保存至作品库。生成后将替换此镜头当前的图片，原图仍保留在作品库中。', { exact: true }).waitFor()
   await dialog.getByTestId('video-draw-ok').click()
   await page.getByTestId('video-shot-draw-stop-0').click()
   await draw.waitFor()

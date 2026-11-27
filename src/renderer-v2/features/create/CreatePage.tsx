@@ -457,25 +457,27 @@ function useStableList<Item>(next: readonly Item[]): readonly Item[] {
   return previous.current
 }
 
-function StartCard({ icon: Icon, title, body, note, onClick, testId }: { icon: LucideIcon, title: string, body: string, note?: string, onClick: () => void, testId: string }) {
+// note：卡上那行角标；opens：点了另开一个窗口，角标前带一个往外的箭头（本机合成那张不是开窗口，不带）。
+function StartCard({ icon: Icon, title, body, note, opens = false, onClick, testId }: { icon: LucideIcon, title: string, body: string, note?: string, opens?: boolean, onClick: () => void, testId: string }) {
   return <button type="button" className="create-card" onClick={onClick} data-testid={testId}>
     <span className="create-card-icon"><Icon size={18} aria-hidden="true" /></span><strong>{title}</strong><span>{body}</span>
-    {note && <small><ArrowUpRight size={12} aria-hidden="true" />{note}</small>}
+    {note && <small>{opens && <ArrowUpRight size={12} aria-hidden="true" />}{note}</small>}
   </button>
 }
 
 /**
- * 起始页六句示例下面的卡：一句话说不清的几样从这里进。
- * video：这个账号现在能不能新做视频（历史账号、临时停用时不出第一张）。clips：出不出第三张「用已有片段合成视频」
+ * 起始页三个入口下面那组「进阶创作」：一句话说不清的几样从这里进。名字和关键词照全面方案第 30 件方案甲
+ * （yoyo 11-28 回「功能名入口」；原来叫「复杂创作从这里开始」和三句话的卡名）。
+ * video：这个账号现在能不能新做视频（历史账号、临时停用时不出第一张）。clips：出不出第三张「片段合成」
  * （能做视频、作品库里又有视频时才出，融合第 3 步）。
  */
 export function CreateStartCards({ video, clips = false, onVideo, onCanvas, onClips }: { video: boolean, clips?: boolean, onVideo: () => void, onCanvas: () => void, onClips?: () => void }) {
   return <div className="create-start" data-testid="create-start">
-    <div className="create-start-label">复杂创作从这里开始</div>
+    <div className="create-start-label">进阶创作</div>
     <div className="create-cards">
-      {video && <StartCard icon={Clapperboard} title="做一条带字幕的短视频" body="输入创意，AI 将编写分镜、分段生成并合成为完整视频" onClick={onVideo} testId="create-card-video" />}
-      <StartCard icon={InfinityIcon} title="在画布中分步创作" body="支持多图、精修、模板，以及保持人物在各镜头中一致" note="开在大窗口里" onClick={onCanvas} testId="create-card-canvas" />
-      {clips && onClips && <StartCard icon={Film} title="用已有片段合成视频" body="从作品库选择片段，添加字幕和配乐，在本机合成，不产生费用" onClick={onClips} testId="create-card-clips" />}
+      {video && <StartCard icon={Clapperboard} title="分镜视频" body="分镜编写 · 分段生成 · 字幕合成" onClick={onVideo} testId="create-card-video" />}
+      <StartCard icon={InfinityIcon} title="无限画布" body="多图组合 · 精修 · 模板 · 角色一致" note="独立窗口" opens onClick={onCanvas} testId="create-card-canvas" />
+      {clips && onClips && <StartCard icon={Film} title="片段合成" body="作品库片段 · 字幕 · 配乐" note="本机合成，不产生费用" onClick={onClips} testId="create-card-clips" />}
     </div>
   </div>
 }
