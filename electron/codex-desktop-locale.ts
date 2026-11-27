@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import * as TOML from '@iarna/toml'
+import { asarRawFs } from './asar-raw-fs'
 import { mutateCodexConfigToml, renderTomlEdit } from './codex-config-toml'
 import {
   assertNoReparseComponents,
@@ -197,19 +198,24 @@ function directoryNames(directory: string): string[] {
   }
 }
 
-/** Read only the bounded JSON index from a real Electron ASAR archive. */
+/**
+ * Read only the bounded JSON index from a real Electron ASAR archive.
+ * 读的是压缩包本身，要用没被 asar 层改过的 fs（asar-raw-fs.ts）：主进程的 node:fs 说 app.asar 是文件夹，这一支在
+ * 打包版里以前总是空的，全靠 detectChineseResources 里透过 asar 层按文件夹列出来的那一支。
+ */
 function asarMemberNames(archivePath: string): string[] {
+  const rawFs = asarRawFs()
   try {
-    const stats = fs.statSync(archivePath)
+    const stats = rawFs.statSync(archivePath)
     if (!stats.isFile() || stats.size < 16) return []
-    const file = fs.openSync(archivePath, 'r')
+    const file = rawFs.openSync(archivePath, 'r')
     try {
       const prefix = Buffer.alloc(16)
-      if (fs.readSync(file, prefix, 0, prefix.length, 0) !== prefix.length) return []
+      if (rawFs.readSync(file, prefix, 0, prefix.length, 0) !== prefix.length) return []
       const jsonBytes = prefix.readUInt32LE(12)
       if (jsonBytes <= 0 || jsonBytes > maximumAsarHeaderBytes || 16 + jsonBytes > stats.size) return []
       const json = Buffer.alloc(jsonBytes)
-      if (fs.readSync(file, json, 0, jsonBytes, 16) !== jsonBytes) return []
+      if (rawFs.readSync(file, json, 0, jsonBytes, 16) !== jsonBytes) return []
       const root = JSON.parse(json.toString('utf8')) as { files?: Record<string, unknown> }
       const names: string[] = []
       const visit = (node: unknown, prefixPath: string) => {
@@ -228,7 +234,7 @@ function asarMemberNames(archivePath: string): string[] {
       visit(root, '')
       return names
     } finally {
-      fs.closeSync(file)
+      rawFs.closeSync(file)
     }
   } catch {
     return []

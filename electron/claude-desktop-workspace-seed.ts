@@ -23,6 +23,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { asarRawFs } from './asar-raw-fs'
 import {
   readClaudeDesktopComponentManifest,
   type ClaudeCodeComponentPins,
@@ -228,7 +229,8 @@ export function createClaudeDesktopWorkspaceSeeder(options: ClaudeDesktopWorkspa
 
   async function manifestFor(asarPath: string): Promise<ClaudeDesktopComponentManifest> {
     let stats: fs.Stats
-    try { stats = await fs.promises.stat(asarPath) }
+    // 记号要用 app.asar 真实的大小和修改时间，主进程的 node:fs 回的是编出来的（asar-raw-fs.ts）。
+    try { stats = await asarRawFs().promises.stat(asarPath) }
     catch (error) {
       throw new WorkspaceSkip('asar-unreadable', '读不到 Claude Desktop 的程序文件', { asar: redact(asarPath), code: (error as NodeJS.ErrnoException).code })
     }

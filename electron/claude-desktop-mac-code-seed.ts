@@ -21,6 +21,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { pipeline } from 'node:stream/promises'
 import zlib from 'node:zlib'
+import { asarRawFs } from './asar-raw-fs'
 import { parsePaxRecords, type ClaudeDesktopSeedClient } from './claude-desktop-code-seed'
 import {
   readClaudeDesktopComponentManifest,
@@ -446,7 +447,8 @@ export function createClaudeDesktopMacCodeSeeder(options: ClaudeDesktopMacCodeSe
 
   async function manifestFor(asarPath: string): Promise<ClaudeDesktopComponentManifest> {
     let stats: fs.Stats
-    try { stats = await fs.promises.stat(asarPath) }
+    // 记号要用 app.asar 真实的大小和修改时间，主进程的 node:fs 回的是编出来的（asar-raw-fs.ts）。
+    try { stats = await asarRawFs().promises.stat(asarPath) }
     catch (error) {
       throw new MacSeedSkip('asar-unreadable', '读不到 Claude Desktop 的程序文件', { asar: redact(asarPath), code: (error as NodeJS.ErrnoException).code })
     }
