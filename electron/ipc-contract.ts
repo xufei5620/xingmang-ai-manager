@@ -832,6 +832,13 @@ export type CanvasProjectImageInput =
   /** 新建一个项目再放进去。文件夹由主进程建在「文档 › 星芒画布」里，跟画布里点「新建项目」一样。 */
   | { assetId: string; newProjectName: string }
 
+/** 主窗口「新建画布」建好的空白项目：只回编号和名字，不回路径。 */
+export interface CanvasProjectCreated {
+  projectId: string
+  /** 只当文字显示。 */
+  projectName: string
+}
+
 export interface CanvasProjectImageResult {
   projectId: string
   /** 只当文字显示。 */
@@ -1684,6 +1691,11 @@ export interface XingmangInvokeContract {
    * 按当前账号认过才用；回项目的编号和名字，不回路径。
    */
   addImageToCanvasProject: IpcInvokeDefinition<'canvas:add-project-image', [input: CanvasProjectImageInput], CanvasProjectImageResult>
+  /**
+   * 「创作」左栏的「新建画布」：在「文档 › 星芒画布」里给当前账号建一个空白画布项目。不收参数，名字和位置都由主进程定；
+   * 回编号和名字，不回路径。打开它走 canvas:open-project。
+   */
+  createCanvasProject: IpcInvokeDefinition<'canvas:create-project', [], CanvasProjectCreated>
   getRememberedAccountLogin: IpcInvokeDefinition<'account:get-remembered-login', [siteId?: AccountSiteId], RememberedAccountLogin | null>
   setRememberedAccountLogin: IpcInvokeDefinition<'account:set-remembered-login', [input: RememberedAccountLogin | null, siteId?: AccountSiteId], void>
   createAccountKey: IpcInvokeDefinition<'account:create-key', [input: AccountKeyCreateInput], void>
@@ -2108,6 +2120,7 @@ export const ipcInvokeChannels = {
   listAiLibrary: 'library:list',
   openCanvasProject: 'canvas:open-project',
   addImageToCanvasProject: 'canvas:add-project-image',
+  createCanvasProject: 'canvas:create-project',
   getRememberedAccountLogin: 'account:get-remembered-login',
   setRememberedAccountLogin: 'account:set-remembered-login',
   createAccountKey: 'account:create-key',

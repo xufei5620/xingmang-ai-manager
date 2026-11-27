@@ -96,6 +96,10 @@
 .canvas-close-actions button { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-6); min-height: 36px; padding: var(--space-8) var(--space-12); border: 1px solid var(--border-strong); border-radius: var(--radius-control); background: var(--surface-2); color: var(--text-primary); font: inherit; font-size: var(--text-sm); cursor: pointer; }
 .canvas-close-actions button:hover { border-color: var(--accent); }
 
+/* 关掉过渡用 transition: none，不能只把时长改成 0.01ms：transition-property 默认是 all，
+   原来没有过渡的元素也会给每个属性开一段过渡。换一次皮肤就同时跑几百段，平移画布时
+   每一帧的位置都要晚两帧左右才画上，换完皮肤马上读到的底色也还是上一套的（桌面换皮肤用例时红时绿）。
+   动画只落在写了 animation-name 的元素上，不受这一点影响，照旧缩到 0.01ms 只跑一遍。 */
 [data-reduced-motion='true'] *,
 [data-reduced-motion='true'] *::before,
-[data-reduced-motion='true'] *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
+[data-reduced-motion='true'] *::after { scroll-behavior: auto !important; transition: none !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }

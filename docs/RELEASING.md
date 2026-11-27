@@ -478,36 +478,31 @@ Windows 安装包没有数字签名，`latest.yml` 又和安装包放在同一�
 
 这条可选链路提供独立下载索引，尚未接入既有客户端更新源、R2 撤回与回滚；不能用它绕过本手册中的正式发布批准或 Linux 分发开关。
 
-### Codex Desktop 国内镜像
+### Codex Desktop 下载来源（Windows）
 
-管理工具使用 OpenAI 官方清单判断最新商店版本，并通过以下固定国内镜像读取可下载版本和 MSIX：
+管理工具在 Windows 上按下面的顺序装或更新 Codex 桌面端。每一路下好都核产品身份 `OpenAI.Codex`、版本、架构、Publisher 和 `AppxSignature.p7x`，Windows 安装器还会执行系统签名验证：
 
-```text
-https://codexapp.agentsmirror.com/latest/manifest
-https://codexapp.agentsmirror.com/latest/win-x64
-https://codexapp.agentsmirror.com/latest/win-arm64
-```
+1. 星芒自己的 COS 存储桶（`chatgpt/latest.json`，清单 24 小时内和官方核对过才用）。由 `sync-chatgpt-official-cos` 每 6 小时从官网同步，见 [COS-SYNC.md](COS-SYNC.md)。
+2. 微软商店（系统自带的 winget）。
+3. OpenAI 官网的离线安装包，接下载线路：
 
-首次安装恢复还会按需尝试上一版本，只有本机未检测到 `OpenAI.Codex` Appx 包时才会请求以下历史路由：
+   ```text
+   https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix
+   https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix
+   ```
 
-```text
-https://codexapp.agentsmirror.com/previous/manifest
-https://codexapp-r2.agentsmirror.com/previous/manifest
-https://codexapp.agentsmirror.com/previous/win-x64
-https://codexapp-r2.agentsmirror.com/previous/win-x64
-https://codexapp.agentsmirror.com/previous/win-arm64
-https://codexapp-r2.agentsmirror.com/previous/win-arm64
-```
+   后面还有第 4 路时，照当时的速度还要 10 分钟以上就让给它；后面没有路时多慢都下完。
+4. 清单过期（超过 24 小时没和官方核对）的存储桶，比本机新才装。这是最后一路，下得慢也不放弃。
 
-`previous/manifest` 必须返回与 `latest/manifest` 相同的 schema（包含版本、架构、Content-Length 和 SHA-256），不存在或不完整时客户端会跳过旧版并提示使用微软商店。已安装用户的更新流程不会请求这些历史路由，也不会降级安装。
+首页的「可更新」只认存储桶里那一版比本机新（清单过期也照读，因为它是最后一路，比本机新就一定拿得到）。官方清单 `https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json` 比桶新、桶还没同步时首页不催更新；客户点更新而商店、官网都没装上时，会说微软商店已有新版、国内下载线路尚未同步。
 
-镜像必须原样同步 OpenAI 官方文件，不能改写清单或重新打包 MSIX。服务端应为清单返回 `application/json`，为 MSIX 返回 `application/vnd.ms-appx` 或 `application/octet-stream`，不存在的文件必须返回 404，不能回退到官网 HTML。客户端会校验产品身份 `OpenAI.Codex`、版本、架构、Publisher 和 `AppxSignature.p7x`，Windows 安装器还会执行系统签名验证。
+2026-11-24 以前还有第 5 路「国内镜像」：`codexapp.agentsmirror.com` 和 `codexapp-r2.agentsmirror.com`，首次安装失败时还会读它们的 `previous/*` 装上一版，Windows 每次检测也会读它们的清单。这两个主机是开源项目 Codex App Manager 作者的私人镜像，不归星芒，已经全部拿掉：客户端不再请求它们，也不再有「上一版本」兜底。代价是存储桶本身读不到、商店和官网又都不通时，国内客户就装不上了；同步作业坏了，桶里会一直停在旧版，国内客户更新不到新版。同步连续失败会开「离线包同步连续失败：Codex 桌面端」issue，要尽快修。
 
-Windows 首先按当前用户调用 `Add-AppxPackage`。只有错误详情明确包含打包服务需要提权的 `0x80073D28` 时，才通过固定系统 Windows PowerShell 请求一次 UAC，并在工具行显示等待授权。通用 `0x80073CF6`、包冲突等其他错误不会触发提权。用户取消授权立即结束本次安装，不切换镜像或降级重试。
+Windows 首先按当前用户调用 `Add-AppxPackage`。只有错误详情明确包含打包服务需要提权的 `0x80073D28` 时，才通过固定系统 Windows PowerShell 请求一次 UAC，并在工具行显示等待授权。通用 `0x80073CF6`、包冲突等其他错误不会触发提权。用户取消授权立即结束本次安装，不换一路重试。
 
 提权安装仅允许原 Windows 用户的管理员令牌；如果在 UAC 中输入另一 Windows 账号的凭据，会在安装前停止，避免给错误用户注册。跨用户管理员代装尚未实现。整个星芒主进程、CLI 和 Codex 日常启动维持原权限。安装助手在 Program Files 创建仅 SYSTEM/Administrators 可写且属于 Administrators 的临时副本，复制前校验清单长度，复制后校验 SHA-256并持有只读句柄安装，保留 Windows 系统签名验证。提权进程结束前不会提前释放安装队列；成功后仍由原调用进程回查当前用户的目标包版本。管理员安装失败可通过 Windows 应用部署事件日志排查。
 
-镜像和官方清单查询失败时，客户端会分别保留具体错误用于诊断；下载地址固定在源码和测试中，避免运行环境把管理员安装流程重定向到未知主机。
+存储桶清单和官方清单查询失败时，客户端会分别保留具体错误用于诊断；下载地址固定在源码和测试中，官网那两个地址的跳转只许落回同一个地址，避免运行环境把管理员安装流程重定向到未知主机。
 
 ## 6. 客户端更新行为
 

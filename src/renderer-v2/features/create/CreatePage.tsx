@@ -24,6 +24,7 @@ import { libraryClipMade, libraryClipSource, libraryFilmAssetIds, libraryKindCou
 import { createTimeText, type CreateExtraItem, type CreateExtraKind, type CreateSelection } from './list'
 import { useCreateLibrary } from './useCreateLibrary'
 import { canvasIntakeDoneMessage, canvasIntakeErrorMessage, canvasIntakeProjects, canvasIntakeRequest, sameCanvasIntakeProjects, type CanvasIntakeProject } from './canvas-intake'
+import { newCanvasErrorMessage, newCanvasNotOpenedMessage } from './new-canvas'
 import './create.css'
 
 // 视频工作台连着拼片那一套（WebCodecs、后台线程）比较重，打开第一条视频时才读。
@@ -41,8 +42,11 @@ export interface CreatePageProps extends Omit<ChatPageProps, 'create'> {
   onLibraryOpened?: () => void
   /** 打开画布窗口（落在它的项目中心）。 */
   onOpenCanvas: () => void
-  /** 把画布窗口开在这个项目上；开没开成都交回，这边好重读一遍项目。 */
-  onOpenCanvasProject: (projectId: string) => Promise<void>
+  /**
+   * 把画布窗口开在这个项目上；开没开成都交回，这边好重读一遍项目。交回 false：没开成（画布那边客户选了留在原来的项目上，
+   * 或者出错了，出错时错误框已经弹了）。
+   */
+  onOpenCanvasProject: (projectId: string) => Promise<boolean>
 }
 
 /**
@@ -129,6 +133,8 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
   const canvasProjectsRef = useRef(canvas.projects)
   canvasProjectsRef.current = canvas.projects
   const addingToCanvas = useRef(false)
+  const creatingCanvasRef = useRef(false)
+  const [creatingCanvas, setCreatingCanvas] = useState(false)
   // 提示上的「打开画布」可能过一会儿才点：点的时候用当时最新的那个 openCanvasProject。
   const openCanvasProjectRef = useRef<(projectId: string) => void>(() => undefined)
   const owner = useLatestRequest()
@@ -289,6 +295,24 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
     })
   }
   openCanvasProjectRef.current = openCanvasProject
+  // 左栏的「新建画布」：主进程在「文档 › 星芒画布」里建一个空白项目，建好就把画布开在它上面。前一次还没回来就不接第二次：
+  // 连点两下只建一个。画布那边正开着别的项目、客户在它的关闭确认里选了留下：项目已经建好了，说一句它在左边。
+  // 没建成：说原因，给「打开画布」，去项目中心自己建。
+  const createCanvas = () => {
+    if (creatingCanvasRef.current) return
+    creatingCanvasRef.current = true
+    setCreatingCanvas(true)
+    const ticket = owner.capture()
+    bridge.createCanvasProject().then((created) => {
+      if (!ticket()) return
+      void canvas.refresh()
+      return onOpenCanvasProject(created.projectId).then((opened) => { if (ticket() && !opened) toast.show(newCanvasNotOpenedMessage(created.projectName), 'ok') })
+    }, (reason) => { if (ticket()) toast.show(newCanvasErrorMessage(reason), 'bad', { label: '打开画布', onSelect: (dismiss) => { dismiss(); onOpenCanvas() } }) }).finally(() => {
+      creatingCanvasRef.current = false
+      setCreatingCanvas(false)
+      if (ticket()) void canvas.refresh()
+    })
+  }
   const removeVideo = () => {
     const id = removing
     setRemoving(null)
@@ -382,6 +406,7 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
       openFilm: showVideo,
     },
     canvas: { projects: canvasTargets, addImage: addImageToCanvas },
+    newCanvas: { creating: creatingCanvas, listed: canvas.status === 'ready', onCreate: createCanvas },
     library: {
       open: libraryOpen,
       count: assets.counts ? libraryKindCount(assets.counts, 'all') : null,

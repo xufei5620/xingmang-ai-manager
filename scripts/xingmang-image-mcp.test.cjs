@@ -1658,3 +1658,44 @@ test('bundled image skill gives Codex the exact call to copy and says how to han
   // The tool no longer shows the picture by itself, so the skill must not promise that either.
   assert.doesNotMatch(skill, /直接显示在对话里/)
 })
+
+test('bundled image skill tells the AI how to write the prompt and when to ask before drawing', async () => {
+  const skill = await readFile(path.resolve(__dirname, '..', 'bundled-skills', 'xingmang-ai', 'SKILL.md'), 'utf8')
+  // The prompt is written by the AI in Codex or Claude Code; the tool and the script send it unchanged.
+  // Without rules the result depended on each AI's own habits (yoyo, 2026-11-27,「技能写描述」).
+  const start = skill.indexOf('## 写描述')
+  assert.ok(start > 0 && start < skill.indexOf('## 第一步：用画图工具'), 'the rules come before the first call')
+  const rules = skill.slice(start, skill.indexOf('## 第一步：用画图工具'))
+  for (const rule of [
+    // Specific requests are tidied, vague ones filled in, and nothing the customer did not ask for is added.
+    '用户已经说得具体：照用户的意思整理成一段完整的描述，不添加新内容。',
+    '只补上没说的场景、构图、光线和风格',
+    '不添加用户没有提到的人物、品牌、Logo、标语和指定配色。',
+    '一字不改地写进描述并加上引号',
+    '用户要求按原话画、不要改动时，原样使用用户的话。',
+    // Edits name only what changes; describing the whole picture let the upstream redraw a different one.
+    '改图时只写要改的地方，并写明其余保持不变',
+    // B2: an edit without the picture's file used to be drawn from the words alone.
+    '请用户把图片文件拖进对话，或告诉你图片所在的位置。不要只凭文字描述重新画一张。',
+    '问清要写什么，不要自己编。',
+    // E2: one sentence to start drawing, no list of questions about options the customer never raised.
+    '不要追问尺寸、比例、画质、风格这类用户没有提到的选项',
+    '需要问的时候一次只问一句。',
+  ]) {
+    assert.ok(rules.includes(rule), rule)
+  }
+  const finished = skill.slice(skill.indexOf('## 完成后'), skill.indexOf('## 失败时'))
+  assert.ok(finished.includes('附上这次调用用的描述，方便用户在此基础上修改。'))
+})
+
+test('MCP server carries the short form of the prompt rules for an AI that never opens the skill', async () => {
+  await withServer({ apiKey: 'sk-test-not-real' }, ok, async ({ call }) => {
+    const listed = await call('tools/list')
+    const [tool] = listed.result.tools
+    assert.match(tool.description, /手里没有原图的文件路径时，先请用户提供图片文件，不要只凭文字重新画一张。/)
+    const prompt = tool.inputSchema.properties.prompt.description
+    assert.match(prompt, /说得笼统再补场景、构图、光线和风格/)
+    assert.match(prompt, /不添加用户没提的人物、品牌和文字/)
+    assert.match(prompt, /改图时只写要改的地方，并写明其余保持不变/)
+  })
+})

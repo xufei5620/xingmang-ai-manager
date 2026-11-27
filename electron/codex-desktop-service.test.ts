@@ -23,9 +23,6 @@ import {
   withCodexDesktopDarwinUpdate,
   createCodexDesktopService,
   buildCodexDesktopLaunchPlan,
-  buildCodexDesktopManifestSources,
-  buildCodexDesktopPreviousManifestSources,
-  buildCodexDesktopPackageSources,
   buildCodexDesktopCombinedProbeFailure,
   buildCodexDesktopCombinedProbeScript,
   codexDesktopCombinedProbeModules,
@@ -61,7 +58,6 @@ import {
   parseCodexDesktopSessionProcessIds,
   codexDesktopRunningFromProbeOutput,
   buildCodexDesktopStoreInstallCommand,
-  describeCodexDesktopDownloadAttempt,
   describeCodexDesktopOfficialDownload,
   describeCodexDesktopStoreNotice,
   describeCodexDesktopStoreFailure,
@@ -70,16 +66,17 @@ import {
   buildCodexDesktopStoreWaitMessage,
   codexDesktopStoreHeartbeatMs,
   shouldTryCodexDesktopStoreUpdate,
-  describeCodexDesktopPrimaryMirrorSkip,
   describeCodexDesktopProbeProcessFailure,
   inspectCodexDesktopBeforeInstall,
   codexDesktopPackageProbeError,
   desktopMirrorUpdateAvailable,
+  newestCodexDesktopVersion,
+  buildCodexDesktopManifestBundle,
+  resolveCodexDesktopUnchangedOutcome,
+  fetchCodexDesktopOfficialVersion,
   downloadCodexDesktopPackage,
-  downloadCodexDesktopPackageFromCandidates,
   downloadCodexDesktopOfficialPackage,
   downloadCodexDesktopBucketPackage,
-  measureCodexDesktopMirrorSpeed,
   measureCodexDesktopOfficialSpeed,
   shouldContinueAfterCodexDesktopBucketInstall,
   shouldRetryCodexDesktopBucketWhenStale,
@@ -90,15 +87,11 @@ import {
   codexDesktopSlowDownloadGraceMs,
   estimateCodexDesktopDownloadRemainingMs,
   isCodexDesktopDownloadTooSlow,
-  fetchCodexDesktopManifestCandidate,
-  fetchCodexDesktopMirrorRelease,
-  fetchCodexDesktopPreviousManifestCandidates,
   inspectCodexDesktopPackageFile,
   launchThenWaitOutsideAccountWork,
   parseCodexDesktopCombinedProbeJson,
   validateCodexDesktopResourceUrl,
   toCodexDesktopMacInstallFailure,
-  type CodexDesktopManifestCandidate,
   type CodexDesktopServiceOptions,
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
@@ -118,55 +111,6 @@ vi.mock('./desktop-package-bucket', async (importOriginal) => {
 })
 
 const temporaryDirectories: string[] = []
-
-function testMirrorManifest(
-  version = '26.721.4979.0',
-  contentLength = 744072561,
-  sha256Base64 = '0a/lZGhbNAxLAd6xFNfKeRJZzzJzNErA1E5IYWnqHjM=',
-) {
-  return {
-    schemaVersion: 5,
-    sources: {
-      windows: {
-        updateManifest: {
-          buildVersion: version,
-          storeProductId: '9PLM9XGG6VKS',
-          packageIdentity: 'OpenAI.Codex',
-        },
-        architectures: {
-          x64: {
-            architecture: 'x64',
-            status: 'downloadable',
-            downloadable: true,
-            version,
-            contentLength,
-            catalog: {
-              packageFullName: `OpenAI.Codex_${version}_x64__2p2nqsd0c76g0`,
-              hashAlgorithm: 'SHA256',
-              hash: sha256Base64,
-              contentLength,
-            },
-          },
-        },
-      },
-    },
-  }
-}
-
-function testMirrorCandidate(
-  label: string,
-  packageUrl: string,
-  contentLength: number,
-  sha256Base64: string,
-): CodexDesktopManifestCandidate {
-  const version = '26.721.4979.0'
-  return {
-    source: { kind: 'mirror', label, url: `${new URL(packageUrl).origin}/latest/manifest` },
-    version,
-    release: { version, architecture: 'x64', contentLength, sha256Base64 },
-    packageSource: { label, url: packageUrl },
-  }
-}
 
 describe('Codex Desktop AppModel launch diagnostics', () => {
   it('resets only the probed package, passing its name as a PowerShell literal', () => {
@@ -507,7 +451,7 @@ describe('Codex Desktop update state', () => {
     }, null, [])).toBe(false)
   })
 
-  it('only enables the domestic mirror when its package is newer', () => {
+  it('only marks an update installable when the domestic line (the bucket) has a newer package', () => {
     expect(desktopMirrorUpdateAvailable(null, '26.721.3996.0')).toBe(true)
     expect(desktopMirrorUpdateAvailable('26.715.8383.0', '26.721.3996.0')).toBe(true)
     expect(desktopMirrorUpdateAvailable('26.721.3996.0', '26.721.3996.0')).toBe(false)
@@ -516,351 +460,183 @@ describe('Codex Desktop update state', () => {
     expect(desktopMirrorUpdateAvailable('26.721.3996.0', null)).toBeNull()
   })
 
-  it('uses the fixed AgentsMirror package and manifest endpoints', () => {
-    expect(buildCodexDesktopPackageSources('x64')).toEqual([
-      {
-        label: '国内镜像',
-        url: 'https://codexapp.agentsmirror.com/latest/win-x64',
+  it('reads the bucket as the domestic line and takes the newer of it and the official feed as latest', () => {
+    const checkedAt = '2026-11-24T00:00:00.000Z'
+    expect(buildCodexDesktopManifestBundle(
+      { status: 'fulfilled', value: '26.1120.1.0' },
+      { status: 'fulfilled', value: '26.1110.1.0' },
+      checkedAt,
+    )).toEqual({
+      bundle: {
+        latest: { status: 'checked', version: '26.1120.1.0', source: 'official-manifest', checkedAt, error: null },
+        mirror: { version: '26.1110.1.0', checkedAt, error: null },
+        officialVersion: '26.1120.1.0',
       },
-      {
-        label: '镜像备用源',
-        url: 'https://codexapp-r2.agentsmirror.com/latest/win-x64',
+      failed: false,
+    })
+    // 官网读不到时，桶里那一版照样是首页的最新版，首页照样能说「可更新」。
+    expect(buildCodexDesktopManifestBundle(
+      { status: 'rejected', reason: new Error('查询超时') },
+      { status: 'fulfilled', value: '26.1110.1.0' },
+      checkedAt,
+    )).toEqual({
+      bundle: {
+        latest: { status: 'checked', version: '26.1110.1.0', source: 'official-manifest', checkedAt, error: null },
+        mirror: { version: '26.1110.1.0', checkedAt, error: null },
+        officialVersion: null,
       },
-    ])
-    expect(buildCodexDesktopPackageSources('arm64')).toEqual([
-      {
-        label: '国内镜像',
-        url: 'https://codexapp.agentsmirror.com/latest/win-arm64',
-      },
-      {
-        label: '镜像备用源',
-        url: 'https://codexapp-r2.agentsmirror.com/latest/win-arm64',
-      },
-    ])
-    expect(buildCodexDesktopManifestSources()).toEqual([
-      {
-        kind: 'mirror',
-        label: '国内镜像',
-        url: 'https://codexapp.agentsmirror.com/latest/manifest',
-      },
-      {
-        kind: 'mirror',
-        label: '镜像备用源',
-        url: 'https://codexapp-r2.agentsmirror.com/latest/manifest',
-      },
-      {
-        kind: 'official',
-        label: 'OpenAI 官方源',
-        url: 'https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json',
-      },
-    ])
+      failed: true,
+    })
   })
 
-  it('keeps both mirror routes and the official manifest endpoint', () => {
-    expect([...buildCodexDesktopManifestSources()].map((source) => source.url).sort()).toEqual([
-      'https://codexapp-r2.agentsmirror.com/latest/manifest',
-      'https://codexapp.agentsmirror.com/latest/manifest',
-      'https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json',
-    ])
-    expect(buildCodexDesktopManifestSources().map((source) => source.kind).sort())
-      .toEqual(['mirror', 'mirror', 'official'])
-  })
-
-  it('keeps the historical manifest routes out of the normal status sources', () => {
-    expect(buildCodexDesktopPreviousManifestSources()).toEqual([
-      {
-        kind: 'mirror-previous',
-        label: '国内镜像上一版本',
-        url: 'https://codexapp.agentsmirror.com/previous/manifest',
-      },
-      {
-        kind: 'mirror-previous',
-        label: '镜像备用源上一版本',
-        url: 'https://codexapp-r2.agentsmirror.com/previous/manifest',
-      },
-    ])
-    expect(buildCodexDesktopManifestSources().some((source) => source.kind === 'mirror-previous')).toBe(false)
-  })
-
-  it('selects the newer R2 release when the domestic route returns a stale valid manifest', async () => {
-    const mirrorManifest = (version: string) => ({
-      schemaVersion: 5,
-      sources: {
-        windows: {
-          updateManifest: {
-            buildVersion: version,
-            storeProductId: '9PLM9XGG6VKS',
-            packageIdentity: 'OpenAI.Codex',
-          },
-          architectures: {
-            x64: {
-              architecture: 'x64',
-              status: 'downloadable',
-              downloadable: true,
-              version,
-              contentLength: 744072561,
-              catalog: {
-                packageFullName: `OpenAI.Codex_${version}_x64__2p2nqsd0c76g0`,
-                hashAlgorithm: 'SHA256',
-                hash: '0a/lZGhbNAxLAd6xFNfKeRJZzzJzNErA1E5IYWnqHjM=',
-                contentLength: 744072561,
-              },
-            },
-          },
-        },
-      },
-    })
-    const storageUrl = [
-      'https://fgws3-ocloud.ihep.ac.cn/20830-codex/latest/manifest',
-      'X-Amz-Algorithm=AWS4-HMAC-SHA256',
-      'X-Amz-Credential=NGhKOR9f3faa01GTyDTX%2F20260802%2Fauto%2Fs3%2Faws4_request',
-      'X-Amz-Date=20260802T033923Z',
-      'X-Amz-Expires=3600',
-      'X-Amz-SignedHeaders=host',
-      'response-content-disposition=attachment%3B%20filename%3D%22release-manifest.json%22',
-      'response-content-type=application%2Fjson',
-      `X-Amz-Signature=${'a'.repeat(64)}`,
-    ].join('&').replace('&X-Amz-Algorithm', '?X-Amz-Algorithm')
-    const redirect = new Response(null, {
-      status: 302,
-      headers: { Location: storageUrl },
-    })
-    Object.defineProperty(redirect, 'url', {
-      value: 'https://codexapp.agentsmirror.com/latest/manifest',
-    })
-    const staleResponse = new Response(JSON.stringify(mirrorManifest('26.721.3996.0')), {
-      headers: { 'Content-Type': 'application/json' },
-    })
-    Object.defineProperty(staleResponse, 'url', {
-      value: storageUrl,
-    })
-    const fallbackUrl = 'https://codexapp-r2.agentsmirror.com/latest/manifest'
-    const currentResponse = new Response(JSON.stringify(mirrorManifest('26.721.4979.0')), {
-      headers: { 'Content-Type': 'application/json' },
-    })
-    Object.defineProperty(currentResponse, 'url', { value: fallbackUrl })
-    const fetchMock = vi.fn(async (value: string | URL | Request) => {
-      const url = String(value)
-      if (url === 'https://codexapp.agentsmirror.com/latest/manifest') return redirect
-      if (url === storageUrl) return staleResponse
-      if (url === fallbackUrl) return currentResponse
-      throw new Error(`unexpected URL ${url}`)
-    })
-
-    await expect(fetchCodexDesktopMirrorRelease('x64', fetchMock)).resolves.toEqual({
-      version: '26.721.4979.0',
-      architecture: 'x64',
-      contentLength: 744072561,
-      sha256Base64: '0a/lZGhbNAxLAd6xFNfKeRJZzzJzNErA1E5IYWnqHjM=',
-    })
-    expect(fetchMock).toHaveBeenCalledWith(
-      'https://codexapp.agentsmirror.com/latest/manifest',
-      expect.objectContaining({ redirect: 'manual' }),
+  it('keeps a bucket failure on the domestic line without hiding the official version', () => {
+    const checkedAt = '2026-11-24T00:00:00.000Z'
+    const { bundle, failed } = buildCodexDesktopManifestBundle(
+      { status: 'fulfilled', value: '26.1120.1.0' },
+      { status: 'rejected', reason: new Error('读取存储桶清单超时') },
+      checkedAt,
     )
-    expect(fetchMock).toHaveBeenCalledWith(
-      fallbackUrl,
-      expect.objectContaining({ redirect: 'manual' }),
+    expect(failed).toBe(true)
+    expect(bundle.latest).toMatchObject({ status: 'checked', version: '26.1120.1.0', error: null })
+    expect(bundle.mirror).toEqual({ version: null, checkedAt, error: '国内下载线路：读取存储桶清单超时' })
+    // 桶没读到就不说「可更新」：官网领先的那一版星芒这次未必拿得到。
+    expect(desktopMirrorUpdateAvailable('26.1110.1.0', bundle.mirror.version)).toBeNull()
+  })
+
+  it('reports both failures when neither the official feed nor the bucket can be read', () => {
+    const checkedAt = '2026-11-24T00:00:00.000Z'
+    const { bundle, failed } = buildCodexDesktopManifestBundle(
+      { status: 'rejected', reason: new Error('返回 HTTP 503') },
+      { status: 'rejected', reason: new Error('存储桶清单返回 HTTP 404') },
+      checkedAt,
     )
-    expect(fetchMock).toHaveBeenCalledWith(
-      storageUrl,
-      expect.objectContaining({ redirect: 'manual' }),
+    expect(failed).toBe(true)
+    expect(bundle.latest).toEqual({
+      status: 'failed',
+      version: null,
+      source: 'official-manifest',
+      checkedAt,
+      error: 'OpenAI 官方源：返回 HTTP 503；国内下载线路：存储桶清单返回 HTTP 404',
+    })
+    expect(bundle.officialVersion).toBeNull()
+  })
+
+  it('treats a service without the bucket as having no domestic line rather than a failed one', () => {
+    const checkedAt = '2026-11-24T00:00:00.000Z'
+    const { bundle, failed } = buildCodexDesktopManifestBundle(
+      { status: 'fulfilled', value: '26.1120.1.0' },
+      { status: 'fulfilled', value: null },
+      checkedAt,
     )
+    expect(failed).toBe(false)
+    expect(bundle.mirror).toEqual({ version: null, checkedAt, error: null })
+    expect(bundle.latest.version).toBe('26.1120.1.0')
   })
 
-  it('retries mirror manifests when both routes return a transient invalid response', async () => {
-    const attempts = new Map<string, number>()
-    const fetchMock = vi.fn(async (value: string | URL | Request, init?: RequestInit) => {
-      const url = String(value)
-      const parsed = new URL(url)
-      const sourceUrl = `${parsed.origin}${parsed.pathname}`
-      const count = (attempts.get(sourceUrl) ?? 0) + 1
-      attempts.set(sourceUrl, count)
-      const response = count === 1
-        ? new Response('{"schemaVersion":5}', { headers: { 'Content-Type': 'application/json' } })
-        : new Response(JSON.stringify(testMirrorManifest()), { headers: { 'Content-Type': 'application/json' } })
-      Object.defineProperty(response, 'url', { value: url })
-      if (count === 2) {
-        expect(init?.headers).toMatchObject({
-          'Cache-Control': 'no-cache, no-store, max-age=0',
-          Pragma: 'no-cache',
-        })
-        expect(parsed.searchParams.get('xm_refresh')).toMatch(/^\d+-1$/)
-      }
-      return response
+  it('picks the newer of the official and bucket versions, trusting the official one when they cannot be compared', () => {
+    expect(newestCodexDesktopVersion('26.1120.1.0', '26.1110.1.0')).toBe('26.1120.1.0')
+    expect(newestCodexDesktopVersion('26.1110.1.0', '26.1120.1.0')).toBe('26.1120.1.0')
+    expect(newestCodexDesktopVersion(null, '26.1110.1.0')).toBe('26.1110.1.0')
+    expect(newestCodexDesktopVersion('26.1120.1.0', null)).toBe('26.1120.1.0')
+    expect(newestCodexDesktopVersion('26.1120.1.0', 'invalid')).toBe('26.1120.1.0')
+    expect(newestCodexDesktopVersion(null, null)).toBeNull()
+  })
+
+  it('reports an update as unchanged once the bucket build is not newer than the installed one', () => {
+    expect(resolveCodexDesktopUnchangedOutcome('26.1110.1.0', '26.1110.1.0', '26.1110.1.0', false)).toEqual({
+      result: { action: 'unchanged', previousVersion: '26.1110.1.0', installedVersion: '26.1110.1.0' },
+      message: 'Codex 桌面端 26.1110.1.0 已是国内下载线路上的最新版本',
     })
+    expect(resolveCodexDesktopUnchangedOutcome('26.1120.1.0', '26.1110.1.0', '26.1110.1.0', false)?.message)
+      .toBe('本机的 Codex 桌面端 26.1120.1.0 比国内下载线路上的版本更新，无需更新')
+  })
 
-    await expect(fetchCodexDesktopMirrorRelease('x64', fetchMock)).resolves.toMatchObject({
-      version: '26.721.4979.0',
-      architecture: 'x64',
+  it('names the Store build when the official feed is ahead of the bucket, except on a machine without the Store', () => {
+    expect(resolveCodexDesktopUnchangedOutcome('26.1110.1.0', '26.1110.1.0', '26.1120.1.0', false)).toEqual({
+      result: { action: 'unchanged', previousVersion: '26.1110.1.0', installedVersion: '26.1110.1.0', storeNewerVersion: '26.1120.1.0' },
+      message: 'Codex 桌面端 26.1110.1.0 已是国内下载线路上的最新版本；微软商店已提供 26.1120.1.0，国内下载线路尚未同步，可前往微软商店更新',
     })
-    expect([...attempts.values()]).toEqual([2, 2])
-    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(resolveCodexDesktopUnchangedOutcome('26.1110.1.0', '26.1110.1.0', '26.1120.1.0', true)).toEqual({
+      result: { action: 'unchanged', previousVersion: '26.1110.1.0', installedVersion: '26.1110.1.0' },
+      message: 'Codex 桌面端 26.1110.1.0 已是国内下载线路上的最新版本',
+    })
   })
 
-  it('accepts only the bounded mirror-manifest refresh query', () => {
-    const base = 'https://codexapp.agentsmirror.com/latest/manifest'
-    const refreshed = `${base}?xm_refresh=1788088800000-1`
-
-    expect(validateCodexDesktopResourceUrl(refreshed, refreshed).href).toBe(refreshed)
-    expect(() => validateCodexDesktopResourceUrl(`${base}?other=value`, `${base}?other=value`))
-      .toThrow('不受信任的查询参数')
-    expect(() => validateCodexDesktopResourceUrl(
-      'https://codexapp.agentsmirror.com/latest/win-x64?xm_refresh=1788088800000-1',
-      'https://codexapp.agentsmirror.com/latest/win-x64?xm_refresh=1788088800000-1',
-    )).toThrow('不受信任的查询参数')
+  it('leaves a first install, an unread bucket and a newer bucket build to the failure path', () => {
+    expect(resolveCodexDesktopUnchangedOutcome(null, '26.1110.1.0', '26.1110.1.0', false)).toBeNull()
+    expect(resolveCodexDesktopUnchangedOutcome('26.1110.1.0', null, '26.1120.1.0', false)).toBeNull()
+    expect(resolveCodexDesktopUnchangedOutcome('26.1100.1.0', '26.1110.1.0', '26.1110.1.0', false)).toBeNull()
+    expect(() => resolveCodexDesktopUnchangedOutcome('invalid', '26.1110.1.0', null, false)).toThrow('无法比较已安装版本')
   })
 
-  it('accepts the fixed historical package route and rejects route escapes', () => {
-    const previous = 'https://codexapp.agentsmirror.com/previous/win-x64'
-    expect(validateCodexDesktopResourceUrl(previous, previous).href).toBe(previous)
-    expect(() => validateCodexDesktopResourceUrl(
+  it('words the end of the line in plain words when no route had anything to install', () => {
+    const attempt = { storeFailure: '无法连接微软商店', storeExitCode: null, updating: false, officialFailure: 'OpenAI 官网连接或下载超时' }
+    expect(toCodexDesktopInstallFailure(new Error('国内下载线路暂时没有可安装的 Codex 桌面端版本'), attempt))
+      .toMatchObject({ reason: 'unavailable' })
+    expect(toCodexDesktopInstallFailure(new Error('读取存储桶清单超时'), attempt)).toMatchObject({ reason: 'unreachable' })
+    expect(toCodexDesktopInstallFailure(new Error('存储桶清单里没有这台电脑能用的安装包，或清单格式对不上'), attempt))
+      .toMatchObject({ reason: 'unavailable' })
+  })
+
+  it('lets the official manifest and package redirect only to the very same resource', () => {
+    const original = 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix'
+    expect(validateCodexDesktopResourceUrl(original, original).href).toBe(original)
+    for (const target of [
+      'https://attacker.example/codex-app-prod/ChatGPT-x64.msix',
+      'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-arm64.msix',
+      `${original}?X-Amz-Signature=${'b'.repeat(64)}`,
+      'http://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix',
+      'https://persistent.oaistatic.com:8443/codex-app-prod/ChatGPT-x64.msix',
+      'https://user@persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix',
+      // 第三方的国内镜像和它背后的对象存储 2026-11-24 起一律不认。
       'https://codexapp.agentsmirror.com/latest/win-x64',
-      previous,
-    )).toThrow('不受信任的重定向')
-    expect(() => validateCodexDesktopResourceUrl(
-      'https://codexapp.agentsmirror.com/previous/win-x64?version=old',
-      previous,
-    )).toThrow('不受信任的重定向')
+      'https://fgws3-ocloud.ihep.ac.cn/20830-codex/latest/win-x64',
+    ]) {
+      expect(() => validateCodexDesktopResourceUrl(target, original)).toThrow('不受信任的重定向')
+    }
+    expect(() => validateCodexDesktopResourceUrl(`${original}?x=1`, `${original}?x=1`)).toThrow('不受信任的查询参数')
   })
 
-  it('parses historical mirror candidates using the same package metadata checks', async () => {
-    const previousManifestUrl = 'https://codexapp.agentsmirror.com/previous/manifest'
-    const fetchMock = vi.fn(async (value: string | URL | Request) => {
-      const url = String(value)
-      if (url === previousManifestUrl || url.startsWith(`${previousManifestUrl}?xm_refresh=`)) {
-        const response = new Response(JSON.stringify(testMirrorManifest('26.721.4979.0')), {
-          headers: { 'Content-Type': 'application/json' },
-        })
-        Object.defineProperty(response, 'url', { value: url })
-        return response
-      }
-      if (url === 'https://codexapp-r2.agentsmirror.com/previous/manifest'
-        || url.startsWith('https://codexapp-r2.agentsmirror.com/previous/manifest?xm_refresh=')) {
-        throw new Error('备用历史源不可用')
-      }
-      throw new Error(`unexpected URL ${url}`)
-    })
-
-    const result = await fetchCodexDesktopPreviousManifestCandidates('x64', fetchMock)
-    expect(result.errors).toEqual(['镜像备用源上一版本：备用历史源不可用'])
-    expect(result.candidates).toHaveLength(1)
-    expect(result.candidates[0].packageSource).toEqual({
-      label: '国内镜像上一版本',
-      url: 'https://codexapp.agentsmirror.com/previous/win-x64',
-    })
-  })
-
-  it('reports one final error per mirror after retry recovery is exhausted', async () => {
-    const fetchMock = vi.fn(async (value: string | URL | Request) => {
-      const response = new Response('{"schemaVersion":5}', {
-        headers: { 'Content-Type': 'application/json' },
-      })
-      Object.defineProperty(response, 'url', { value: String(value) })
+  it('reads the official version from the OpenAI feed and nowhere else', async () => {
+    const requested: string[] = []
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      requested.push(String(input))
+      expect(init).toMatchObject({ redirect: 'manual' })
+      const response = new Response(JSON.stringify({
+        schemaVersion: 1,
+        buildVersion: '26.1120.1.0',
+        storeProductId: '9PLM9XGG6VKS',
+        packageIdentity: 'OpenAI.Codex',
+      }), { headers: { 'Content-Type': 'application/json' } })
+      Object.defineProperty(response, 'url', { value: String(input) })
       return response
     })
-
-    await expect(fetchCodexDesktopMirrorRelease('x64', fetchMock)).rejects.toThrow(
-      '国内镜像：schema、产品 ID、包身份、版本、架构、文件大小或 SHA-256 校验失败；镜像备用源：schema、产品 ID、包身份、版本、架构、文件大小或 SHA-256 校验失败',
-    )
-    expect(fetchMock).toHaveBeenCalledTimes(4)
+    await expect(fetchCodexDesktopOfficialVersion(fetchMock)).resolves.toBe('26.1120.1.0')
+    expect(requested).toEqual(['https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json'])
   })
 
-  it('binds a primary manifest redirected to R2 to the R2 package route', async () => {
-    const primaryManifestUrl = 'https://codexapp.agentsmirror.com/latest/manifest'
-    const fallbackManifestUrl = 'https://codexapp-r2.agentsmirror.com/latest/manifest'
-    const redirect = new Response(null, {
+  it('refuses an official feed that is not JSON, names another product, fails or redirects elsewhere', async () => {
+    function respond(body: string | null, init: ResponseInit) {
+      return vi.fn(async (input: string | URL | Request) => {
+        const response = new Response(body, init)
+        Object.defineProperty(response, 'url', { value: String(input) })
+        return response
+      })
+    }
+    const json = { headers: { 'Content-Type': 'application/json' } }
+    await expect(fetchCodexDesktopOfficialVersion(respond('<html></html>', { headers: { 'Content-Type': 'text/html' } })))
+      .rejects.toThrow('返回的不是 JSON 响应')
+    await expect(fetchCodexDesktopOfficialVersion(respond(JSON.stringify({
+      schemaVersion: 1,
+      buildVersion: '26.1120.1.0',
+      storeProductId: '9PLM9XGG6VKS',
+      packageIdentity: 'Untrusted.App',
+    }), json))).rejects.toThrow('schema、产品 ID 或包身份校验失败')
+    await expect(fetchCodexDesktopOfficialVersion(respond(null, { ...json, status: 503 }))).rejects.toThrow('返回 HTTP 503')
+    await expect(fetchCodexDesktopOfficialVersion(respond(null, {
       status: 302,
-      headers: { Location: fallbackManifestUrl },
-    })
-    Object.defineProperty(redirect, 'url', { value: primaryManifestUrl })
-    const fetchMock = vi.fn(async (value: string | URL | Request) => {
-      const url = String(value)
-      if (url === primaryManifestUrl) return redirect
-      if (url === fallbackManifestUrl) {
-        const response = new Response(JSON.stringify(testMirrorManifest()), {
-          headers: { 'Content-Type': 'application/json' },
-        })
-        Object.defineProperty(response, 'url', { value: fallbackManifestUrl })
-        return response
-      }
-      throw new Error(`unexpected URL ${url}`)
-    })
-
-    const candidate = await fetchCodexDesktopManifestCandidate(
-      { kind: 'mirror', label: '国内镜像', url: primaryManifestUrl },
-      'x64',
-      fetchMock,
-    )
-
-    expect(candidate.packageSource).toEqual({
-      label: '镜像备用源',
-      url: 'https://codexapp-r2.agentsmirror.com/latest/win-x64',
-    })
-  })
-
-  it('keeps a signed object-storage manifest bound to its originating package route', async () => {
-    const primaryManifestUrl = 'https://codexapp.agentsmirror.com/latest/manifest'
-    const storageUrl = [
-      'https://fgws3-ocloud.ihep.ac.cn/20830-codex/latest/manifest',
-      'X-Amz-Algorithm=AWS4-HMAC-SHA256',
-      'X-Amz-Credential=NGhKOR9f3faa01GTyDTX%2F20260802%2Fauto%2Fs3%2Faws4_request',
-      'X-Amz-Date=20260802T033923Z',
-      'X-Amz-Expires=3600',
-      'X-Amz-SignedHeaders=host',
-      'response-content-disposition=attachment%3B%20filename%3D%22release-manifest.json%22',
-      'response-content-type=application%2Fjson',
-      `X-Amz-Signature=${'c'.repeat(64)}`,
-    ].join('&').replace('&X-Amz-Algorithm', '?X-Amz-Algorithm')
-    const redirect = new Response(null, { status: 302, headers: { Location: storageUrl } })
-    Object.defineProperty(redirect, 'url', { value: primaryManifestUrl })
-    const fetchMock = vi.fn(async (value: string | URL | Request) => {
-      const url = String(value)
-      if (url === primaryManifestUrl) return redirect
-      if (url === storageUrl) {
-        const response = new Response(JSON.stringify(testMirrorManifest()), {
-          headers: { 'Content-Type': 'application/json' },
-        })
-        Object.defineProperty(response, 'url', { value: storageUrl })
-        return response
-      }
-      throw new Error(`unexpected URL ${url}`)
-    })
-
-    const candidate = await fetchCodexDesktopManifestCandidate(
-      { kind: 'mirror', label: '国内镜像', url: primaryManifestUrl },
-      'x64',
-      fetchMock,
-    )
-
-    expect(candidate.packageSource).toEqual({
-      label: '国内镜像',
-      url: 'https://codexapp.agentsmirror.com/latest/win-x64',
-    })
-  })
-
-  it('accepts only the complete signed IHEP package redirect shape', () => {
-    const original = 'https://codexapp.agentsmirror.com/latest/win-x64'
-    const valid = [
-      'https://fgws3-ocloud.ihep.ac.cn/20830-codex/latest/win-x64',
-      'X-Amz-Algorithm=AWS4-HMAC-SHA256',
-      'X-Amz-Credential=NGhKOR9f3faa01GTyDTX%2F20260802%2Fauto%2Fs3%2Faws4_request',
-      'X-Amz-Date=20260802T034034Z',
-      'X-Amz-Expires=3600',
-      'X-Amz-SignedHeaders=host',
-      'response-content-disposition=attachment%3B%20filename%3D%22Codex-Windows-x64.msix%22',
-      'response-content-type=application%2Fvnd.ms-appx',
-      `X-Amz-Signature=${'b'.repeat(64)}`,
-    ].join('&').replace('&X-Amz-Algorithm', '?X-Amz-Algorithm')
-
-    expect(validateCodexDesktopResourceUrl(valid, original).href).toBe(valid)
-    expect(() => validateCodexDesktopResourceUrl(
-      valid.replace(/&X-Amz-Signature=[a-f0-9]{64}$/i, ''),
-      original,
-    )).toThrow('不受信任的重定向')
-    expect(() => validateCodexDesktopResourceUrl(
-      valid.replace('/20830-codex/latest/', '/other-bucket/latest/'),
-      original,
-    )).toThrow('不受信任的重定向')
+      headers: { Location: 'https://codexapp.agentsmirror.com/latest/manifest' },
+    }))).rejects.toThrow('不受信任的重定向')
   })
 
   it('rejects an untrusted package redirect before writing a file', async () => {
@@ -872,12 +648,12 @@ describe('Codex Desktop update state', () => {
       headers: { Location: 'https://attacker.example/Codex.msix' },
     })
     Object.defineProperty(response, 'url', {
-      value: 'https://codexapp.agentsmirror.com/latest/win-x64',
+      value: 'https://persistent.oaistatic.com/codex-app-prod/ChatGPT-x64.msix',
     })
     const fetchMock = vi.fn().mockResolvedValue(response)
 
     await expect(downloadCodexDesktopPackage(
-      { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' },
+      buildCodexDesktopOfficialPackageSource('x64'),
       destination,
       () => undefined,
       fetchMock,
@@ -902,7 +678,7 @@ describe('Codex Desktop update state', () => {
     const progress: number[] = []
 
     const result = await downloadCodexDesktopPackage(
-      { label: '测试镜像', url: 'https://mirror.example.cn/Codex.msix' },
+      { label: '测试源', url: 'https://mirror.example.cn/Codex.msix' },
       destination,
       (value) => progress.push(value.percent),
       fetchMock,
@@ -918,7 +694,7 @@ describe('Codex Desktop update state', () => {
     expect(progress.every((value) => value >= 0 && value <= 100)).toBe(true)
   })
 
-  it('continues a dropped mirror download from where it stopped and keeps the progress going', async () => {
+  it('continues a dropped download from where it stopped and keeps the progress going', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-resume-'))
     temporaryDirectories.push(directory)
     const destination = path.join(directory, 'Codex.msix')
@@ -960,12 +736,7 @@ describe('Codex Desktop update state', () => {
     const progress: Array<{ percent: number; resuming?: boolean }> = []
 
     const result = await downloadCodexDesktopPackage(
-      {
-        label: '测试镜像',
-        url,
-        expectedContentLength: bytes.byteLength,
-        expectedSha256Base64: createHash('sha256').update(bytes).digest('base64'),
-      },
+      { label: '测试源', url },
       destination,
       ({ percent, resuming }) => progress.push({ percent, resuming }),
       fetchMock,
@@ -982,148 +753,7 @@ describe('Codex Desktop update state', () => {
     expect(percents.at(-1)).toBe(100)
   })
 
-  it('rejects a package whose Content-Length differs from the mirror manifest', async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-download-'))
-    temporaryDirectories.push(directory)
-    const destination = path.join(directory, 'Codex.msix')
-    const bytes = Buffer.alloc(10 * 1024 * 1024, 0x41)
-    const response = new Response(bytes, {
-      headers: {
-        'Content-Type': 'application/vnd.ms-appx',
-        'Content-Length': String(bytes.byteLength),
-      },
-    })
-    Object.defineProperty(response, 'url', { value: 'https://mirror.example.cn/Codex.msix' })
-
-    await expect(downloadCodexDesktopPackage({
-      label: '测试镜像',
-      url: 'https://mirror.example.cn/Codex.msix',
-      expectedContentLength: bytes.byteLength + 1,
-    }, destination, () => undefined, vi.fn().mockResolvedValue(response)))
-      .rejects.toThrow('Content-Length 与镜像清单不一致')
-    expect(fs.existsSync(destination)).toBe(false)
-  })
-
-  it('rejects and removes a package whose SHA-256 differs from the mirror manifest', async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-download-'))
-    temporaryDirectories.push(directory)
-    const destination = path.join(directory, 'Codex.msix')
-    const bytes = Buffer.alloc(10 * 1024 * 1024, 0x41)
-    const response = new Response(bytes, {
-      headers: {
-        'Content-Type': 'application/vnd.ms-appx',
-        'Content-Length': String(bytes.byteLength),
-      },
-    })
-    Object.defineProperty(response, 'url', { value: 'https://mirror.example.cn/Codex.msix' })
-
-    await expect(downloadCodexDesktopPackage({
-      label: '测试镜像',
-      url: 'https://mirror.example.cn/Codex.msix',
-      expectedContentLength: bytes.byteLength,
-      expectedSha256Base64: Buffer.alloc(32).toString('base64'),
-    }, destination, () => undefined, vi.fn().mockResolvedValue(response)))
-      .rejects.toThrow('SHA-256 与镜像清单不一致')
-    expect(fs.existsSync(destination)).toBe(false)
-  })
-
-  it('switches to the next manifest-bound source after a Content-Length mismatch', async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-fallback-'))
-    temporaryDirectories.push(directory)
-    const destination = path.join(directory, 'Codex.msix')
-    const bytes = Buffer.alloc(10 * 1024 * 1024, 0x42)
-    const hash = createHash('sha256').update(bytes).digest('base64')
-    const firstUrl = 'https://mirror-one.example/latest/win-x64'
-    const secondUrl = 'https://mirror-two.example/latest/win-x64'
-    const fetchMock = vi.fn(async (value: string | URL | Request) => {
-      const url = String(value)
-      const response = new Response(bytes, {
-        headers: {
-          'Content-Type': 'application/vnd.ms-appx',
-          'Content-Length': String(url === firstUrl ? bytes.byteLength + 1 : bytes.byteLength),
-        },
-      })
-      Object.defineProperty(response, 'url', { value: url })
-      return response
-    })
-    const attempts: string[] = []
-
-    const result = await downloadCodexDesktopPackageFromCandidates([
-      testMirrorCandidate('主测试源', firstUrl, bytes.byteLength, hash),
-      testMirrorCandidate('备用测试源', secondUrl, bytes.byteLength, hash),
-    ], destination, {
-      fetchImplementation: fetchMock,
-      onAttempt: (candidate) => attempts.push(candidate.packageSource?.label ?? ''),
-    })
-
-    expect(result.candidate.packageSource?.url).toBe(secondUrl)
-    expect(attempts).toEqual(['主测试源', '备用测试源'])
-    expect(fs.statSync(destination).size).toBe(bytes.byteLength)
-  })
-
-  it('switches sources after SHA-256 rejection and removes the rejected package', async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-fallback-'))
-    temporaryDirectories.push(directory)
-    const destination = path.join(directory, 'Codex.msix')
-    const rejectedBytes = Buffer.alloc(10 * 1024 * 1024, 0x43)
-    const acceptedBytes = Buffer.alloc(10 * 1024 * 1024, 0x44)
-    const expectedHash = createHash('sha256').update(acceptedBytes).digest('base64')
-    const firstUrl = 'https://mirror-one.example/latest/win-x64'
-    const secondUrl = 'https://mirror-two.example/latest/win-x64'
-    const fetchMock = vi.fn(async (value: string | URL | Request) => {
-      const url = String(value)
-      const bytes = url === firstUrl ? rejectedBytes : acceptedBytes
-      const response = new Response(bytes, {
-        headers: {
-          'Content-Type': 'application/vnd.ms-appx',
-          'Content-Length': String(bytes.byteLength),
-        },
-      })
-      Object.defineProperty(response, 'url', { value: url })
-      return response
-    })
-
-    const result = await downloadCodexDesktopPackageFromCandidates([
-      testMirrorCandidate('主测试源', firstUrl, acceptedBytes.byteLength, expectedHash),
-      testMirrorCandidate('备用测试源', secondUrl, acceptedBytes.byteLength, expectedHash),
-    ], destination, { fetchImplementation: fetchMock })
-
-    expect(result.candidate.packageSource?.url).toBe(secondUrl)
-    expect(createHash('sha256').update(fs.readFileSync(destination)).digest('base64')).toBe(expectedHash)
-  })
-
-  it('leaves no MSIX when every manifest-bound source fails', async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-fallback-'))
-    temporaryDirectories.push(directory)
-    const destination = path.join(directory, 'Codex.msix')
-    const bytes = Buffer.alloc(10 * 1024 * 1024, 0x45)
-    const expectedHash = Buffer.alloc(32).toString('base64')
-    const candidates = [
-      testMirrorCandidate('主测试源', 'https://mirror-one.example/latest/win-x64', bytes.byteLength, expectedHash),
-      testMirrorCandidate('备用测试源', 'https://mirror-two.example/latest/win-x64', bytes.byteLength, expectedHash),
-    ]
-    const fetchMock = vi.fn(async (value: string | URL | Request) => {
-      const url = String(value)
-      const response = new Response(bytes, {
-        headers: {
-          'Content-Type': 'application/vnd.ms-appx',
-          'Content-Length': String(bytes.byteLength),
-        },
-      })
-      Object.defineProperty(response, 'url', { value: url })
-      return response
-    })
-
-    await expect(downloadCodexDesktopPackageFromCandidates(
-      candidates,
-      destination,
-      { fetchImplementation: fetchMock },
-    )).rejects.toThrow('所有国内镜像均未通过完整校验')
-    expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(fs.existsSync(destination)).toBe(false)
-  })
-
-  it('rejects an HTML mirror response and leaves no partial package', async () => {
+  it('rejects an HTML response and leaves no partial package', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-download-'))
     temporaryDirectories.push(directory)
     const destination = path.join(directory, 'Codex.msix')
@@ -1136,7 +766,7 @@ describe('Codex Desktop update state', () => {
     Object.defineProperty(response, 'url', { value: 'https://mirror.example.cn/Codex.msix' })
 
     await expect(downloadCodexDesktopPackage(
-      { label: '测试镜像', url: 'https://mirror.example.cn/Codex.msix' },
+      { label: '测试源', url: 'https://mirror.example.cn/Codex.msix' },
       destination,
       () => undefined,
       vi.fn().mockResolvedValue(response),
@@ -1227,83 +857,24 @@ describe('Codex Desktop update state', () => {
   })
 })
 
-describe('Codex Desktop mirror fallback disclosure', () => {
-  it('keeps the primary mirror download message unchanged', () => {
-    expect(describeCodexDesktopPrimaryMirrorSkip(
-      { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' },
-      ['镜像备用源：查询超时'],
-    )).toBeNull()
-  })
-
-  it('explains why the primary mirror was skipped before the fallback download', () => {
-    expect(describeCodexDesktopPrimaryMirrorSkip(
-      { label: '镜像备用源', url: 'https://codexapp-r2.agentsmirror.com/latest/win-x64' },
-      ['国内镜像：查询超时'],
-    )).toBe('国内镜像本次不可用（查询超时）')
-  })
-
-  it('stays silent when the fallback simply published a newer build', () => {
-    expect(describeCodexDesktopPrimaryMirrorSkip(
-      { label: '镜像备用源', url: 'https://codexapp-r2.agentsmirror.com/latest/win-x64' },
-      ['OpenAI 官方源：返回 HTTP 503'],
-    )).toBeNull()
-  })
-
-  it('words each download attempt so the reason can stay on screen for the whole download', () => {
-    const fallback = { label: '镜像备用源', url: 'https://codexapp-r2.agentsmirror.com/latest/win-x64' }
-    expect(describeCodexDesktopDownloadAttempt(fallback, 0, null, ['国内镜像：查询超时']))
-      .toBe('国内镜像本次不可用（查询超时），正在从镜像备用源下载')
-    expect(describeCodexDesktopDownloadAttempt(fallback, 0, null, []))
-      .toBe('正在从镜像备用源下载')
-    expect(describeCodexDesktopDownloadAttempt(fallback, 1, '国内镜像（26.917.9434.0）：SHA-256 不一致', ['国内镜像：查询超时']))
-      .toBe('上一个镜像未通过校验，已改为从镜像备用源下载')
-  })
-
-  it('says the store is missing instead of that it failed, on every mirror attempt', () => {
-    const primary = { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' }
-    const fallback = { label: '镜像备用源', url: 'https://codexapp-r2.agentsmirror.com/latest/win-x64' }
-    const noStore = { storeFailure: null, storeUnavailable: true }
-    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], noStore))
-      .toBe('本机没有微软商店，直接通过国内线路安装：正在从国内镜像下载')
-    expect(describeCodexDesktopDownloadAttempt(fallback, 1, '国内镜像：SHA-256 不一致', [], noStore))
-      .toBe('本机没有微软商店，直接通过国内线路安装：上一个镜像未通过校验，已改为从镜像备用源下载')
-    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], noStore)).not.toContain('没装上')
+describe('Codex Desktop progress notices', () => {
+  it('says the store is missing instead of that it failed, before coming back to the bucket', () => {
+    const notice = describeCodexDesktopStoreNotice({ storeFailure: null, storeUnavailable: true })
+    expect(notice).toBe('本机没有微软商店，直接通过国内线路安装：')
+    expect(notice).not.toContain('没装上')
   })
 
   it('names a missing store installer as a missing part, not a store failure', () => {
-    const primary = { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' }
-    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], {
+    expect(describeCodexDesktopStoreNotice({
       storeFailure: '本机的微软商店安装组件不可用',
       storeInstallerMissing: true,
-    })).toBe('微软商店缺少安装组件，先通过国内线路安装：正在从国内镜像下载')
+    })).toBe('微软商店缺少安装组件，先通过国内线路安装：')
     expect(describeCodexDesktopStoreNotice({ storeFailure: null })).toBe('')
   })
 
-  it('keeps the Microsoft Store failure in front of every mirror attempt', () => {
-    const primary = { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' }
-    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], '无法连接微软商店'))
-      .toBe('微软商店安装失败（无法连接微软商店），正在从国内镜像下载')
-  })
-
-  it('reads the failure the historical probe actually produces', async () => {
-    const fallbackManifestUrl = 'https://codexapp-r2.agentsmirror.com/previous/manifest'
-    const fetchMock = vi.fn(async (value: string | URL | Request) => {
-      const url = String(value)
-      if (url.startsWith(fallbackManifestUrl)) {
-        const response = new Response(JSON.stringify(testMirrorManifest('26.721.4979.0')), {
-          headers: { 'Content-Type': 'application/json' },
-        })
-        Object.defineProperty(response, 'url', { value: url })
-        return response
-      }
-      throw new Error('连接被拒绝')
-    })
-
-    const result = await fetchCodexDesktopPreviousManifestCandidates('x64', fetchMock)
-    const packageSource = result.candidates[0]?.packageSource
-    expect(packageSource?.label).toBe('镜像备用源上一版本')
-    expect(describeCodexDesktopPrimaryMirrorSkip(packageSource!, result.errors))
-      .toBe('国内镜像本次不可用（连接被拒绝）')
+  it('keeps the Microsoft Store failure in front of the bucket download', () => {
+    expect(describeCodexDesktopStoreNotice({ storeFailure: '无法连接微软商店' }))
+      .toBe('微软商店安装失败（无法连接微软商店），')
   })
 
   it('refuses a service built without the proxy-aware download fetch', () => {
@@ -1405,14 +976,14 @@ describe('buildCodexDesktopWindowsProbes', () => {
     expect(result.detectionError).toBe('Get-StartApps 超时')
   })
 
-  it('does not flag detectionFailed when only the mirror probe rejects', () => {
-    // The mirror probe already surfaces its own failure through mirrorError;
+  it('does not flag detectionFailed when only the domestic-line version probe rejects', () => {
+    // The bucket version probe already surfaces its own failure through mirrorError;
     // it must not also blank out an otherwise confidently known install state.
     const result = buildCodexDesktopWindowsProbes(
       { status: 'fulfilled', value: null },
       { status: 'fulfilled', value: [] },
       { status: 'fulfilled', value: packageProbe },
-      { status: 'rejected', reason: new Error('镜像清单下载超时') },
+      { status: 'rejected', reason: new Error('存储桶清单下载超时') },
       '2026-08-08T00:00:00.000Z',
     )
     expect(result.detectionFailed).toBe(false)
@@ -1420,7 +991,7 @@ describe('buildCodexDesktopWindowsProbes', () => {
     expect(result.mirrorProbe).toEqual({
       version: null,
       checkedAt: '2026-08-08T00:00:00.000Z',
-      error: '镜像清单下载超时',
+      error: '存储桶清单下载超时',
     })
   })
 
@@ -3115,18 +2686,17 @@ describe('Codex Desktop official offline package', () => {
       .toBe('微软商店安装失败（无法连接微软商店），正在从 OpenAI 官网下载 Codex 桌面端的离线安装包')
   })
 
-  it('names the failed official package, without the store reason, before every mirror attempt', () => {
-    const primary = { label: '国内镜像', url: 'https://codexapp.agentsmirror.com/latest/win-x64' }
+  it('names the failed official package, without the store reason, before coming back to the bucket', () => {
     const official = 'OpenAI 官网连接或下载超时'
-    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], { storeFailure: '无法连接微软商店', officialFailure: official }))
-      .toBe('微软商店安装失败，OpenAI 官网的离线安装包也未能下载，正在从国内镜像下载')
-    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], { storeFailure: null, storeUnavailable: true, officialFailure: official }))
-      .toBe('本机没有微软商店，OpenAI 官网的离线安装包也未能下载，正在从国内镜像下载')
-    expect(describeCodexDesktopDownloadAttempt(primary, 0, null, [], {
+    expect(describeCodexDesktopStoreNotice({ storeFailure: '无法连接微软商店', officialFailure: official }))
+      .toBe('微软商店安装失败，OpenAI 官网的离线安装包也未能下载，')
+    expect(describeCodexDesktopStoreNotice({ storeFailure: null, storeUnavailable: true, officialFailure: official }))
+      .toBe('本机没有微软商店，OpenAI 官网的离线安装包也未能下载，')
+    expect(describeCodexDesktopStoreNotice({
       storeFailure: '本机的微软商店安装组件不可用',
       storeInstallerMissing: true,
       officialFailure: official,
-    })).toBe('微软商店缺少安装组件，OpenAI 官网的离线安装包也未能下载，正在从国内镜像下载')
+    })).toBe('微软商店缺少安装组件，OpenAI 官网的离线安装包也未能下载，')
     expect(describeCodexDesktopStoreNotice({ storeFailure: '无法连接微软商店', officialFailure: official })).not.toContain(official)
   })
 
@@ -3228,14 +2798,14 @@ describe('Codex Desktop official offline package', () => {
     })).rejects.toThrow('OpenAI 官网返回的不是 MSIX 文件（Content-Type: text/html; charset=utf-8）')
     expect(fs.existsSync(destination)).toBe(false)
 
-    // 国内镜像那一路照旧只认 MSIX 与二进制流。
-    const mirror = officialFetch({ contentType: null })
+    // 没放宽类型的来源照旧只认 MSIX 与二进制流。
+    const strict = officialFetch({ contentType: null })
     await expect(downloadCodexDesktopPackage(
-      { label: '国内镜像', url: packageUrl },
+      { label: '测试源', url: packageUrl },
       officialDestination(),
       () => undefined,
-      mirror.fetchMock,
-    )).rejects.toThrow('国内镜像返回的不是 MSIX 文件（Content-Type: 缺失）')
+      strict.fetchMock,
+    )).rejects.toThrow('测试源返回的不是 MSIX 文件（Content-Type: 缺失）')
   })
 
   it('skips the download when the official build is not newer than the installed one', async () => {
@@ -3389,7 +2959,7 @@ describe('Codex Desktop official offline package', () => {
     expect(isCodexDesktopDownloadTooSlow(20 * 60_000, 299 * megabytes, 300 * megabytes, limit)).toBe(false)
   })
 
-  it('drops the official download as too slow, not as cancelled, once ten more minutes are ahead', async () => {
+  it('drops the official download as too slow, not as cancelled, once ten more minutes are ahead and a route is left', async () => {
     const destination = officialDestination()
     // 两分钟才 1 MB：第一块到时已过了半分钟的观察期，剩下 9 MB 照这个速度还要 18 分钟，
     // 超过 10 分钟，第一块之后就停下。
@@ -3401,6 +2971,7 @@ describe('Codex Desktop official offline package', () => {
       installedVersion: null,
       knownVersion: '26.930.1.0',
       fetchImplementation: slow.fetchMock,
+      abandonWhenSlow: true,
       inspectPackage: async () => officialMetadata('26.930.1.0'),
       resumeOptions: { now: slow.now },
     }).catch((cause: unknown) => cause)
@@ -3424,17 +2995,48 @@ describe('Codex Desktop official offline package', () => {
       installedVersion: null,
       knownVersion: '26.930.1.0',
       fetchImplementation: steady.fetchMock,
+      abandonWhenSlow: true,
       inspectPackage: async () => officialMetadata('26.930.1.0'),
       resumeOptions: { now: steady.now },
     })).resolves.toMatchObject({ status: 'downloaded', version: '26.930.1.0' })
     expect(steady.stream.sent).toBe(10)
   })
 
-  it('never drops the domestic mirror for being slow: it is the last route', async () => {
+  it('downloads the official package to the end, however slow, when no route is left behind it', async () => {
+    // 同一个两分钟才 1 MB 的速度：后面没有过期的存储桶可退，放弃了客户只会看到装不上。
+    const slow = trickleFetch(120)
+
+    await expect(downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination: officialDestination(),
+      installedVersion: null,
+      knownVersion: '26.930.1.0',
+      fetchImplementation: slow.fetchMock,
+      inspectPackage: async () => officialMetadata('26.930.1.0'),
+      resumeOptions: { now: slow.now },
+    })).resolves.toMatchObject({ status: 'downloaded', version: '26.930.1.0' })
+    expect(slow.stream.sent).toBe(10)
+  })
+
+  it('sets the ten-minute limit on the official source only when a route is left behind it', () => {
+    expect(buildCodexDesktopOfficialPackageSource('x64')).toEqual({
+      label: 'OpenAI 官网',
+      url: packageUrl,
+      acceptAnyBinaryContentType: true,
+    })
+    expect(buildCodexDesktopOfficialPackageSource('x64', true)).toEqual({
+      label: 'OpenAI 官网',
+      url: packageUrl,
+      acceptAnyBinaryContentType: true,
+      maximumRemainingMs: codexDesktopOfficialDownloadLimitMs,
+    })
+  })
+
+  it('never drops a download for being slow when its source sets no limit', async () => {
     const slow = trickleFetch(120)
 
     await expect(downloadCodexDesktopPackage(
-      { label: '国内镜像', url: packageUrl },
+      { label: '测试源', url: packageUrl },
       officialDestination(),
       () => undefined,
       slow.fetchMock,
@@ -3687,10 +3289,9 @@ describe('Codex Desktop from the Xingmang bucket', () => {
     expect(official).toEqual([officialUrl])
   })
 
-  it('measures the mirror, not the OpenAI package, when it came back to an old index after the official package', async () => {
-    // Only the mirror is left after this one; the official package already failed.
+  it('measures nothing and keeps going when it came back to an old index after the official package, the last route', async () => {
+    // No route is left after this one: a slow bucket download must finish rather than give up.
     const { fetchMock, version } = bucketFetch({ checkedAt: new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString() })
-    const mirrorUrl = buildCodexDesktopPackageSources('x64')[0].url
     const measured: string[] = []
     const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       if (String(input).startsWith(desktopPackageBucketOrigin)) return fetchMock(input, init)
@@ -3702,8 +3303,10 @@ describe('Codex Desktop from the Xingmang bucket', () => {
       inspectPackage: async () => bucketMetadata(version),
     })
     const handed = vi.mocked(downloadDesktopBucketPackage).mock.calls.at(-1)?.[2]
-    await expect(handed?.probeAlternative?.(new AbortController().signal)).resolves.toMatchObject({ totalBytes: bytes.byteLength })
-    expect(measured).toEqual([mirrorUrl])
+    // A probe that measures nothing reads as "the other route is not faster", so the bucket download goes on.
+    expect(handed?.probeAlternative).toBeTypeOf('function')
+    await expect(handed?.probeAlternative?.(new AbortController().signal)).resolves.toBeNull()
+    expect(measured).toEqual([])
   })
 
   it('goes on to the Store and the other routes when Windows refuses the verified bucket package', () => {
@@ -3714,7 +3317,7 @@ describe('Codex Desktop from the Xingmang bucket', () => {
   })
 
   it('stops after a bucket package from an old index that Windows refused, the Store being already behind it', () => {
-    // Like the official package: the mirror left after it would sideload the same OpenAI package the same way.
+    // No route is left after it, and the Store was already tried.
     expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('Add-AppxPackage 部署失败：0x80073CFF'), true)).toBe(false)
     expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('安装命令完成后仍未检测到 Codex 桌面端'), true)).toBe(false)
   })
@@ -3735,7 +3338,7 @@ describe('Codex Desktop from the Xingmang bucket', () => {
     const englishFirewallOff = new Error(
       'Add-AppxPackage 安装失败：Deployment failed with HRESULT: 0x80073CF6, Package could not be registered. error 0x800706D9: While processing the request, the system failed to register the windows.firewallRules extension due to the following error: There are no more endpoints available from the endpoint mapper.',
     )
-    // The Store, the official package and the mirror all register the same firewall rules.
+    // The Store and the official package register the same firewall rules.
     expect(shouldContinueAfterCodexDesktopBucketInstall(firewallOff)).toBe(false)
     expect(shouldContinueAfterCodexDesktopBucketInstall(englishFirewallOff)).toBe(false)
     // Only the firewall code stops it: the same registration failure without it still goes on.
