@@ -58,13 +58,6 @@ export interface CodexDesktopPackageMetadata {
   hasSignature: boolean
 }
 
-export interface CodexDesktopMirrorRelease {
-  version: string
-  architecture: 'x64' | 'arm64'
-  contentLength: number
-  sha256Base64: string
-}
-
 const officialCodexDesktopPublisher = 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B'
 
 export function parseCodexDesktopAppManifest(input: string): string | null {
@@ -369,74 +362,6 @@ export function parseCodexDesktopPackageMetadata(
       architecture: record.architecture.toLowerCase(),
       publisher: record.publisher,
       hasSignature: record.hasSignature,
-    }
-  } catch {
-    return null
-  }
-}
-
-function validSha256Base64(value: unknown): value is string {
-  if (typeof value !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(value)) return false
-  const decoded = Buffer.from(value, 'base64')
-  return decoded.length === 32 && decoded.toString('base64') === value
-}
-
-export function parseCodexDesktopMirrorManifest(
-  input: string,
-  architecture: 'x64' | 'arm64',
-): CodexDesktopMirrorRelease | null {
-  if (!input.trim() || Buffer.byteLength(input, 'utf8') > 256 * 1024) return null
-  try {
-    const value = JSON.parse(input) as unknown
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-    const root = value as Record<string, unknown>
-    if (root.schemaVersion !== 5 || !root.sources || typeof root.sources !== 'object') return null
-    const windows = (root.sources as Record<string, unknown>).windows
-    if (!windows || typeof windows !== 'object' || Array.isArray(windows)) return null
-    const windowsRecord = windows as Record<string, unknown>
-    const updateManifest = windowsRecord.updateManifest
-    const architectures = windowsRecord.architectures
-    if (
-      !updateManifest
-      || typeof updateManifest !== 'object'
-      || Array.isArray(updateManifest)
-      || !architectures
-      || typeof architectures !== 'object'
-      || Array.isArray(architectures)
-    ) return null
-    const official = updateManifest as Record<string, unknown>
-    if (
-      official.storeProductId !== '9PLM9XGG6VKS'
-      || official.packageIdentity !== 'OpenAI.Codex'
-      || typeof official.buildVersion !== 'string'
-      || !/^\d+(?:\.\d+){3}$/.test(official.buildVersion)
-    ) return null
-    const release = (architectures as Record<string, unknown>)[architecture]
-    if (!release || typeof release !== 'object' || Array.isArray(release)) return null
-    const record = release as Record<string, unknown>
-    const catalog = record.catalog
-    if (!catalog || typeof catalog !== 'object' || Array.isArray(catalog)) return null
-    const catalogRecord = catalog as Record<string, unknown>
-    if (
-      record.architecture !== architecture
-      || record.downloadable !== true
-      || record.status !== 'downloadable'
-      || typeof record.version !== 'string'
-      || !/^\d+(?:\.\d+){3}$/.test(record.version)
-      || !Number.isSafeInteger(record.contentLength)
-      || Number(record.contentLength) < 10 * 1024 * 1024
-      || Number(record.contentLength) > 1_500 * 1024 * 1024
-      || catalogRecord.hashAlgorithm !== 'SHA256'
-      || !validSha256Base64(catalogRecord.hash)
-      || catalogRecord.contentLength !== record.contentLength
-      || typeof catalogRecord.packageFullName !== 'string'
-      || !catalogRecord.packageFullName.startsWith(`OpenAI.Codex_${record.version}_${architecture}__`)
-    ) return null
-    return {
-      version: record.version,
-      architecture,
-      contentLength: Number(record.contentLength),
-      sha256Base64: catalogRecord.hash,
     }
   } catch {
     return null

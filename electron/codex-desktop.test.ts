@@ -11,7 +11,6 @@ import {
   parseCodexDesktopPackageMetadata,
   parseCodexDesktopPackagePath,
   parseCodexDesktopPackageProbeJson,
-  parseCodexDesktopMirrorManifest,
   parseCodexDesktopPackagesJson,
   parseCodexDesktopUpdateManifest,
   parseStartAppsJson,
@@ -76,52 +75,6 @@ describe('Codex desktop app discovery', () => {
     expect(parseCodexDesktopAppManifest(manifest.replace('Codex', 'Other'))).toBeNull()
     expect(parseCodexDesktopAppManifest(manifest.replace('26.721.31836', 'latest'))).toBeNull()
     expect(parseCodexDesktopAppManifest('<html>not json</html>')).toBeNull()
-  })
-
-  it('strictly parses the domestic mirror release for the selected architecture', () => {
-    const manifest = {
-      schemaVersion: 5,
-      sources: {
-        windows: {
-          updateManifest: {
-            buildVersion: '26.721.4979.0',
-            storeProductId: '9PLM9XGG6VKS',
-            packageIdentity: 'OpenAI.Codex',
-          },
-          architectures: {
-            x64: {
-              architecture: 'x64',
-              status: 'downloadable',
-              downloadable: true,
-              version: '26.721.3996.0',
-              contentLength: 744072561,
-              catalog: {
-                packageFullName: 'OpenAI.Codex_26.721.3996.0_x64__2p2nqsd0c76g0',
-                hashAlgorithm: 'SHA256',
-                hash: '0a/lZGhbNAxLAd6xFNfKeRJZzzJzNErA1E5IYWnqHjM=',
-                contentLength: 744072561,
-              },
-            },
-          },
-        },
-      },
-    }
-    expect(parseCodexDesktopMirrorManifest(JSON.stringify(manifest), 'x64')).toEqual({
-      version: '26.721.3996.0',
-      architecture: 'x64',
-      contentLength: 744072561,
-      sha256Base64: '0a/lZGhbNAxLAd6xFNfKeRJZzzJzNErA1E5IYWnqHjM=',
-    })
-    expect(parseCodexDesktopMirrorManifest(JSON.stringify(manifest), 'arm64')).toBeNull()
-    expect(parseCodexDesktopMirrorManifest(JSON.stringify({
-      ...manifest,
-      sources: {
-        windows: {
-          ...manifest.sources.windows,
-          updateManifest: { ...manifest.sources.windows.updateManifest, packageIdentity: 'Untrusted.App' },
-        },
-      },
-    }), 'x64')).toBeNull()
   })
 
   it('parses both a single PowerShell object and an array', () => {

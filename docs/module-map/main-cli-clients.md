@@ -80,7 +80,7 @@
 - `codex-responses-probe.ts` — 检查页的 Codex 协议检查：用当前配置向中转发两次 Responses 请求，确认函数调用真的走得通；要花额度，所以先要用户勾选确认，同时点多次共用同一次，账号或配置中途变了就作废
 
 ## Codex 桌面端
-- `codex-desktop-service.ts` — **桌面端的服务层（全仓最大的文件之一）**：探测、安装、更新、打开、重置、卸载。Windows 上安装顺序是星芒存储桶 → 微软商店 → OpenAI 官网离线安装包 → 国内镜像，每一路的地址与重定向都钉死、包身份与签名都核；Mac 上交给 `macos-desktop-app-installer.ts` 与 `macos-codex-app.ts`。从 `system-service.ts` 拆出
+- `codex-desktop-service.ts` — **桌面端的服务层（全仓最大的文件之一）**：探测、安装、更新、打开、重置、卸载。Windows 上安装顺序是星芒存储桶 → 微软商店 → OpenAI 官网离线安装包 → 清单过期的存储桶（2026-11-24 拿掉了第三方国内镜像），首页「可更新」只看桶里那一版，每一路的地址与重定向都钉死、包身份与签名都核；Mac 上交给 `macos-desktop-app-installer.ts` 与 `macos-codex-app.ts`。从 `system-service.ts` 拆出
 - `codex-desktop.ts` — 桌面端清单、包信息、开始菜单与进程列表解析的纯函数层，外加按包结束进程
 - `codex-desktop-appx.ts` — Windows 上装 MSIX 的共用一步（Codex 和 Claude Desktop 都用）：先按当前用户 `Add-AppxPackage`，Windows 说带服务要管理员时再走一次 UAC 授权；产品标识只收字母，免得拼进提权脚本变成代码
 - `codex-desktop-cdp.ts` — 打开桌面端时经本机回环端口的 CDP，把官方已经带着的中文资源显示出来（只打机制层的补丁，不替换 Codex 的资源）；端口只认回环、核对端口归属，防别的进程冒充
