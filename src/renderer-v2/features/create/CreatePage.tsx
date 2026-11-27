@@ -413,7 +413,7 @@ function CreateScope({ bridge, accountScope, active = true, site, videoAccess, o
       onOpen: showLibrary,
       refresh: assets.refresh,
       render: (context) => {
-        const actions: CreateLibraryActions = { openFolder, openConversation: context.openConversation, openFilm: showVideo, openCanvasProject: showCanvasProject, reuseImage: context.reuseImage, animateImage: context.animateImage, saveImage, saveVideo, openVideo: openVideoFile, addClip: addLibraryClip, addToCanvas: addImageToCanvas }
+        const actions: CreateLibraryActions = { openFolder, openConversation: context.openConversation, openFilm: showVideo, openCanvasProject: showCanvasProject, reuseImage: context.reuseImage, animateImage: context.animateImage, saveImage, saveVideo, openVideo: openVideoFile, addClip: addLibraryClip, addToCanvas: addImageToCanvas, upscale: context.upscale }
         return <>
         {/* 画布项目那一块也由这里摆：它下面「此项目中的作品」点开以后要用对话这边的东西（把图放进输入框）。 */}
         {project && <CanvasProjectPane project={project} opening={opening === project.id} onOpen={() => openCanvasProject(project.id)}>

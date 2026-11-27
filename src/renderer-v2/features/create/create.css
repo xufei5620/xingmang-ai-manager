@@ -77,6 +77,8 @@
    只限最宽最高时，按播放之前它照缩略图的大小排，画面只有一小块。 */
 .create-library-media > video { width: min(100%, calc(var(--create-library-media-max) * var(--create-library-player-ratio, 16 / 9))); aspect-ratio: var(--create-library-player-ratio, 16 / 9); }
 .create-library-media > p { margin: 0; padding: 24px; color: var(--text-3); font-size: 13px; text-align: center; }
+/* 图片能做的事有五件（加了「变清晰」），640 宽的框一行放不下时折到第二行，不往左溢出框外。 */
+.xm-dialog[data-testid='create-library-detail'] > .xm-modal-content > footer { flex-wrap: wrap; }
 .create-library-origin { display: flex; margin-top: 10px; }
 /* 选择框里的那一份：框自己滚。 */
 .create-library-picker { display: grid; align-content: start; gap: 14px; min-height: 240px; }

@@ -173,6 +173,14 @@ const bridge: ChatBridge = {
   onAiChatStream: (listener) => { listeners.add(listener); return () => { listeners.delete(listener) } },
   copyAiChatAsset: async (assetId) => { record('copy-asset', assetId); if (assetGone) throw assetGoneError('chat:copy-asset') },
   saveAiChatAsset: async (assetId) => { record('save-asset', assetId); if (assetGone) throw assetGoneError('chat:save-asset'); return { saved: !query.has('saveCancel') } },
+  // 「变清晰」：?upscaleHold 一直不回（看转圈），?upscaleFail 照主进程那句失败的话拒绝。
+  upscaleAiChatAsset: async (input) => {
+    record('upscale-asset', input)
+    if (assetGone) throw assetGoneError('chat:upscale-asset')
+    if (query.has('upscaleHold')) return new Promise<AiChatAsset>(() => undefined)
+    if (query.has('upscaleFail')) throw new Error("Error invoking remote method 'chat:upscale-asset': Error: 提升清晰度失败，请稍后重试；如持续失败，请联系客服。")
+    return { ...imageAsset, assetId: `u${String(calls.length).padStart(42, '0')}`, fileName: 'upscaled.png', width: (imageAsset.width ?? 1) * input.scale, height: (imageAsset.height ?? 1) * input.scale }
+  },
   showAiChatAssetMenu: async (assetId) => { record('menu-asset', assetId) },
   pickAiChatImages: async (remaining) => { record('pick-images', remaining); return query.has('pickCancel') ? [] : [{ ...imageAsset, assetId: `p${String(calls.length).padStart(42, '0')}`, fileName: 'picked.png' }] },
   pickAiChatTextFiles: async (remainingFiles, remainingChars) => { record('pick-text-files', { remainingFiles, remainingChars }); const next = textFilePicks.shift(); if (next instanceof Error) throw next; return next ?? [] },

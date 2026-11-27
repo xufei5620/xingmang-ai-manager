@@ -4,6 +4,8 @@ dist-legacy/
 dist-electron/
 dist-native/
 dist-canvas/
+# 「变清晰」的运行库：compile 时从 onnxruntime-web 挑出来（scripts/stage-image-upscale-runtime.cjs）
+dist-image-upscale/
 # 随包的第三方许可清单与生成它用的包名单（scripts/third-party-notices.cjs），compile 时生成
 dist-third-party/
 # 发给 Sentry 的对照表（scripts/minify-electron.cjs、stash-renderer-sourcemaps.cjs），不进安装包也不进仓库

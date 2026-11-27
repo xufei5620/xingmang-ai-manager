@@ -1,8 +1,8 @@
-import type { AiChatHistoryWrite, AiChatImageInput, AiChatStartInput, AiVideoGenerateInput, ChatConversationExportInput, XingmangApi } from '../../../../electron/ipc-contract'
+import type { AiChatHistoryWrite, AiChatImageInput, AiChatStartInput, AiChatUpscaleInput, AiVideoGenerateInput, ChatConversationExportInput, XingmangApi } from '../../../../electron/ipc-contract'
 import { AI_CHAT_LIMITS, buildChatCompletionsRequest, buildImageGenerationRequest, resolveAiModelCapability, supportsChatImageInput } from '../../../../electron/ai-chat-protocol'
 import { chatHistoryLogger } from './storage'
 
-export type ChatBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareAiChatGroup' | 'startAiChat' | 'generateAiImage' | 'cancelAiChat' | 'onAiChatStream' | 'copyAiChatAsset' | 'saveAiChatAsset' | 'showAiChatAssetMenu' | 'pickAiChatImages' | 'pickAiChatTextFiles' | 'pasteAiChatImage' | 'readAiChatHistory' | 'writeAiChatHistory' | 'exportAiChatConversation' | 'getAccountSession' | 'reportRendererError'>
+export type ChatBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareAiChatGroup' | 'startAiChat' | 'generateAiImage' | 'cancelAiChat' | 'onAiChatStream' | 'copyAiChatAsset' | 'saveAiChatAsset' | 'upscaleAiChatAsset' | 'showAiChatAssetMenu' | 'pickAiChatImages' | 'pickAiChatTextFiles' | 'pasteAiChatImage' | 'readAiChatHistory' | 'writeAiChatHistory' | 'exportAiChatConversation' | 'getAccountSession' | 'reportRendererError'>
 // 「生成视频」那一档用的通道（融合第 2 步），都是视频工作台已经在用的那几条。只有「创作」页给得出；
 // 单独摆着的聊天页（夹具）没有，那一档就不出现。
 export type ChatVideoBridge = Pick<XingmangApi, 'generateAiVideo' | 'resumeAiVideo' | 'cancelAiVideo' | 'onAiVideoProgress' | 'openAiVideo' | 'saveAiVideo'>
@@ -21,6 +21,8 @@ export function createChatApi(bridge: ChatBridge & Partial<ChatVideoBridge>) {
     subscribe: (listener: Parameters<ChatBridge['onAiChatStream']>[0]) => bridge.onAiChatStream(listener),
     copyAsset: (assetId: string) => bridge.copyAiChatAsset(assetId),
     saveAsset: (assetId: string) => bridge.saveAiChatAsset(assetId),
+    // 「变清晰」：在本机放大、另存一张进作品库，交回新的那张。
+    upscaleAsset: (input: AiChatUpscaleInput) => bridge.upscaleAiChatAsset(input),
     assetMenu: (assetId: string) => bridge.showAiChatAssetMenu(assetId),
     pickImages: (remaining: number) => bridge.pickAiChatImages(remaining),
     pasteImages: (remaining: number) => bridge.pasteAiChatImage(remaining),

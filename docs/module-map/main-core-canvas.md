@@ -123,6 +123,7 @@
 - `ai-video-task-store.ts` — 按账号存进行中的视频任务（模型、分组、所属项目/运行/节点、提示词），有条数上限，供续任务和把提示词写回成品；取回成品时另记一笔「请求号 → 片段」（最近 100 条），视频剪辑页重开时按请求号把片段挂回镜头
 - `ai-chat-history-store.ts` — AI 聊天记录的文件存储（用户数据目录 `chat-history/<scope 的 sha256 前 32 位>/`，一个对话一个文件 + 最后写的 `index.json`）。渲染层负责脱敏与格式校验，这里只做入参校验、按账号串行的原子写、单文件/总量/账号目录数上限（防被攻破的渲染层换 scope 写满磁盘）；对话数上限与渲染层 `storage.ts` 是有意重复
 - `ai-chat-attachments.ts` — 聊天里附带的图片只从系统选文件框和剪贴板在主进程里取，渲染层给不出任何路径或字节（I15 同一思路）；太大的用 nativeImage 压到长边 2048、2 MB 以内，存进本账号的图片素材目录
+- `image-upscale.ts` / `image-upscale-worker.ts` / `image-upscale-service.ts` — 「变清晰」（全面方案第 26 件）：在本机把一张作品放大 2 倍或 4 倍、另存一张，原图不动，不扣费、不连网。模型是随包带的 Real-ESRGAN general-x4v3（BSD-3，`bundled-catalog/image-upscale/`，`manifest.json` 记来源和哈希，服务读模型时按钉死的 sha256 核一遍），运行库是 onnxruntime-web 的 WASM 版：开发时读开发依赖，打包版读 `scripts/stage-image-upscale-runtime.cjs` 挑进 `dist-image-upscale/` 的那几个文件（少一样出包门禁 `verify-packaged-hardening.cjs` 就红）。`image-upscale.ts` 是纯函数（尺寸上限、分块 256 加 24 像素重叠、2 倍取 4 倍结果的 2×2 平均、透明通道另行双线性放大、自己写的 PNG 编码）；`image-upscale-worker.ts` 在 `worker_threads` 后台线程里跑模型，每块报一次进度；`image-upscale-service.ts` 排队一次只跑一张、每张一个后台线程、线程数 min(4, 核数−1)（两核以下 1 个）、两分钟没动静当卡住、出错的话只给中文。通道 `chat:upscale-asset`（`ipc/handlers/ai-chat.ts`）只收作品编号和倍数，从这个账号放着原图的那个作品库读字节，存成新作品并记来源
 - `clipboard-image.ts` — 图片进出剪贴板（作品菜单「复制」、聊天粘贴截图）：Electron 44 起只剩按格式异步读写，一律以 `image/png` 进出
 - `chat-key-store.ts` — AI 聊天按分组签发的 Key 的本机缓存（`ChatKeyStore`）：`safeStorage` 加密落盘，`basic_text` 后端时拒绝落盘、只在本次运行内存里留；有账号数、每账号 Key 数上限，支持按账号/分组/Key 失效，并把退役分组名改成新名。由 `chat-credential-coordinator.ts`、`account-key-options.ts` 使用
 

@@ -6,6 +6,7 @@ import {
   clipboard,
   dialog,
   Menu,
+  nativeImage,
   net,
   powerMonitor,
   powerSaveBlocker,
@@ -18,6 +19,7 @@ import {
   type WebContents,
 } from 'electron'
 import { AnnouncementReadStore } from './announcement-read-store'
+import { createImageUpscaleService, resolveImageUpscaleModelPath, resolveImageUpscaleOrtDirectory } from './image-upscale-service'
 import { createAnnouncementImageReader } from './announcement-image'
 import type { AccelerationExpiryNotice } from './acceleration-expiry-notice'
 import type { AccelerationInterruptionNotice } from './acceleration-interruption-notice'
@@ -2646,6 +2648,19 @@ if (!hasSingleInstanceLock) {
       send: (requestId) => sendToMainWindow('onAiChatHistoryFlushRequested', { requestId }),
       onError: (cause) => runtimeLog.exception('ai-chat', 'history.flush-failed', cause),
     })
+    // 「变清晰」（全面方案第 26 件）：客户点了才在后台线程里跑随包带的模型，跑完就收。解图用 Chromium 自带的
+    // 解码器（同作品库缩略图，见 bootstrap/ai-services.ts 的 createNativeThumbnailRenderer），只解客户点的这一张。
+    const imageUpscale = createImageUpscaleService({
+      modelPath: resolveImageUpscaleModelPath(app.getAppPath()),
+      ortModuleDirectory: resolveImageUpscaleOrtDirectory(app.getAppPath(), app.isPackaged),
+      decode: (bytes) => {
+        const image = nativeImage.createFromBuffer(bytes)
+        if (image.isEmpty()) return null
+        const { width, height } = image.getSize()
+        return { width, height, bgra: image.toBitmap() }
+      },
+      log: (level, event, message, detail) => runtimeLog.log(level, 'ai-chat', event, message, detail),
+    })
     // 下载中大约每秒一份更新快照，界面照收；日志只在阶段、版本、错误变了或进度过了
     // 一档 10% 时记，不然一次下载就把反馈报告附的 600 条挤满（第二十六批 B）。
     const shouldLogUpdateState = createUpdateStateLogFilter()
@@ -2771,6 +2786,7 @@ if (!hasSingleInstanceLock) {
       chatService,
       imageService,
       aiAssets: assetStore,
+      imageUpscale,
       chatAttachments,
       chatTextFiles,
       videoService: chatVideoService,
