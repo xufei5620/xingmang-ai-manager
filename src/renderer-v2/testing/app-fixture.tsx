@@ -1163,7 +1163,14 @@ const methods = {
   // 视频工作台一打开就读一次价格表（确认框里那句「预计约」）；这里一行都没有，确认框照旧只报余额。?chatVideo 时有那个视频模型按次的价。
   getAccountPriceList: async () => ({ rows: query.has('chatVideo') ? [{ model: 'grok-imagine-video-1.5', group: 'fixture-group', kind: 'call' as const, perCall: 0.25 }] : [] }),
   listCanvasProjects: async () => structuredClone(canvasProjects),
-  openCanvasProject: async () => true,
+  // ?canvasStay：画布那边正开着别的项目，客户在它的关闭确认里选了留下。
+  openCanvasProject: async () => !query.has('canvasStay'),
+  // 「新建画布」：建一个空白项目加进清单（左边那一列跟着多一行），名字照主进程的写法取固定的那一刻。
+  createCanvasProject: async () => {
+    const created = { id: `fixture-canvas-blank-${canvasProjects.length + 1}`, name: '未命名画布 11 月 27 日 14:30', updatedAt: Date.now() }
+    canvasProjects = [created, ...canvasProjects]
+    return { projectId: created.id, projectName: created.name }
+  },
   // 「添加到画布」：选了现成的项目就回它的名字；新建的加进清单（左边那一列跟着多一行）。清单里没有的编号照主进程那句话拒绝。
   addImageToCanvasProject: async (input) => {
     if ('projectId' in input) {

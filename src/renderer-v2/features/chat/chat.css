@@ -4,6 +4,7 @@
 .chat-page[data-loading='true'] { display: block; }
 .chat-page[hidden] { display: none; }
 .chat-conversations { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 12px 10px; background: var(--win); box-shadow: inset -1px 0 0 var(--line); }
+.chat-conversations-top { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; }
 .chat-conversations-top > .xm-btn { width: 100%; }
 .chat-conversation-search { margin: 8px 0 2px; }.chat-conversation-search .xm-search { width: 100%; }
 /* 搜索框下面那一排「全部 / 对话 / 视频 / 画布」（融合第 1 步）：只看某一类。 */
@@ -23,6 +24,9 @@
 .chat-conversation-item > .xm-menu { margin-right: 4px; opacity: 0; transition: opacity var(--duration-fast) var(--ease-standard); }
 .chat-conversation-item:hover > .xm-menu, .chat-conversation-item[data-active='true'] > .xm-menu, .chat-conversation-item > .xm-menu:focus-within, .chat-conversation-item > .xm-menu:has([aria-expanded='true']) { opacity: 1; }
 .chat-conversation-empty { margin: 0; padding: 14px 10px; color: var(--text-3); font-size: 12px; line-height: 1.5; }
+.chat-list-empty { display: grid; justify-items: start; padding-bottom: 6px; }
+.chat-list-empty > .chat-conversation-empty { padding-bottom: 8px; }
+.chat-list-empty > .xm-btn { margin-left: 10px; }
 /* 左下角的「作品库」（融合第 3 步）：做过的图和视频都在里面，后面的数是一共多少件。 */
 .chat-library-foot { margin-top: 6px; padding-top: 8px; box-shadow: inset 0 1px 0 var(--line); }
 .chat-library-entry { position: relative; display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; column-gap: 8px; width: 100%; padding: 7px 10px 7px 8px; border: 0; border-radius: 8px; corner-shape: squircle; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; transition: background var(--duration-fast) var(--ease-standard); }
