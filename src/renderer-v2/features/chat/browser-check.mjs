@@ -1356,7 +1356,10 @@ test('an empty chat says where conversations go, and its examples only fill the 
     const empty = page.getByTestId('chat-empty')
     await empty.getByRole('heading', { name: '今天想创作什么？', exact: true }).waitFor()
     await empty.getByText('提问、写作、绘图均可在下方输入框中完成，额度与工具共用同一账号。', { exact: true }).waitFor()
-    assert.deepEqual(await empty.getByRole('button').allTextContents(), ['帮我把这段话改得更通顺', '把下面的内容翻译成英文', '帮我写一条朋友圈文案，卖的是……', '这个 Excel 公式怎么写：我想……', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思'])
+    // 说明下面先是三个入口（这里没有出视频，只有两个），例句在它们下面。
+    const examples = empty.locator('.chat-empty-examples').getByRole('button')
+    assert.deepEqual(await empty.getByTestId('chat-start-modes').getByRole('button').allTextContents(), ['图片生成描述生成 · 参考图编辑', '智能对话问答 · 写作 · 翻译 · 编程'])
+    assert.deepEqual(await examples.allTextContents(), ['帮我把这段话改得更通顺', '把下面的内容翻译成英文', '帮我写一条朋友圈文案，卖的是……', '这个 Excel 公式怎么写：我想……', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思'])
     await page.getByTestId('chat-example-3').click()
     const input = page.getByTestId('chat-composer-input')
     // 半句话的示例填进去时不带省略号，光标在末尾，接着打就是客户自己的话。
@@ -1365,11 +1368,11 @@ test('an empty chat says where conversations go, and its examples only fill the 
     await page.waitForFunction(() => { const element = document.querySelector('#chatIn'); return element instanceof HTMLTextAreaElement && element.selectionStart === element.value.length && element.selectionEnd === element.value.length })
     assert.equal((await calls(page, 'start')).length, 0, 'an example is never sent on its own')
     // 输入框里有字了就不再摆例句：再点一颗会把打的字换掉。
-    assert.equal(await empty.getByRole('button').count(), 0)
+    assert.equal(await examples.count(), 0)
     await input.fill('')
     await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成', exact: true }).click()
     await empty.getByText('提问、写作、绘图均可在下方输入框中完成，额度与工具共用同一账号。', { exact: true }).waitFor()
-    assert.equal(await empty.getByRole('button').count(), 0, 'the examples are questions, not pictures')
+    assert.equal(await examples.count(), 0, 'the examples are questions, not pictures')
   } finally { await page.close() }
 })
 
