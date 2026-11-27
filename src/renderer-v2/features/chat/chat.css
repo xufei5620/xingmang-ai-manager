@@ -80,6 +80,17 @@
    间距和标志按差了多少一起收紧（随窗口高度连续变，不是断点），差到 200 为止；820 及以上和原来一模一样。 */
 .chat-messages:has(> .chat-empty[data-start='true']) { --chat-start-squeeze: clamp(0px, calc(820px - 100vh), 200px); padding-block: calc(24px - var(--chat-start-squeeze) / 16); gap: calc(22px - var(--chat-start-squeeze) / 20); }
 .chat-empty[data-start='true'] { padding-top: max(0px, calc(28px - var(--chat-start-squeeze, 0px) / 7)); gap: calc(10px - var(--chat-start-squeeze, 0px) / 50); }.chat-empty[data-start='true'] .xm-logo { height: calc(44px - var(--chat-start-squeeze, 0px) / 16); }.chat-empty[data-start='true'] .chat-empty-examples { margin-top: calc(6px - var(--chat-start-squeeze, 0px) / 50); }
+/* 起始页标题下面的三个入口（全面方案第 30 件）：一排三个，按着的那个（就是输入框下现在那一档）跟开始引导里选中的那一项
+   一样描金边。只有两个（这个账号出不了视频）时每个还是三个并排时那么宽、放在中间。窗口矮时跟着起始页一起收紧。 */
+.chat-start-modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(176px, 1fr)); gap: 10px; width: 100%; max-width: 660px; margin-top: calc(8px - var(--chat-start-squeeze, 0px) / 40); }
+.chat-start-modes:has(> .chat-start-mode:nth-child(2):last-child) { max-width: 433px; }
+.chat-start-mode { display: flex; align-items: center; gap: 10px; min-width: 0; padding: calc(12px - var(--chat-start-squeeze, 0px) / 40) 14px; border: 0; border-radius: 12px; corner-shape: squircle; background: var(--panel-solid); box-shadow: inset 0 0 0 1px var(--line); color: var(--text); font: inherit; text-align: left; cursor: pointer; transition: background var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard); }
+.chat-start-mode:hover { background: var(--panel-hover); box-shadow: inset 0 0 0 1px var(--soft-line); }
+.chat-start-mode[aria-pressed='true'] { background: var(--soft); box-shadow: inset 0 0 0 1.5px var(--gold); }
+.chat-start-mode-icon { display: grid; place-items: center; flex: none; width: calc(34px - var(--chat-start-squeeze, 0px) / 25); height: calc(34px - var(--chat-start-squeeze, 0px) / 25); border-radius: 10px; corner-shape: squircle; background: var(--soft); box-shadow: inset 0 0 0 1px var(--soft-line); color: var(--gold); }
+.chat-start-mode-text { display: grid; gap: 2px; min-width: 0; }
+.chat-start-mode-text > strong { font-size: 14px; font-weight: 600; }
+.chat-start-mode-text > span { color: var(--text-3); font-size: 12px; line-height: 1.5; }
 .chat-page button:focus-visible, .chat-page summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 @keyframes chat-spin { to { transform: rotate(360deg); } }
 [data-reduce-motion='1'] .chat-generating > svg, [data-reduced-motion='true'] .chat-generating > svg, [data-system-reduced-motion='true'] .chat-generating > svg { animation: none; }

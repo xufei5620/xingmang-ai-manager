@@ -18,12 +18,13 @@ function tutorialWords(id: string): string {
 }
 
 describe('the pieces of the create page that are its own', () => {
-  it('offers a film and the canvas under the examples, in words a first-time customer can act on', () => {
+  // 名字和关键词照全面方案第 30 件方案甲（yoyo 11-28 回「功能名入口」）。
+  it('offers a film and the canvas under the examples as advanced creation, named the way the customer has seen elsewhere', () => {
     const html = renderToStaticMarkup(<CreateStartCards video onVideo={nothing} onCanvas={nothing} />)
     expect(html).toContain('data-testid="create-start"')
-    expect(text(html)).toBe('复杂创作从这里开始'
-      + '做一条带字幕的短视频输入创意，AI 将编写分镜、分段生成并合成为完整视频'
-      + '在画布中分步创作支持多图、精修、模板，以及保持人物在各镜头中一致开在大窗口里')
+    expect(text(html)).toBe('进阶创作'
+      + '分镜视频分镜编写 · 分段生成 · 字幕合成'
+      + '无限画布多图组合 · 精修 · 模板 · 角色一致独立窗口')
     expect(html.indexOf('data-testid="create-card-video"')).toBeLessThan(html.indexOf('data-testid="create-card-canvas"'))
     // 两张卡都是按钮：键盘走得到、读屏念得出。
     expect(html.match(/<button type="button" class="create-card"/g)).toHaveLength(2)
@@ -34,7 +35,10 @@ describe('the pieces of the create page that are its own', () => {
     const html = renderToStaticMarkup(<CreateStartCards video clips onVideo={nothing} onCanvas={nothing} onClips={nothing} />)
     expect(html.match(/<button type="button" class="create-card"/g)).toHaveLength(3)
     expect(html.indexOf('data-testid="create-card-canvas"')).toBeLessThan(html.indexOf('data-testid="create-card-clips"'))
-    expect(text(html)).toContain('用已有片段合成视频从作品库选择片段，添加字幕和配乐，在本机合成，不产生费用')
+    expect(text(html)).toContain('片段合成作品库片段 · 字幕 · 配乐本机合成，不产生费用')
+    // 往外的箭头只说「另开一个窗口」：画布那张有，本机合成那张没有。
+    expect(html.match(/<small><svg/g)).toHaveLength(1)
+    expect(html).toContain('<small>本机合成，不产生费用</small>')
     // 没人接这张卡的地方不出它，免得点了没反应。
     expect(renderToStaticMarkup(<CreateStartCards video clips onVideo={nothing} onCanvas={nothing} />)).not.toContain('create-card-clips')
     expect(renderToStaticMarkup(<CreateStartCards video clips={false} onVideo={nothing} onCanvas={nothing} onClips={nothing} />)).not.toContain('create-card-clips')
@@ -43,7 +47,7 @@ describe('the pieces of the create page that are its own', () => {
   it('leaves the film card out for an account that cannot start a film right now, and keeps the canvas', () => {
     const html = renderToStaticMarkup(<CreateStartCards video={false} onVideo={nothing} onCanvas={nothing} />)
     expect(html).not.toContain('create-card-video')
-    expect(html).not.toContain('做一条带字幕的短视频')
+    expect(html).not.toContain('分镜视频')
     expect(html).toContain('data-testid="create-card-canvas"')
   })
 
@@ -110,11 +114,17 @@ describe('the pieces of the create page that are its own', () => {
   it('carries the card title the video tutorial tells the customer to click', () => {
     const html = renderToStaticMarkup(<CreateStartCards video onVideo={nothing} onCanvas={nothing} />)
     const words = tutorialWords('video')
-    expect(words).toContain('做一条带字幕的短视频')
-    expect(html).toContain('<strong>做一条带字幕的短视频</strong>')
+    expect(words).toContain('左侧创作 › 分镜视频 › 想法')
+    expect(words).toContain('「创作」中没有「分镜视频」？')
+    expect(html).toContain('<strong>分镜视频</strong>')
     expect(words).not.toContain('左侧视频剪辑')
-    expect(tutorialWords('canvas')).toContain('在画布中分步创作')
-    expect(html).toContain('<strong>在画布中分步创作</strong>')
+    expect(tutorialWords('canvas')).toContain('左侧创作 › 无限画布 › 项目中心')
+    expect(html).toContain('<strong>无限画布</strong>')
+    // 改名以前的卡名一处都不留，不然教程让客户去点一张页面上没有的卡。
+    for (const old of ['做一条带字幕的短视频', '在画布中分步创作', '用已有片段合成视频']) {
+      expect(tutorialWords('video')).not.toContain(old)
+      expect(tutorialWords('canvas')).not.toContain(old)
+    }
   })
 })
 

@@ -26,7 +26,7 @@ describe('video studio shot picture dialog', () => {
   it('says which shot the picture is for, that it shares the chat settings, and fills in the shot description', () => {
     const markup = render()
     expect(markup).toContain('为第 4 个镜头生成图片')
-    expect(markup).toContain('与对话中的「生成图片」共用同一设置，生成的图片将保存至作品库。')
+    expect(markup).toContain('与对话中的「图片生成」共用同一设置，生成的图片将保存至作品库。')
     expect(markup).not.toContain('生成后将替换此镜头当前的图片')
     expect(markup).toMatch(/<textarea[^>]*data-testid="video-draw-prompt"[^>]*>雨夜街头的橘猫<\/textarea>/)
     expect(markup).toMatch(/<label[^>]*>画面<\/label>/)
@@ -34,7 +34,7 @@ describe('video studio shot picture dialog', () => {
     expect(markup).toMatch(/<button(?![^>]*disabled)[^>]*data-testid="video-draw-ok"[^>]*>[^]*?生成图片/)
     expect(markup).toMatch(/data-testid="video-draw-cancel"[^>]*>[^]*?取消/)
     // Drawing over a picture already there says the old one is kept.
-    expect(render({ redrawing: true })).toContain('与对话中的「生成图片」共用同一设置，生成的图片将保存至作品库。生成后将替换此镜头当前的图片，原图仍保留在作品库中。')
+    expect(render({ redrawing: true })).toContain('与对话中的「图片生成」共用同一设置，生成的图片将保存至作品库。生成后将替换此镜头当前的图片，原图仍保留在作品库中。')
   })
 
   it('starts on the default picture model with the size following the frame of the film', () => {

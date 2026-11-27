@@ -10,8 +10,15 @@ import { rawErrorMessage, speaksChinese, userFacingErrorMessage } from '../../bu
 import { canEditImages, canReadImages, canStartVideoFromImage, chatLimits, inspectModel, noImageEditModelMessage } from './api'
 import { redactPersistentChatText } from './storage'
 
-// video：「生成视频」那一档（融合第 2 步）。老版本读到不认识的档当成「文本对话」。
+// video：「视频生成」那一档（融合第 2 步）。老版本读到不认识的档当成「智能对话」。
 export type ChatMode = 'text' | 'image' | 'video'
+// 三档的名字：输入框下的切换和起始页的三个入口用同一套，免得一处叫「图片生成」、一处叫「生成图片」
+// （yoyo 11-28 回「功能名入口」，全面方案第 30 件方案甲；原来叫「文本对话」「生成图片」「生成视频」）。
+export const chatModeNames: Readonly<Record<ChatMode, string>> = { text: '智能对话', image: '图片生成', video: '视频生成' }
+// 起始页入口名字下面那行：只列关键词，不成句。
+export const chatModeKeywords: Readonly<Record<ChatMode, string>> = { text: '问答 · 写作 · 翻译 · 编程', image: '描述生成 · 参考图编辑', video: '描述生成 · 图片转视频' }
+// 起始页三个入口的先后，出图在前；输入框下的切换照旧是对话、图片、视频。
+export const chatStartModes: readonly ChatMode[] = ['image', 'video', 'text']
 export type ChatVideoAspect = '16:9' | '9:16' | '1:1'
 export type MessageStatus = 'pending' | 'streaming' | 'complete' | 'canceled' | 'error'
 export interface ChatSettings {
@@ -356,15 +363,15 @@ export function removeDraftFile(conversation: Conversation, index: number): Conv
   return withoutFiles
 }
 
-export const imageModeFilesMessage = '生成图片时不支持附带文件，请先移除文件，或切换回「文本对话」'
-export const videoModeFilesMessage = '生成视频时无法附带文件，请先移除文件，或切换回「文本对话」'
+export const imageModeFilesMessage = `生成图片时不支持附带文件，请先移除文件，或切换回「${chatModeNames.text}」`
+export const videoModeFilesMessage = `生成视频时无法附带文件，请先移除文件，或切换回「${chatModeNames.text}」`
 // 「生成视频」时带的图是开头图：视频从这张图动起来，只收一张。
 export const videoStartImageLimitMessage = '生成视频仅支持 1 张开头图，请先移除多余的图片'
 export const noVideoStartImageMessage = '当前模型不支持以图片生成视频，请更换模型，或先移除图片'
 /** 「生成视频」那一档的画面和时长；没设过的是横屏 16:9、5 秒。时长跟不跟得上型号由调用方按型号再挪（clampVideoStudioSeconds）。 */
 export function chatVideoAspect(settings: Pick<ChatSettings, 'videoAspect'>): ChatVideoAspect { return settings.videoAspect ?? DEFAULT_CHAT_VIDEO_ASPECT }
 export function chatVideoSeconds(settings: Pick<ChatSettings, 'videoSeconds'>): number { return settings.videoSeconds ?? DEFAULT_CHAT_VIDEO_SECONDS }
-/** 不是「文本对话」时带了文件，文件卡片下面说的那句。 */
+/** 不是「智能对话」时带了文件，文件卡片下面说的那句。 */
 export function modeFilesMessage(mode: ChatMode): string { return mode === 'video' ? videoModeFilesMessage : imageModeFilesMessage }
 /** 视频描述太长时输入框下面说的那句；没超是空串。 */
 export function videoPromptLengthError(text: string): string {
