@@ -15,6 +15,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { decodeSingleQuotedLiteral, listAsarBuildScripts, parseAsarHeaderJson, parseAsarSizePrefix } from './claude-desktop-code-seed'
+import { openForeignAsar } from './foreign-asar'
 
 export type ClaudeDesktopVmPlatformKey = 'win32' | 'unix'
 export type ClaudeDesktopVmArchitecture = 'x64' | 'arm64'
@@ -368,7 +369,7 @@ async function readExactly(handle: fs.promises.FileHandle, length: number, posit
 
 /** 一遍扫完 app.asar 里的脚本，把两份清单都找出来；哪份没找到就是 null。 */
 export async function readClaudeDesktopComponentManifest(asarPath: string): Promise<ClaudeDesktopComponentManifest> {
-  const handle = await fs.promises.open(asarPath, 'r')
+  const handle = await openForeignAsar(asarPath)
   try {
     const stats = await handle.stat()
     if (!stats.isFile()) throw new Error('asar-not-file')

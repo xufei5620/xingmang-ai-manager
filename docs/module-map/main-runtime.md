@@ -132,6 +132,7 @@
 - `active-identity.ts` — 主进程里的账号身份快照（站点、realm、userId、会话修订号）：发布结果或落盘前核对「还是不是发起时那个账号」，防止登出再登回同一用户后旧请求还能落地；不是 IPC 授权层，也只拷身份字段、不展开会话对象（免得以后带上令牌）
 - `chinese-sentence.ts` — 判断一句报错本身是不是中文：先去掉引号内容和路径（中文用户名、「星芒AI管理工具.app」都在路径里）再看汉字；渲染层与 `updater.ts` 共用，所以零 import（I6）
 - `remove-tree.ts` — 整个删掉一个目录，Electron 里走 `original-fs`：主进程的 fs 把 `*.asar` 当成文件夹，删 ChatGPT.app、Claude.app 这类 Electron 应用的副本会漏掉 `app.asar`、报 ENOTEMPTY；Mac 桌面端安装器删副本、旧版和暂存目录用
+- `foreign-asar.ts` — 把别家 Electron 应用（Claude Desktop）的 `app.asar` 当普通文件打开、取真实大小和修改时间，Electron 里走 `original-fs`：主进程的 fs 对 `*.asar` 本身 open 报 EISDIR、stat 回大小 0 的文件夹（0.2.25 真机放程序、放工作区因此次次跳过）；读 Claude 清单的几处都用它
 - `async-map.ts` — 限并发的 `mapWithConcurrency`：目录扫描不用 `Promise.all` 一次发几千个 fs 请求，否则 libuv 一口气交回来照样卡住窗口；Codex 与四工具扩展扫描用
 - `content-addressed-asset.ts` — 媒体资产的内容寻址 id（sha256 base64url，按输出根目录 + 账号 + 内容派生，跨账号不撞）；图片、视频、音频三个资产库共用
 - `media-container-metadata.ts` — 不调外部程序、只解析字节读出 MP4/ISO-BMFF 的时长与分辨率和 WAV 时长，box 数量与边界都有上限；视频、音频资产库用
