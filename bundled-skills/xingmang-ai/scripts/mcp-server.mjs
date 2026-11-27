@@ -234,7 +234,7 @@ function schema(model) {
     type: 'object',
     additionalProperties: false,
     properties: {
-      prompt: { type: 'string', description: '要画什么；改图时写要怎么改' },
+      prompt: { type: 'string', description: '要画什么。用户说得具体就照原意整理，说得笼统再补场景、构图、光线和风格；不添加用户没提的人物、品牌和文字。改图时只写要改的地方，并写明其余保持不变' },
       images: {
         type: 'array',
         items: { type: 'string' },
@@ -258,7 +258,7 @@ function schema(model) {
 function toolList(model) {
   return [{
     name: 'generate_image',
-    description: '用当前账号画图或改图。用户要画一张图、生成图片，或者修改、编辑一张已有图片时调用；改图时把原图的完整路径放进 images。图片会保存成文件，结果里给出文件路径和一张预览图。不要自己写脚本或命令去调图片接口。',
+    description: '用当前账号画图或改图。用户要画一张图、生成图片，或者修改、编辑一张已有图片时调用；改图时把原图的完整路径放进 images；手里没有原图的文件路径时，先请用户提供图片文件，不要只凭文字重新画一张。图片会保存成文件，结果里给出文件路径和一张预览图。不要自己写脚本或命令去调图片接口。',
     inputSchema: schema(model),
   }]
 }

@@ -40,6 +40,18 @@ Codex 自带的 `image_gen.imagegen` 只对 ChatGPT 登录开放：`codex-rs/cor
 - **结果文字固定**：「已用 〈型号〉 画好，〈宽〉x〈高〉。文件：〈完整路径〉。回复客户时请原样给出这个路径，不要自己拼路径；客户说看不到图时，告诉他文件在哪，不要重新生成。」换了型号、Grok 不能指定尺寸这两句接在后面。工具说明里的「结果直接显示在对话里」改成了「图片会保存成文件，结果里给出文件路径和一张预览图」：以前 AI 以为客户已经看到图，回复里只列名字或贴一个自己猜的路径，客户说没看到就重画、重复扣费。
 - `SKILL.md` 给 Codex 一段照抄的调用代码（在 Codex 里 AI 是写 JS 调 `tools.mcp__xingmang_image__generate_image` 的，第二行把预览图和文字交给对话），「完成后」写明最终回复里逐张给出文件路径、不引用 `.codex/visualizations` 这类猜的路径、客户说没看到图时只给路径不重画。
 
+## 描述怎么写
+
+`prompt` 是 AI 照客户的话写的，画图工具和脚本只去掉首尾空格就原样发出，不再改写（11-27 核对时，三处出图都没有替客户整理描述，结果全看 AI 自己的习惯）。0.2.26 起 `SKILL.md` 的「写描述」一节给它定了规矩（yoyo 11-27 回「技能写描述」，同时做了画图优化需求里 B2「没有图片路径时先问」和 E2「改图怎么写描述」「不追问客户没提的参数」这两处文案）：
+
+- 客户说得具体就照原意整理，不加新内容；说得笼统才补场景、构图、光线和风格。不加客户没提的人物、品牌、Logo、标语和配色；要印在图上的字一字不改、加引号。客户说按原话画就原样用。说了用途按用途选比例，没说按默认值。
+- 改图只写要改的地方，并写明其余保持不变：从头描述原图，上游容易照文字重画一张。
+- 只在三种情况先问一句：要改图但手里没有图的文件路径（11-23 至 11-26 有 7 次「未找到可用于编辑的目标图片」，更多时候是按文字重画了一张对不上的图）；要印客户自己的文字（店名、电话、日期）却没给内容；完全没说画什么。其余直接画，不追问尺寸、比例、画质、风格。
+- 「完成后」要在回复里附上这次用的描述，客户好照着改。
+- 画图工具的说明（`tools/list`）和 `prompt` 参数说明里有这几条的短版：只装了画图工具、没读技能的 AI 也看得到。
+
+这几条的思路参考了 OpenAI Codex 仓库的 imagegen 技能（Apache-2.0）和 shinpr/mcp-image（MIT），字是自己写的，没有照搬原文。
+
 ## 用哪个模型
 
 默认只用 OpenAI 的 gpt-image 系列。登录同步时（`syncXingmangAiSkill`）主进程拿技能的两把 Key 各查一次 `GET /v1/models`，合起来按 `XINGMANG_AI_IMAGE_MODEL_PREFERENCE`（`gpt-image-2.6-flare` → `gpt-image-2.5-flare` → `gpt-image-2`）再 `XINGMANG_AI_IMAGE_MODEL_FALLBACKS`（`gpt-image-2.6-sunburst` → `gpt-image-2.5-sunburst`）的顺序，把账号列表里有的排成一串：第一个写进 `config.json` 的 `model`，后面的写进 `fallbackModels`（可以是空数组）。两把都没查到、或查到了但一个都没有，就两样都不写，画图照旧用 `gpt-image-2`，日志记一句。sunburst 慢、偏精修，flare 和 `gpt-image-2` 在时不当默认。`gpt-image-1` 官方已经下了，`gpt-image-1.5` 站上调不通，都不挑，点名也在本地拒掉。AI 对话的图片默认（`chat/state.ts` 的 `DEFAULT_IMAGE_MODELS`）和图片分组次序（`ai-chat-protocol.ts` 的 `IMAGE_GROUP_MODEL_ORDER`）跟这串同一个顺序，测试钉住。
