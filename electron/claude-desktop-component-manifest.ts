@@ -14,6 +14,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { asarRawFs } from './asar-raw-fs'
 import { decodeSingleQuotedLiteral, listAsarBuildScripts, parseAsarHeaderJson, parseAsarSizePrefix } from './claude-desktop-code-seed'
 
 export type ClaudeDesktopVmPlatformKey = 'win32' | 'unix'
@@ -366,9 +367,9 @@ async function readExactly(handle: fs.promises.FileHandle, length: number, posit
   return buffer
 }
 
-/** 一遍扫完 app.asar 里的脚本，把两份清单都找出来；哪份没找到就是 null。 */
+/** 一遍扫完 app.asar 里的脚本，把两份清单都找出来；哪份没找到就是 null。跟 readClaudeCodeBuildPin 一样用没改过的 fs 打开。 */
 export async function readClaudeDesktopComponentManifest(asarPath: string): Promise<ClaudeDesktopComponentManifest> {
-  const handle = await fs.promises.open(asarPath, 'r')
+  const handle = await asarRawFs().promises.open(asarPath, 'r')
   try {
     const stats = await handle.stat()
     if (!stats.isFile()) throw new Error('asar-not-file')

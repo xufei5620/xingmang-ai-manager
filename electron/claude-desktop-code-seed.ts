@@ -26,6 +26,7 @@ import path from 'node:path'
 import { Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import zlib from 'node:zlib'
+import { asarRawFs } from './asar-raw-fs'
 import { readBoundedResponseText } from './bounded-response'
 import { readDiskSpace, installMinimumFreeBytes, type DiskSpaceReading } from './disk-space'
 import type { ExternalClientLaunchProgress } from './external-client-contract'
@@ -335,9 +336,10 @@ async function readExactly(handle: fs.promises.FileHandle, length: number, posit
 /**
  * 只读、限大小地从 Claude 的 app.asar 里找那份清单：先读文件表，再按大小从大到小读 `.vite/build/` 下的脚本，
  * 读到就停。整份 asar 约 58 MB，这一步通常只读一个约 7 MB 的脚本。找不到给 null。
+ * 要用没被 asar 层改过的 fs 打开（asar-raw-fs.ts），主进程的 node:fs 打开 app.asar 报 EISDIR。
  */
 export async function readClaudeCodeBuildPin(asarPath: string, platform: ClaudeCodeSeedPlatform): Promise<ClaudeCodeBuildPin | null> {
-  const handle = await fs.promises.open(asarPath, 'r')
+  const handle = await asarRawFs().promises.open(asarPath, 'r')
   try {
     const stats = await handle.stat()
     if (!stats.isFile()) throw new Error('asar-not-file')
@@ -795,7 +797,8 @@ export function createClaudeDesktopCodeSeeder(options: ClaudeDesktopCodeSeederOp
 
   async function pinFor(asarPath: string, platform: ClaudeCodeSeedPlatform): Promise<ClaudeCodeBuildPin | null> {
     let stats: fs.Stats
-    try { stats = await fs.promises.stat(asarPath) }
+    // 主进程的 node:fs 对 app.asar 回的是编出来的文件夹（大小 0、修改时间整个进程不变），拿它当记号 Claude 升级了也认不出来。
+    try { stats = await asarRawFs().promises.stat(asarPath) }
     catch (error) {
       const code = (error as NodeJS.ErrnoException).code
       throw new SeedSkip(code === 'ENOENT' ? 'asar-missing' : 'asar-unreadable', '读不到 Claude Desktop 的程序文件', { asar: redact(asarPath), code })
