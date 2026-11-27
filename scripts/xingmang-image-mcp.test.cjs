@@ -583,6 +583,128 @@ test('MCP server converts 1K 2K 4K with an aspect ratio into gpt-image-2 sizes a
   })
 })
 
+// Header-only pictures: the tool reads an input image's size from its header and never decodes it,
+// so a 4032x3024 photo does not have to be 12 million real pixels here.
+function pngHeader(width, height) {
+  const header = Buffer.alloc(25)
+  header.writeUInt32BE(13, 0)
+  header.write('IHDR', 4, 'latin1')
+  header.writeUInt32BE(width, 8)
+  header.writeUInt32BE(height, 12)
+  header[16] = 8
+  header[17] = 2
+  return Buffer.concat([pngBytes.subarray(0, 8), header, Buffer.from('fake-png-body')])
+}
+
+// A JPEG as a phone writes it: an Exif APP1 segment with the orientation tag (when given) before the frame header.
+function jpegHeader(width, height, orientation, byteOrder = 'MM') {
+  const parts = [Buffer.from([0xff, 0xd8])]
+  if (orientation) {
+    const tiff = Buffer.alloc(26)
+    const little = byteOrder === 'II'
+    function short(value, at) {
+      if (little) tiff.writeUInt16LE(value, at)
+      else tiff.writeUInt16BE(value, at)
+    }
+    function long(value, at) {
+      if (little) tiff.writeUInt32LE(value, at)
+      else tiff.writeUInt32BE(value, at)
+    }
+    tiff.write(byteOrder, 0, 'latin1')
+    short(42, 2)
+    long(8, 4)
+    short(1, 8)
+    short(0x0112, 10)
+    short(3, 12)
+    long(1, 14)
+    short(orientation, 18)
+    long(0, 22)
+    const payload = Buffer.concat([Buffer.from('Exif\0\0', 'latin1'), tiff])
+    const marker = Buffer.from([0xff, 0xe1, 0, 0])
+    marker.writeUInt16BE(payload.length + 2, 2)
+    parts.push(marker, payload)
+  }
+  const frame = Buffer.alloc(19)
+  frame[0] = 0xff
+  frame[1] = 0xc0
+  frame.writeUInt16BE(17, 2)
+  frame[4] = 8
+  frame.writeUInt16BE(height, 5)
+  frame.writeUInt16BE(width, 7)
+  frame[9] = 3
+  parts.push(frame, Buffer.from([0xff, 0xda, 0x00, 0x02]), Buffer.from('fake-scan'))
+  return Buffer.concat(parts)
+}
+
+// What an edit asks the relay for when the AI leaves size or aspect out (yoyo 2026-11-27「改图保持原尺寸」):
+// the blank part follows the first picture, which used to come back as a 1024x1024 square every time.
+// The MCP server and the generate script run the same table, so the two cannot drift apart.
+const editSizeCases = [
+  { name: 'portrait photo keeps its shape and up to 2K', images: [pngHeader(3024, 4032)], size: '1536x2048' },
+  { name: 'phone photo stored on its side, Exif says turn it', images: [jpegHeader(4032, 3024, 6)], size: '1536x2048' },
+  { name: 'little-endian Exif, turned the other way', images: [jpegHeader(4032, 3024, 8, 'II')], size: '1536x2048' },
+  { name: 'upside down is still landscape', images: [jpegHeader(4032, 3024, 3)], size: '2048x1536' },
+  { name: 'landscape JPEG without Exif', images: [jpegHeader(4032, 3024)], size: '2048x1536' },
+  { name: 'phone screenshot, a ratio outside the list', images: [pngHeader(1170, 2532)], size: '944x2048' },
+  { name: 'a picture between 1K and 2K keeps its own size', images: [pngHeader(1080, 1920)], size: '1088x1920' },
+  { name: 'a picture smaller than 1K still comes back at 1K', images: [pngHeader(512, 512)], size: '1024x1024' },
+  { name: 'a tier alone keeps the picture ratio', images: [pngHeader(3024, 4032)], args: { size: '4K' }, size: '2480x3312' },
+  { name: 'an aspect alone keeps the picture sharpness', images: [pngHeader(3024, 4032)], args: { aspect: '16:9' }, size: '2048x1152' },
+  { name: 'tier and aspect both written are drawn as written', images: [pngHeader(3024, 4032)], args: { size: '1K', aspect: '1:1' }, size: '1024x1024' },
+  { name: 'width and height written are drawn as written', images: [pngHeader(3024, 4032)], args: { size: '1536x1024' }, size: '1536x1024' },
+  { name: 'only the first picture decides', images: [pngHeader(4032, 3024), pngHeader(1170, 2532)], size: '2048x1536' },
+  { name: 'a header that cannot be read keeps the old default', images: [pngBytes], size: '1024x1024' },
+]
+
+function multipartField(request, name) {
+  const match = new RegExp(`name="${name}"\\r\\n\\r\\n([^\\r]*)`).exec(request.body.toString('latin1'))
+  return match ? match[1] : null
+}
+
+test('MCP server edits follow the first picture for the size and aspect the AI left out', async () => {
+  await withServer({ apiKey: 'sk-test-not-real' }, ok, async ({ call, requests, root }) => {
+    for (const [index, item] of editSizeCases.entries()) {
+      const images = []
+      for (const [order, bytes] of item.images.entries()) {
+        const imagePath = path.join(root, `edit-${index}-${order}.img`)
+        await writeFile(imagePath, bytes)
+        images.push(imagePath)
+      }
+      const edited = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'x', images, ...item.args } })
+      assert.equal(edited.result.isError, undefined, item.name)
+      assert.equal(requests.at(-1).url, '/v1/images/edits', item.name)
+      assert.equal(multipartField(requests.at(-1), 'size'), item.size, item.name)
+    }
+    // A new picture has nothing to follow and stays 1K square.
+    await call('tools/call', { name: 'generate_image', arguments: { prompt: 'x' } })
+    assert.equal(jsonBody(requests.at(-1)).size, '1024x1024')
+  })
+})
+
+test('MCP server edits with Nano Banana pick the nearest listed ratio and the tier of the first picture', async () => {
+  const config = { codexApiKey: 'sk-codex-not-real', apiKey: 'sk-image-not-real' }
+  await withServer(config, geminiOk, async ({ call, requests, root }) => {
+    const cases = [
+      [pngHeader(3024, 4032), {}, { aspectRatio: '3:4', imageSize: '2K' }],
+      [pngHeader(1170, 2532), {}, { aspectRatio: '9:16', imageSize: '2K' }],
+      [jpegHeader(4032, 3024, 6), {}, { aspectRatio: '3:4', imageSize: '2K' }],
+      [pngHeader(800, 600), {}, { aspectRatio: '4:3', imageSize: '1K' }],
+      [pngHeader(3024, 4032), { size: '4K' }, { aspectRatio: '3:4', imageSize: '4K' }],
+      [pngHeader(3024, 4032), { aspect: '1:1' }, { aspectRatio: '1:1', imageSize: '2K' }],
+    ]
+    for (const [index, [bytes, args, expected]] of cases.entries()) {
+      const imagePath = path.join(root, `banana-${index}.img`)
+      await writeFile(imagePath, bytes)
+      const edited = await call('tools/call', {
+        name: 'generate_image',
+        arguments: { prompt: 'x', model: 'nano-banana-2', images: [imagePath], ...args },
+      })
+      assert.equal(edited.result.isError, undefined, JSON.stringify(expected))
+      assert.deepEqual(jsonBody(requests.at(-1)).generationConfig.imageConfig, expected)
+    }
+  })
+})
+
 test('MCP server draws Nano Banana through the Gemini native endpoint with only the image key', async () => {
   const config = { codexApiKey: 'sk-codex-not-real', apiKey: 'sk-image-not-real' }
   await withServer(config, geminiOk, async ({ call, requests, root }) => {
@@ -1220,6 +1342,68 @@ test('generate script size helpers keep exact ratios inside the gpt-image-2 pixe
   assert.deepEqual(defaultModelChain({ model: '', fallbackModels: null }), ['gpt-image-2'])
 })
 
+test('generate script edits follow the first picture for the size and aspect the AI left out, like the MCP server', async () => {
+  for (const [index, item] of editSizeCases.entries()) {
+    const edited = await runGenerate({ apiKey: 'sk-test-not-real' }, ok, async (root) => {
+      const extra = []
+      for (const [order, bytes] of item.images.entries()) {
+        const imagePath = path.join(root, `edit-${index}-${order}.img`)
+        await writeFile(imagePath, bytes)
+        extra.push('--image', imagePath)
+      }
+      if (item.args?.size) extra.push('--size', item.args.size)
+      if (item.args?.aspect) extra.push('--aspect', item.args.aspect)
+      return extra
+    })
+    assert.equal(edited.code, 0, `${item.name}: ${edited.stderr}`)
+    assert.equal(multipartField(edited.requests[0], 'size'), item.size, item.name)
+  }
+  const banana = await runGenerate({ codexApiKey: 'sk-codex-not-real', apiKey: 'sk-image-not-real' }, geminiOk, async (root) => {
+    await writeFile(path.join(root, 'shot.png'), pngHeader(1170, 2532))
+    return ['--model', 'nano-banana-2', '--image', path.join(root, 'shot.png')]
+  })
+  assert.equal(banana.code, 0, banana.stderr)
+  assert.deepEqual(jsonBody(banana.requests[0]).generationConfig.imageConfig, { aspectRatio: '9:16', imageSize: '2K' })
+})
+
+test('generate script size helpers keep a picture ratio inside the gpt-image-2 limits and never trip on a broken header', async () => {
+  const fc = require('fast-check')
+  const { ratioDimensions, nearestAspect, originalDimensions } = await import(pathToFileURL(generatePath).href)
+  // Any picture shape and any long side comes back as a size gpt-image-2 accepts, turned the same way as the picture.
+  fc.assert(fc.property(
+    fc.integer({ min: 1, max: 20_000 }), fc.integer({ min: 1, max: 20_000 }), fc.integer({ min: 16, max: 3840 }),
+    (width, height, longSide) => {
+      const picked = ratioDimensions(width / height, longSide)
+      const long = Math.max(picked.width, picked.height)
+      const short = Math.min(picked.width, picked.height)
+      return picked.width % 16 === 0 && picked.height % 16 === 0
+        && picked.width * picked.height >= 655_360 && picked.width * picked.height <= 8_294_400
+        && long <= 3840 && long <= 3 * short
+        && (width === height || picked.width === picked.height || (width > height) === (picked.width > picked.height))
+    },
+  ))
+  assert.deepEqual(ratioDimensions(1, 2048), { width: 2048, height: 2048 })
+  assert.deepEqual(ratioDimensions(3, 3840), { width: 3840, height: 1280 })
+  assert.equal(nearestAspect(1170 / 2532), '9:16')
+  assert.equal(nearestAspect(4032 / 3024), '4:3')
+  assert.equal(nearestAspect(1), '1:1')
+  // A header cut short anywhere, or random bytes behind a JPEG or PNG signature, gives a size or null and never throws:
+  // a throw here would fail the whole edit instead of falling back to the old default.
+  const phone = jpegHeader(4032, 3024, 6)
+  for (let length = 0; length <= phone.length; length += 1) {
+    const read = originalDimensions(phone.subarray(0, length))
+    assert.ok(read === null || (read.width > 0 && read.height > 0), String(length))
+  }
+  assert.deepEqual(originalDimensions(phone), { width: 3024, height: 4032 })
+  fc.assert(fc.property(
+    fc.constantFrom(Buffer.from([0xff, 0xd8, 0xff, 0xe1]), pngBytes.subarray(0, 8)), fc.uint8Array({ maxLength: 96 }),
+    (signature, rest) => {
+      const read = originalDimensions(Buffer.concat([signature, Buffer.from(rest)]))
+      return read === null || (read.width > 0 && read.height > 0)
+    },
+  ))
+})
+
 test('bundled image skill names neither the brand nor a site address where the AI or the user reads it', async () => {
   // 技能说明、工具说明和出错提示都会被 AI 读到、转述给客户，主语只用「当前账号」「管理工具」。
   // 站点地址只许留在画图工具的地址白名单（安全检查）和命令行脚本的兜底地址里。
@@ -1455,10 +1639,13 @@ test('bundled image skill gives Codex the exact call to copy and says how to han
   // Codex reaches MCP tools from code it writes itself, and left alone it often dropped the result.
   assert.ok(skill.includes([
     '```js',
-    'const r = await tools.mcp__xingmang_image__generate_image({ prompt: "<描述>", images: ["<参考图完整路径，没有就删掉这一项>"], size: "1K", aspect: "1:1" });',
+    'const r = await tools.mcp__xingmang_image__generate_image({ prompt: "<描述>", images: ["<参考图完整路径，没有就删掉这一项>"] });',
     'for (const c of (r?.content || [])) c.type === "image" ? image(c) : c.type === "text" ? text(c.text) : null;',
     '```',
   ].join('\n')))
+  // The call used to carry size: "1K", aspect: "1:1", and Codex copied them into every edit, so a portrait came back
+  // as a 1024 square even after the tool learned to follow the picture (yoyo 2026-11-27「改图保持原尺寸」).
+  assert.ok(skill.includes('改图时不要为了把参数写全而填 `1K`、`1:1`'))
   const finished = skill.slice(skill.indexOf('## 完成后'), skill.indexOf('## 失败时'))
   for (const rule of [
     '最终回复里逐张写出结果给的文件路径',
