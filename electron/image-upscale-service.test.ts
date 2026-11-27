@@ -67,7 +67,9 @@ function createService(overrides: Partial<ImageUpscaleServiceOptions> = {}) {
 }
 
 async function nextWorker(workers: FakeWorker[], index = 0): Promise<FakeWorker> {
-  await vi.waitFor(() => expect(workers[index]?.jobs).toHaveLength(1))
+  // Before the worker starts, the service hashes the real 4.6 MB model; a slow
+  // Windows runner can take longer than waitFor's default second for that.
+  await vi.waitFor(() => expect(workers[index]?.jobs).toHaveLength(1), { timeout: 10_000 })
   return workers[index]
 }
 
