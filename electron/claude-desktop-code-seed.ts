@@ -30,6 +30,7 @@ import { readBoundedResponseText } from './bounded-response'
 import { readDiskSpace, installMinimumFreeBytes, type DiskSpaceReading } from './disk-space'
 import type { ExternalClientLaunchProgress } from './external-client-contract'
 import { downloadWithResume, DownloadStalledError } from './download-retry'
+import { openForeignAsar, statForeignAsar } from './foreign-asar'
 import { npmMirrorRegistry, npmOfficialRegistry, npmPackageVersionUrl } from './npm-registry'
 import { fetchLandingWithRedirectAllowlist } from './redirect-allowlist-fetch'
 import {
@@ -337,7 +338,7 @@ async function readExactly(handle: fs.promises.FileHandle, length: number, posit
  * 读到就停。整份 asar 约 58 MB，这一步通常只读一个约 7 MB 的脚本。找不到给 null。
  */
 export async function readClaudeCodeBuildPin(asarPath: string, platform: ClaudeCodeSeedPlatform): Promise<ClaudeCodeBuildPin | null> {
-  const handle = await fs.promises.open(asarPath, 'r')
+  const handle = await openForeignAsar(asarPath)
   try {
     const stats = await handle.stat()
     if (!stats.isFile()) throw new Error('asar-not-file')
@@ -795,7 +796,7 @@ export function createClaudeDesktopCodeSeeder(options: ClaudeDesktopCodeSeederOp
 
   async function pinFor(asarPath: string, platform: ClaudeCodeSeedPlatform): Promise<ClaudeCodeBuildPin | null> {
     let stats: fs.Stats
-    try { stats = await fs.promises.stat(asarPath) }
+    try { stats = await statForeignAsar(asarPath) }
     catch (error) {
       const code = (error as NodeJS.ErrnoException).code
       throw new SeedSkip(code === 'ENOENT' ? 'asar-missing' : 'asar-unreadable', '读不到 Claude Desktop 的程序文件', { asar: redact(asarPath), code })

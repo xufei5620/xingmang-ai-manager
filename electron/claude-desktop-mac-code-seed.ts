@@ -34,6 +34,7 @@ import type { ClaudeDesktopComponentTarget } from './claude-desktop-workspace-se
 import { desktopPackageBucketOrigin, fetchDesktopBucketResource } from './desktop-package-bucket'
 import { installMinimumFreeBytes, readDiskSpace, type DiskSpaceReading } from './disk-space'
 import { downloadWithResume, DownloadStalledError } from './download-retry'
+import { statForeignAsar } from './foreign-asar'
 import {
   assertNoReparseComponents, assertSafeDataFile, ensureSafeDataDirectory, removeSafeDataFile, renameWithTransientRetry,
   writeAtomicSafeUtf8File,
@@ -446,7 +447,7 @@ export function createClaudeDesktopMacCodeSeeder(options: ClaudeDesktopMacCodeSe
 
   async function manifestFor(asarPath: string): Promise<ClaudeDesktopComponentManifest> {
     let stats: fs.Stats
-    try { stats = await fs.promises.stat(asarPath) }
+    try { stats = await statForeignAsar(asarPath) }
     catch (error) {
       throw new MacSeedSkip('asar-unreadable', '读不到 Claude Desktop 的程序文件', { asar: redact(asarPath), code: (error as NodeJS.ErrnoException).code })
     }
