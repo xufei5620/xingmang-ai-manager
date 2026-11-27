@@ -122,7 +122,9 @@ test('the installed devDependency carries every file the list names', (t) => {
     '  .catch((error) => { console.error(error); process.exitCode = 1 })',
   ].join('\n')
   const report = JSON.parse(execFileSync(process.execPath, ['-e', script, staged, model], { encoding: 'utf8', timeout: 60_000 }).trim())
-  assert.ok(report.common.startsWith(result.output), `onnxruntime-common resolved outside the staged copy: ${report.common}`)
+  // Compare real paths: a Windows temp directory can come back in its 8.3 short form.
+  const stagedRoot = fs.realpathSync.native(result.output)
+  assert.ok(fs.realpathSync.native(report.common).startsWith(stagedRoot), `onnxruntime-common resolved outside the staged copy: ${report.common}`)
   assert.equal(report.inputs.length, 1)
 })
 

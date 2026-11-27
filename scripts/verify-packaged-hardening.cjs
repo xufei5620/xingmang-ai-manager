@@ -132,10 +132,17 @@ function readImageUpscaleManifest(manifestPath = IMAGE_UPSCALE_MANIFEST) {
   return manifest
 }
 
+// @electron/asar splits in-archive paths on path.sep, so on Windows a nested
+// "a/b/c" is looked up as one directory named "a/b" and never found. Messages
+// keep the forward-slash spelling; only the lookup gets the platform's.
+function archiveEntry(relativePath) {
+  return relativePath.split('/').join(path.sep)
+}
+
 function packagedBytes(asarPath, relativePath, label) {
   let bytes
   try {
-    bytes = extractFile(asarPath, relativePath)
+    bytes = extractFile(asarPath, archiveEntry(relativePath))
   } catch (error) {
     throw new Error(`打包产物缺少${label} ${relativePath}：${error instanceof Error ? error.message : String(error)}`)
   }
@@ -164,7 +171,7 @@ function inspectPackagedImageUpscale(asarPath, manifest = readImageUpscaleManife
       }
       let directory
       try {
-        directory = statFile(asarPath, `${root}/${entry.directory}`)
+        directory = statFile(asarPath, archiveEntry(`${root}/${entry.directory}`))
       } catch {
         directory = null
       }
