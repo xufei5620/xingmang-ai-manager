@@ -53,6 +53,27 @@ export function initialClientSource(
   return keys.length ? `account:${keys[0].id}` : 'manual'
 }
 
+/**
+ * 检测时这把密钥的分组被拒了（账号已经用不了），「更换可用密钥」换成哪把：照打开时的挑法再挑一次，跳过这把和同一分组里的
+ * （同一分组的一样被拒）；借工具那把被拒的，跳过那个工具。挑出来还是它、或者只剩「自己填写」，就是 null，界面改叫他去
+ * 「访问密钥」里换。
+ */
+export function alternativeClientSource(
+  tool: ExternalToolId,
+  preferred: ProviderId,
+  sources: readonly { id: ProviderId }[],
+  providers: Providers | null,
+  keys: readonly ClientKey[],
+  claudeCode: { name: string; group: string } | null,
+  failed: string,
+): string | null {
+  const failedKey = keys.find((key) => `account:${key.id}` === failed)
+  const remaining = keys.filter((key) => key !== failedKey && (!failedKey?.group || key.group !== failedKey.group))
+  const failedTool = failed.startsWith('configured:') ? failed.slice(11) : null
+  const next = initialClientSource(tool, preferred, sources.filter((source) => source.id !== failedTool), providers, remaining, claudeCode)
+  return next === failed || next === 'manual' ? null : next
+}
+
 /** 选「使用某工具当前的密钥」时先填那个工具自己配着的型号；不合这个客户端的不填，检测完再挑。 */
 export function configuredSourceModel(tool: ExternalToolId, source: string, providers: Providers | null): string {
   if (!source.startsWith('configured:') || !providers) return ''

@@ -1216,6 +1216,37 @@ test('the Claude Desktop dialog leaves out keys in groups the account lost and d
   } finally { await page.close() }
 })
 
+test('a key in a group the account lost says so in plain words and switches to a usable key', async () => {
+  const page = await open('clientModels=1&claudeUnconfigured=1&bootstrapPending=1&clientKeyGroups=1&clientGroupRejected=1')
+  try {
+    await page.getByTestId('home-client-claudeDesktop').click()
+    await expect(page.getByTestId('external-client-source')).toHaveAttribute('data-value', 'account:401')
+    await page.getByTestId('external-client-detect').click()
+    const notice = page.getByTestId('external-client-group-rejected')
+    await notice.getByRole('alert').getByText('该密钥所属的分组在当前账号下已不可用，请更换密钥。', { exact: true }).waitFor()
+    // 403、分组名和请求号只在「查看详情」里。
+    assert.doesNotMatch(await notice.getByRole('alert').innerText(), /403|Claude-MAX|request id/)
+    assert.match(await notice.locator('details').textContent(), /查看详情[\s\S]*无权访问 Claude-MAX 分组/)
+    await page.getByTestId('external-client-group-switch').click()
+    await expect(page.getByTestId('external-client-source')).toHaveAttribute('data-value', 'account:402')
+    await expect(page.getByTestId('external-client-model')).toHaveValue('claude-fixture')
+    assert.equal(await page.getByTestId('external-client-group-rejected').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+  // CLI 配置框里换成「自动准备」：保存时替他在能用的分组里准备好。
+  const tool = await open('clientKeyGroups=1&clientGroupRejected=1')
+  try {
+    await openToolConfiguration(tool, 'claude')
+    await pickOption(tool, 'tool-key-select', '401')
+    await tool.getByTestId('tool-detect-models').click()
+    await tool.getByTestId('tool-key-group-rejected').getByText('该密钥所属的分组在当前账号下已不可用，请更换密钥。', { exact: true }).waitFor()
+    await tool.getByTestId('tool-key-group-switch').click()
+    await expect(tool.getByTestId('tool-key-select')).toHaveAttribute('data-value', 'automatic')
+    assert.equal(await tool.getByTestId('tool-key-group-rejected').count(), 0)
+    await clean(tool)
+  } finally { await tool.close() }
+})
+
 test('client save errors retain the selected model and never show a success notice', async () => {
   const page = await open('clientModels=1&clientSaveFailure=1&keyOptions=1')
   try {
