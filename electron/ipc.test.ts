@@ -5296,6 +5296,38 @@ describe('registerIpcHandlers', () => {
     }
   })
 
+  it('makes a blank canvas project for the signed-in account only, taking nothing from the page', async () => {
+    const created = { projectId: '11111111-1111-4111-8111-111111111111', projectName: '未命名画布 11 月 27 日 14:30' }
+    const createCanvasProject = vi.fn(async () => created)
+    const accountService = accountServiceStub()
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 7 } } as never)
+    const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { createCanvasProject })
+    try {
+      const make = electronMocks.handlers.get('canvas:create-project')!
+      expect(() => make(trustedEvent('https://attacker.example/'))).toThrow('已拒绝来自非应用页面的操作请求')
+      expect(createCanvasProject).not.toHaveBeenCalled()
+
+      await expect(make(trustedEvent())).resolves.toEqual(created)
+      // Whatever the page sends along is ignored: the name and the folder are the main process's own.
+      await expect(make(trustedEvent(), { name: '../../x', directory: 'C:\\Windows' })).resolves.toEqual(created)
+      expect(createCanvasProject.mock.calls).toEqual([[7], [7]])
+
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: false } as never)
+      expect(() => make(trustedEvent())).toThrow('请先登录星芒账号')
+      expect(createCanvasProject).toHaveBeenCalledTimes(2)
+    } finally {
+      dispose()
+    }
+
+    // A registration without it says so in words the page can show.
+    const bare = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub())
+    try {
+      expect(() => electronMocks.handlers.get('canvas:create-project')!(trustedEvent())).toThrow('暂时无法新建画布项目，请稍后重试。')
+    } finally {
+      bare.dispose()
+    }
+  })
+
   it('hands the canvas project list and the open request straight to the canvas controller', async () => {
     const projects = [{ id: '11111111-1111-4111-8111-111111111111', name: '双十一主图', updatedAt: 1_700_000_000_000 }]
     const listCanvasProjects = vi.fn(async () => projects)
@@ -10754,6 +10786,8 @@ describe('IPC channel log and account policies', () => {
       'antigravity:open-desktop',
       // 「添加到画布」：图片和项目都按当前账号认，抄进的是当前账号的项目。
       'canvas:add-project-image',
+      // 「新建画布」：建在当前账号名下。
+      'canvas:create-project',
       // 「创作」左边那一列里的画布项目：列的是当前账号的，打开时编号也在当前账号的项目里认。
       'canvas:list-projects',
       'canvas:open',

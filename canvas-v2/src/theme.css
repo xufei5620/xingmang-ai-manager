@@ -192,12 +192,13 @@
   outline-offset: 2px;
 }
 
+/* 系统里关了动画也一样：用 transition: none，理由见 theme/brand-appearance.css 末尾。 */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
+    transition: none !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
   }

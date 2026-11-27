@@ -97,6 +97,7 @@ import { registerAiLibraryHandlers } from './ipc/handlers/ai-library'
 import { registerAiVideoHandlers } from './ipc/handlers/ai-video'
 import { registerDataTransferHandlers } from './ipc/handlers/data-transfer'
 import type { AccountWorksTransfer } from './data-transfer-works'
+import type { BlankCanvasProjectCreator } from './canvas-blank-project'
 import type { CanvasProjectImageIntake } from './canvas-project-image-intake'
 import type { ImageUpscaleService } from './image-upscale-service'
 import { registerCodexRemoteHandlers } from './ipc/handlers/codex-remote'
@@ -280,6 +281,8 @@ export interface IpcRegistrationOptions {
   // 「添加到画布」（融合第 5 步的「放进画布」）：把当前账号的一张图抄一份进他选的画布项目的素材库。认图、认项目、
   // 怎么抄都在 canvas-project-image-intake.ts；入参先由处理器按字段白名单认过。缺省 = 报「暂时无法添加」。
   addImageToCanvasProject?: CanvasProjectImageIntake
+  // 「新建画布」：给当前账号在「文档 › 星芒画布」里建一个空白项目（canvas-blank-project.ts）。缺省 = 报「暂时无法新建」。
+  createCanvasProject?: BlankCanvasProjectCreator
   // Backing store for the "记住密码" credential (account-credential-store.ts,
   // safeStorage-encrypted). Optional the same way accountService is: main.ts
   // always passes the real store; when absent (tests that predate it), the

@@ -523,10 +523,10 @@ export async function detectNetworkRegion(
  * and a pinned policy lets install paths skip the region probe entirely,
  * which in a blocked network is itself the unreliable step.
  *
- * Deliberately NOT applied to the Codex desktop manifest: its bytes are
- * mirror-only, so the manifest must stay mirror-first regardless of policy
- * or the card can advertise a release the install path cannot fetch (see
- * buildCodexDesktopManifestSources).
+ * Not applied to the Codex desktop version check either: it reads OpenAI's
+ * feed and Xingmang's own bucket side by side, and only a bucket build marks
+ * the card installable (see buildCodexDesktopManifestBundle), so there is no
+ * source order for a mirror policy to change.
  */
 export function effectiveNetworkRegion(
   policy: MirrorPolicy | undefined,

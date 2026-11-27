@@ -328,6 +328,7 @@ function buildBundledExtras(projectRoot) {
     }
     return { name, version: packageJson.version }
   })
+  const antigravityChineseDirectory = path.join(projectRoot, 'bundled-catalog', 'antigravity-zh-CN')
   return [
     {
       name: 'Electron',
@@ -408,6 +409,19 @@ function buildBundledExtras(projectRoot) {
       usedIn: ['image upscaling'],
       texts: [{ name: 'LICENSE', text: readRequiredText(path.join(upscaleDirectory, 'LICENSE'), 'Real-ESRGAN 许可') }],
       notes: ['The weights are converted to ONNX without modification (bundled-catalog/image-upscale/convert-realesr-general-x4v3.py).'],
+    },
+    {
+      name: 'Antigravity Usage Monitor simplified Chinese word list',
+      version: 'see bundled-catalog/antigravity-zh-CN',
+      license: 'GPL-3.0',
+      source: 'https://github.com/yuhuan-dev/antigravity-usage-monitor',
+      usedIn: ['main process'],
+      texts: [{ name: 'LICENSE', text: readRequiredText(path.join(antigravityChineseDirectory, 'LICENSE'), 'Antigravity 中文词表许可') }],
+      notes: [
+        'zh-CN.json is copied unmodified from the upstream release tag and read as data only;',
+        'the code that applies it to the Antigravity window is not derived from the plugin.',
+        'The JSON file is its own source form; the tag, commit and sha256 are in the README next to it.',
+      ],
     },
     {
       name: 'Nsis7z plug-in (based on 7-Zip by Igor Pavlov)',

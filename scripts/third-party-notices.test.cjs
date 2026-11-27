@@ -217,7 +217,7 @@ test('writes every entry with its version, license, source and full license text
 test('registers by hand what no build step can see, each with text read from the repository', () => {
   const extras = buildBundledExtras(projectRoot)
   const byName = Object.fromEntries(extras.map((extra) => [extra.name.split(' ')[0], extra]))
-  assert.deepEqual(Object.keys(byName).sort(), ['@lobehub/icons', 'Chromium', 'Electron', 'Mihomo', 'Nsis7z', 'OpenAI', 'OpenCV', 'Real-ESRGAN', 'onnxruntime-common', 'onnxruntime-web'])
+  assert.deepEqual(Object.keys(byName).sort(), ['@lobehub/icons', 'Antigravity', 'Chromium', 'Electron', 'Mihomo', 'Nsis7z', 'OpenAI', 'OpenCV', 'Real-ESRGAN', 'onnxruntime-common', 'onnxruntime-web'])
   assert.equal(byName.Electron.version, require('../node_modules/electron/package.json').version)
   assert.match(byName.Electron.texts[0].text, /Electron contributors/)
   assert.match(byName['@lobehub/icons'].texts[0].text, /LobeHub/)
@@ -225,6 +225,8 @@ test('registers by hand what no build step can see, each with text read from the
   assert.deepEqual(byName.OpenAI.texts.map((entry) => entry.name), ['NOTICE', 'LICENSE'])
   assert.equal(byName.Nsis7z.license, 'LGPL-2.1')
   assert.equal(byName.Mihomo.license, 'GPL-3.0')
+  assert.equal(byName.Antigravity.license, 'GPL-3.0')
+  assert.match(byName.Antigravity.texts[0].text, /GNU GENERAL PUBLIC LICENSE\s+Version 3/)
   assert.ok(byName.Chromium.notes.some((note) => note.includes('LICENSES.chromium.html')))
   // The image upscaling runtime is staged outside the root node_modules, so no
   // dependency walk sees it; its name and version must match the packaged
@@ -245,6 +247,7 @@ test('refuses to register onnxruntime license files from another version than th
     'node_modules/electron/package.json', 'node_modules/electron/LICENSE', 'src/renderer-v2/ui/vendor-icons.tsx',
     'canvas-v2/src/vendor/opencv-grabcut/manifest.json', 'canvas-v2/src/vendor/opencv-grabcut/LICENSES.txt',
     'bundled-catalog/codex-models/NOTICE', 'bundled-catalog/codex-models/LICENSE',
+    'bundled-catalog/antigravity-zh-CN/LICENSE',
     'bundled-catalog/image-upscale/manifest.json', 'bundled-catalog/image-upscale/LICENSE',
     'bundled-catalog/image-upscale/LICENSE.onnxruntime', 'bundled-catalog/image-upscale/ThirdPartyNotices.onnxruntime.txt',
     'node_modules/onnxruntime-web/package.json', 'node_modules/onnxruntime-common/package.json',

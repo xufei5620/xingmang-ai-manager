@@ -1216,6 +1216,37 @@ test('the Claude Desktop dialog leaves out keys in groups the account lost and d
   } finally { await page.close() }
 })
 
+test('a key in a group the account lost says so in plain words and switches to a usable key', async () => {
+  const page = await open('clientModels=1&claudeUnconfigured=1&bootstrapPending=1&clientKeyGroups=1&clientGroupRejected=1')
+  try {
+    await page.getByTestId('home-client-claudeDesktop').click()
+    await expect(page.getByTestId('external-client-source')).toHaveAttribute('data-value', 'account:401')
+    await page.getByTestId('external-client-detect').click()
+    const notice = page.getByTestId('external-client-group-rejected')
+    await notice.getByRole('alert').getByText('该密钥所属的分组在当前账号下已不可用，请更换密钥。', { exact: true }).waitFor()
+    // 403、分组名和请求号只在「查看详情」里。
+    assert.doesNotMatch(await notice.getByRole('alert').innerText(), /403|Claude-MAX|request id/)
+    assert.match(await notice.locator('details').textContent(), /查看详情[\s\S]*无权访问 Claude-MAX 分组/)
+    await page.getByTestId('external-client-group-switch').click()
+    await expect(page.getByTestId('external-client-source')).toHaveAttribute('data-value', 'account:402')
+    await expect(page.getByTestId('external-client-model')).toHaveValue('claude-fixture')
+    assert.equal(await page.getByTestId('external-client-group-rejected').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+  // CLI 配置框里换成「自动准备」：保存时替他在能用的分组里准备好。
+  const tool = await open('clientKeyGroups=1&clientGroupRejected=1')
+  try {
+    await openToolConfiguration(tool, 'claude')
+    await pickOption(tool, 'tool-key-select', '401')
+    await tool.getByTestId('tool-detect-models').click()
+    await tool.getByTestId('tool-key-group-rejected').getByText('该密钥所属的分组在当前账号下已不可用，请更换密钥。', { exact: true }).waitFor()
+    await tool.getByTestId('tool-key-group-switch').click()
+    await expect(tool.getByTestId('tool-key-select')).toHaveAttribute('data-value', 'automatic')
+    assert.equal(await tool.getByTestId('tool-key-group-rejected').count(), 0)
+    await clean(tool)
+  } finally { await tool.close() }
+})
+
 test('client save errors retain the selected model and never show a success notice', async () => {
   const page = await open('clientModels=1&clientSaveFailure=1&keyOptions=1')
   try {
@@ -4598,6 +4629,77 @@ test('a video made in a conversation is priced from the account price list, join
     assert.equal((await fixtureCalls(page, 'generateAiVideo')).length, 2, 'handing a clip to a film generates nothing')
     await clean(page)
   } finally { await page.close() }
+})
+
+// 「新建画布」（yoyo 2026-11-28 回「新建画布按钮」）：左栏「新建」旁边一颗，筛「画布」又一个项目都没有时再一颗。
+// 夹具假装建成了：这里核的是按钮在哪、说的是哪一句、建好就把画布开在新项目上、左边那一列跟着多一行。
+test('the new canvas button makes a blank canvas project and opens the canvas window on it', async () => {
+  const page = await openCreate('canvasProjects=1')
+  try {
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-new-canvas').waitFor()
+    const top = page.locator('.chat-conversations-top')
+    assert.deepEqual((await top.getByRole('button').allTextContents()).map((text) => text.trim()), ['新建', '新建画布'])
+    const create = page.getByTestId('create-new-canvas')
+    assert.equal(await create.getAttribute('title'), '新建空白画布项目，并在独立窗口中打开')
+    // 两颗并排、一样宽，都在左栏里放得下。
+    const [left, right] = await top.getByRole('button').evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect()))
+    assert.equal(Math.round(left.top), Math.round(right.top))
+    assert.ok(Math.abs(left.width - right.width) < 1, `${left.width} vs ${right.width}`)
+    assert.equal(await create.evaluate((button) => button.scrollWidth <= button.clientWidth), true)
+
+    await create.click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'openCanvasProject'))
+    // 主进程那条不带参数：名字和位置都由它定。建好就把画布开在新项目上，不另外打开项目中心。
+    assert.deepEqual(await fixtureCalls(page, 'createCanvasProject'), [[]])
+    assert.deepEqual(await fixtureCalls(page, 'openCanvasProject'), [['fixture-canvas-blank-3']])
+    assert.deepEqual(await fixtureCalls(page, 'openCanvasWindow'), [])
+    await page.getByTestId('create-item-canvas-fixture-canvas-blank-3').waitFor()
+    assert.equal(await page.getByTestId('create-item-canvas-fixture-canvas-blank-3').textContent(), '未命名画布 11 月 27 日 14:30画布项目')
+    assert.equal(await page.getByTestId('operation-error').count(), 0)
+
+    // 没建成：主进程说的中文原话上屏，带「打开画布」，点了打开项目中心；说的是英文就换成兜底句。
+    const toasts = page.locator('.xm-toasts').getByRole('status')
+    await page.evaluate(() => { window.v2Test.fail = 'createCanvasProject'; window.v2Test.failMessage = '无法在「星芒画布」文件夹中新建项目（没有写入权限）。请打开画布，在「项目中心」中新建。' })
+    await create.click()
+    await toasts.getByText('无法在「星芒画布」文件夹中新建项目（没有写入权限）。请打开画布，在「项目中心」中新建。', { exact: true }).waitFor()
+    await toasts.getByRole('button', { name: '打开画布', exact: true }).click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'openCanvasWindow'))
+    await page.evaluate(() => { window.v2Test.failMessage = "EPERM: operation not permitted, mkdir 'C:\\\\Users\\\\yoyo\\\\Documents\\\\星芒画布'" })
+    await create.click()
+    await toasts.getByText('无法在「星芒画布」文件夹中新建项目（无法创建文件夹）。请打开画布，在「项目中心」中新建。', { exact: true }).waitFor()
+    assert.equal(await page.locator('.xm-toasts').getByText('EPERM').count(), 0)
+    await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
+    assert.equal((await fixtureCalls(page, 'openCanvasProject')).length, 1)
+    await clean(page)
+  } finally { await page.close() }
+
+  // 画布那边正开着别的项目、客户在它的关闭确认里选了留下：项目已经建好了，说一句它在左边。
+  const stay = await openCreate('canvasProjects=1&canvasStay=1')
+  try {
+    await stay.getByTestId('nav-chat').click()
+    await stay.getByTestId('create-new-canvas').click()
+    await stay.locator('.xm-toasts').getByRole('status').getByText('已新建「未命名画布 11 月 27 日 14:30」，可稍后在左侧列表中打开。', { exact: true }).waitFor()
+    await stay.getByTestId('create-item-canvas-fixture-canvas-blank-3').waitFor()
+    await clean(stay)
+  } finally { await stay.close() }
+
+  // 一个画布项目都没有，筛「画布」：说「暂无画布项目。」，下面一颗「新建画布」；别的类空着照旧说「该分类下暂无内容。」。
+  const empty = await openCreate()
+  try {
+    await empty.getByTestId('nav-chat').click()
+    await empty.getByTestId('chat-empty').waitFor()
+    await empty.getByTestId('create-filter-canvas').click()
+    assert.equal(await empty.getByTestId('chat-conversation-empty').textContent(), '暂无画布项目。')
+    const again = empty.getByTestId('create-empty-new-canvas')
+    assert.equal((await again.textContent()).trim(), '新建画布')
+    await again.click()
+    await empty.getByTestId('create-item-canvas-fixture-canvas-blank-1').waitFor()
+    assert.deepEqual(await fixtureCalls(empty, 'openCanvasProject'), [['fixture-canvas-blank-1']])
+    await empty.getByTestId('create-filter-chat').click()
+    assert.equal(await empty.getByTestId('chat-conversation-empty').textContent(), '该分类下暂无内容。')
+    await clean(empty)
+  } finally { await empty.close() }
 })
 
 test('a canvas project shows its name and when it was changed, opens in the canvas window, and leaves the column once it is gone', async () => {

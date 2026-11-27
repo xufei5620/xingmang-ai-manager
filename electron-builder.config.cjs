@@ -319,6 +319,9 @@ module.exports = {
     'bundled-catalog/image-upscale/realesr-general-x4v3.onnx',
     // 跑它的 onnxruntime WASM 运行库，compile 时从开发依赖里挑出来（scripts/stage-image-upscale-runtime.cjs）。
     'dist-image-upscale/**/*',
+    // Antigravity 桌面端的中文词表（原样拷自 yuhuan-dev/antigravity-usage-monitor，GPL-3.0，LICENSE 同目录）。
+    // 主进程只当数据读，见 electron/antigravity-desktop-chinese.ts。
+    'bundled-catalog/antigravity-zh-CN/**/*',
     'package.json',
   ],
   extraResources: [

@@ -284,6 +284,8 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'canvas:open-project': { label: '画布项目打开', log: 'normal', account: 'scoped' },
   // 「添加到画布」（融合第 5 步的「放进画布」）：图片和项目都按当前账号认；跑完账号换了，结果作废。
   'canvas:add-project-image': { label: '图片添加到画布项目', log: 'normal', account: 'scoped' },
+  // 「新建画布」：给当前账号建一个空白画布项目；跑完账号换了，结果作废（项目留在原账号名下）。
+  'canvas:create-project': { label: '画布项目新建', log: 'normal', account: 'scoped' },
   // 「创作 › 作品库」（融合第 3 步）：只回当前账号作品的编号、时间、名字和描述。翻页、搜索时一次次调，成功不记。
   'library:list': { label: '作品库读取', log: 'quiet-success', account: 'scoped' },
   // get-remembered-login's result and set-remembered-login's input both carry

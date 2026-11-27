@@ -303,7 +303,7 @@ Claude Desktop 自己要从官网下两样东西，国内下不动：点进 Cowo
 
 ## 星芒客户端怎么用这两份清单
 
-星芒在 Windows、Mac 上一键安装或更新 Codex 桌面端、Claude Desktop 时，先读 `chatgpt/latest.json` 或 `xingmang/offline/claude/latest.json`，从这个桶下同一个官方包；没走通才照旧走原来的路（Windows：Codex 是微软商店、OpenAI 官网、国内镜像，Claude 是系统自带的安装组件、Claude 官网；Mac：问官方的更新信息）。代码在 `electron/desktop-package-bucket.ts`。
+星芒在 Windows、Mac 上一键安装或更新 Codex 桌面端、Claude Desktop 时，先读 `chatgpt/latest.json` 或 `xingmang/offline/claude/latest.json`，从这个桶下同一个官方包；没走通才照旧走原来的路（Windows：Codex 是微软商店、OpenAI 官网，都没装上再回头用清单过期的桶；Claude 是系统自带的安装组件、Claude 官网；Mac：问官方的更新信息）。Windows 首页 Codex 桌面端的「可更新」也只看这份清单（2026-11-24 起，以前看的是第三方的国内镜像，已拿掉，见 `docs/RELEASING.md`「Codex Desktop 下载来源」）。代码在 `electron/desktop-package-bucket.ts`。
 
 - 桶的地址写死在代码里，设置、环境变量、清单内容都改不了它。清单只指对象路径：路径必须和同步脚本写的样子一模一样，下载地址必须正好是桶地址加这个路径，跳转一律不跟。
 - 客户端认的对象：Codex 是 `platforms` 下的 `windows-x64`、`windows-arm64`（MSIX）和 `macos-arm64`、`macos-x64`（完整应用 ZIP）；Claude 是 `files` 里的 `windows-x64`、`windows-arm64`（MSIX）和 `macos-pkg-universal`（通用 PKG：先用 `pkgutil --check-signature` 核安装包签名是 Anthropic 的 Developer ID Installer，再用 `pkgutil --expand-full` 只展开、不安装；DMG 不用）。每条要核的字段：路径、地址、大小、SHA-256、`contentType`/`type`、`verification`、版本号格式；Codex Windows 还要求 `windows.packageIdentity` 为 `OpenAI.Codex`、包版本不比 `windows.buildVersion` 新（另一架构先同步到新版时，这一架构还是上一版，照样从桶里装；0.2.21 及以前的客户端要求两者相等，这时不认这一条，改走原来的路）。
@@ -325,7 +325,7 @@ Antigravity 桌面端也走这一套：Windows 认 `xingmang/offline/antigravity
 
 ## 本次范围
 
-这里建立自动存储、手动文件下载和下载页安装教程流程。星芒客户端一键安装两个桌面端时先读这里的官方包清单（见上一节）；客户端的自动更新源、Codex 桌面端原有的国内镜像、R2 发布与回滚流程继续使用既有配置。
+这里建立自动存储、手动文件下载和下载页安装教程流程。星芒客户端一键安装两个桌面端时先读这里的官方包清单（见上一节）；客户端的自动更新源、R2 发布与回滚流程继续使用既有配置（Codex 桌面端原来的第三方国内镜像 2026-11-24 已拿掉）。
 
 COS 的独立星芒下载索引本身仍只往新版本走，不跟随 R2 的撤回、回滚和维护状态。教程下载页从 2026-10-10 起跟着撤回名单走（#961）：`sites` 每次生成星芒那份清单前，先读 R2 上的 `service-status.json`；某个平台的当前版本被撤回时，改给 `history` 里最新的、没被撤回也不低于最低版本的旧版，一个都没有就不提供这个平台，三个平台都没有时显示「准备中」。读不到撤回名单时整次运行失败，两站保持上一次部署。维护提示和分批放量不影响下载页。撤回或回退以后点一次 `sites` 才立即生效，步骤见 `docs/SERVICE-STATUS.md`「坏版本回退」。
 

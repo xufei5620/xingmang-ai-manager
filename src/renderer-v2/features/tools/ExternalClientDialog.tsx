@@ -6,7 +6,8 @@ import { clientConnections, clientKeySources } from '../../registry/clients'
 import { connectionCheckView } from './connection-check'
 import { accountKeyListFailureText, externalClientConnectedText, externalClientSavedTone } from './external-client-notice'
 import { accountKeyDescription, keysInUsableGroups, manualKeyIssue, readAllAccountKeys } from './key-selection'
-import { configuredKeySources, configuredSourceModel, detectedClientModel, initialClientSource } from './external-client-defaults'
+import { alternativeClientSource, configuredKeySources, configuredSourceModel, detectedClientModel, initialClientSource } from './external-client-defaults'
+import { isKeyGroupRejection, KeyGroupRejectedNotice, modelCheckFailure, type KeyGroupRejection } from './key-group-rejection'
 import { DialogExitButton } from './dialog-parts'
 import { OptionPicker, type PickerOption } from './OptionPicker'
 import { beginBusinessOperation, errorMessage } from '../../business-common'
@@ -62,7 +63,7 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
   const [models, setModels] = useState<string[]>([])
   const [protocol, setProtocol] = useState<'responses' | 'chat-completions'>('responses')
   const [busy, setBusy] = useState('load')
-  const [error, setError] = useState('')
+  const [error, setError] = useState<string | KeyGroupRejection>('')
   const [keyError, setKeyError] = useState('')
   const [dirty, setDirty] = useState(false)
   const [result, setResult] = useState<ExternalClientConfigResult | null>(null)
@@ -120,34 +121,41 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
   }, [pickModel, busy])
 
   // 切回自家工具那把密钥，型号也回到打开时替他填的那个；换成别的来源照旧清空，检测完再挑。
-  function changeSource(next: string) {
-    const seeded = next === `configured:${definition.preferredProvider}` ? configuredSourceModel(tool, next, config?.providers ?? null) : ''
-    setSource(next); setModels([]); setModel(seeded); setResult(null); setError(''); setSecretError(''); setDirty(true); setPickModel(false)
+  function sourceModel(next: string): string {
+    return next === `configured:${definition.preferredProvider}` ? configuredSourceModel(tool, next, config?.providers ?? null) : ''
   }
-  function credential(): ExternalClientCredential {
-    if (source.startsWith('configured:')) return { kind: 'configured', provider: source.slice(11) as ProviderId }
-    if (source.startsWith('account:')) return { kind: 'account', keyId: Number(source.slice(8)) }
+  function changeSource(next: string) {
+    setSource(next); setModels([]); setModel(sourceModel(next)); setResult(null); setError(''); setSecretError(''); setDirty(true); setPickModel(false)
+  }
+  // 「更换可用密钥」：换过去马上再检测一次。这一刻 source、model 还没换过来，所以把新的直接交给 detect。
+  function switchToUsable(next: string) {
+    changeSource(next)
+    void detect(next, sourceModel(next))
+  }
+  function credential(from = source): ExternalClientCredential {
+    if (from.startsWith('configured:')) return { kind: 'configured', provider: from.slice(11) as ProviderId }
+    if (from.startsWith('account:')) return { kind: 'account', keyId: Number(from.slice(8)) }
     return { kind: 'manual', apiKey: secret.trim() }
   }
   /** 列出这把密钥能用的模型。kept = 拿得准替用户选的那个，拿不准是 null，让他自己挑。 */
-  async function detect(): Promise<{ values: string[]; kept: string | null } | null> {
-    if (source === 'manual') {
+  async function detect(from = source, current = model): Promise<{ values: string[]; kept: string | null } | null> {
+    if (from === 'manual') {
       const issue = manualKeyIssue(secret, strictKeyFormat)
       if (issue) { setSecretError(issue); return null }
     }
     if (lock.current) return null
     lock.current = true; setBusy('models'); setError(''); setResult(null); setPickModel(false)
     try {
-      const selected = credential()
+      const selected = credential(from)
       const values = selected.kind === 'configured' ? await api.listConfiguredModels(selected.provider)
         : selected.kind === 'account' ? await api.listAccountKeyModels(selected.keyId) : await api.listModels(selected.apiKey)
       if (!alive.current) return null
       setModels(values)
-      const kept = detectedClientModel(tool, model, values)
+      const kept = detectedClientModel(tool, current, values)
       setModel(kept ?? values[0] ?? '')
       if (!values.length) setError('该密钥无可用模型，请更换密钥后重新检测。')
       return { values, kept }
-    } catch (cause) { if (alive.current) { setModels([]); setError(errorMessage(cause)) } return null }
+    } catch (cause) { if (alive.current) { setModels([]); setError(modelCheckFailure(cause)) } return null }
     finally { lock.current = false; if (alive.current) setBusy('') }
   }
   async function save(chosen: string, list: readonly string[]) {
@@ -181,6 +189,9 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
   // Notice 里：0.2.8 之前这里只能说一句「未验证实际模型调用」。配置文件的位置客户用不上，
   // 收进「查看详情」，客服要时再点开（0.2.24 深查决定单 D62 第 3 条）。
   const connectionView = result?.connection ? connectionCheckView(result.connection) : null
+  const usableSource = isKeyGroupRejection(error)
+    ? alternativeClientSource(tool, definition.preferredProvider, clientKeySources, config?.providers ?? null, keys, claudeCodeKey, source)
+    : null
   return <Dialog open title={ready ? `${definition.name} 配置` : `连接 ${definition.name}`} width={640}
     onClose={onClose} busy={Boolean(busy)} dirty={dirty} testId="external-client-dialog"
     footer={<><DialogExitButton disabled={Boolean(busy)}>{result ? '完成' : '取消'}</DialogExitButton><Button variant="primary" icon={Save} loading={busy === 'save'} disabled={Boolean(busy) || (detected ? !model || !models.includes(model) : source === 'manual' && !secret.trim())}
@@ -203,7 +214,11 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
       </div>
       {tool === 'opencode' && <div className="xm-field"><Select label="模型类型" value={protocol} options={[{ value: 'responses', label: 'Codex / GPT 系列模型' }, { value: 'chat-completions', label: '其他模型' }]} onChange={(event) => { setProtocol(event.target.value as typeof protocol); setDirty(true); setResult(null) }} testId="external-client-protocol" /><p className="v2-field-note">请根据上方所选模型选择；如不确定，请选择与模型名称对应的选项。</p></div>}
     </fieldset>
-    {error && <p className="v2-callout is-bad" role="alert">{error}</p>}
+    {isKeyGroupRejection(error)
+      ? <KeyGroupRejectedNotice failure={error} onSwitch={usableSource ? () => switchToUsable(usableSource) : undefined}
+        stuckText="该密钥所属的分组在当前账号下已不可用。请在「访问密钥」中更换密钥后点击「检测模型」。"
+        testId="external-client-group-rejected" switchTestId="external-client-group-switch" />
+      : error && <p className="v2-callout is-bad" role="alert">{error}</p>}
     {result && <Notice tone={externalClientSavedTone(connectionView)} title="配置已保存" body={<><p>{result.message}</p>
       {connectionView
         ? <><p data-testid="external-client-connection">连接自检：{connectionView.statusLabel} · {connectionView.title}</p><p>{connectionView.body}</p></>

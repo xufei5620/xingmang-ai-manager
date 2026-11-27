@@ -120,6 +120,20 @@ export function matchRelayQuotaFailureMessage(message: string): RelayQuotaFailur
 export const modelProbeFailurePrefix = '模型查询失败，服务返回'
 
 /**
+ * 查模型时中转说这把 Key 所在的分组账号现在用不了：new-api 回 403「无权访问 X 分组」（分组还在、账号不在可用名单里）
+ * 或「分组 X 已被弃用」（分组整个删了），英文系统拿到的是英文那两句（rc.51 middleware/auth.go TokenAuth，
+ * i18n/locales 的 auth.token_group_forbidden / auth.token_group_deprecated）。Key 本身没坏，换一把能用分组里的就好，
+ * 同 account-cli-provisioner.ts 的 isGroupRejection。只认查模型那句后面接的，账号接口的 403 不算。
+ */
+export function isKeyGroupRejectionMessage(message: string): boolean {
+  const start = message.indexOf(modelProbeFailurePrefix)
+  if (start < 0) return false
+  const probe = message.slice(start + modelProbeFailurePrefix.length)
+  return /^\s*403(?!\d)/.test(probe)
+    && /无权访问\s.+\s分组|分组\s.+\s已被弃用|no permission to access group\s|group\s.+\shas been deprecated/i.test(probe)
+}
+
+/**
  * Finds the model-probe sentence inside a longer failure (the one-click switch
  * and key sync wrap it in their own words) and classifies it with the status
  * and wording it carries. Anything else yields null, so a 401 from the account

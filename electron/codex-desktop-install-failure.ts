@@ -34,7 +34,7 @@ export type CodexDesktopInstallFailureReason = 'unsupported' | 'firewallOff' | '
 export const codexDesktopNoStoreNotice = '本机没有微软商店'
 
 /**
- * 第二路（OpenAI 官网的离线安装包）也没下成、换到国内镜像时，接在商店那半句后面的话。
+ * OpenAI 官网的离线安装包也没下成时，接在商店那半句后面的话。
  * 进度提示和失败句共用这一句，免得两处说法对不上。
  */
 export const codexDesktopOfficialPackageFailedNotice = 'OpenAI 官网的离线安装包也未能下载'
@@ -57,9 +57,9 @@ export const codexDesktopInstallFailureReasons: Readonly<Record<CodexDesktopInst
 
 /**
  * 顺序有讲究：Windows 那一步（Add-AppxPackage）的报错里常带着 MSIX、签名这些
- * 词，先认它才不会被当成「安装包坏了」叫客户反复重下；「所有国内镜像均未通过
- * 完整校验」只是外壳，里面每一路的原因才算数，所以 damaged 只认具体的校验词，
- * 不认「校验」两个字。
+ * 词，先认它才不会被当成「安装包坏了」叫客户反复重下；damaged 只认具体的校验词，
+ * 不认「校验」两个字。2026-11-24 拿掉第三方国内镜像以后，走到最后交出来的多半是
+ * 存储桶那一路的原话（desktop-package-bucket.ts），它的几种说法也在这里认。
  */
 const rules: ReadonlyArray<{ reason: Exclude<CodexDesktopInstallFailureReason, 'unknown'>; test: RegExp }> = [
   // 系统版本低于安装包要求时 Windows 报 0x80073CFD（ERROR_INSTALL_PREREQUISITE_FAILED），
@@ -73,9 +73,9 @@ const rules: ReadonlyArray<{ reason: Exclude<CodexDesktopInstallFailureReason, '
   // 2026-11-06 log reads "windows.firewallRu\r\nles"), so match the code, not the word.
   { reason: 'firewallOff', test: /0x800706d9/i },
   { reason: 'blocked', test: /Add-AppxPackage|管理员安装失败|应用部署|0x80073[cd][0-9a-f]{2}|授权使用了不同的 Windows 账号|安装命令完成后仍未检测到/i },
-  { reason: 'damaged', test: /SHA-256|Content-Length|Content-Type|不是 MSIX|AppxManifest|官方安装包|不匹配|字节数|下载不完整|超过声明|大小无效|安全上限|签名|身份|已损坏|元数据|发生变化|与[^。；]{0,12}清单版本[^。；]{0,24}不一致/i },
+  { reason: 'damaged', test: /SHA-256|Content-Length|Content-Type|不是 MSIX|AppxManifest|官方安装包|不匹配|字节数|下载不完整|没下完|超过声明|比清单里写的大|和清单不一致|大小无效|安全上限|签名|身份|已损坏|元数据|发生变化|与[^。；]{0,12}清单版本[^。；]{0,24}不一致/i },
   { reason: 'unreachable', test: /HTTP \d{3}|超时|连接|连不上|本次不可用|未返回|重定向|fetch failed|network|socket|ETIMEDOUT|ECONN|ENOTFOUND|EAI_AGAIN|ENETUNREACH|ERR_[A-Z_]+/i },
-  { reason: 'unavailable', test: /没有可安装|没有可验证|没有可用镜像|无法获取|不支持当前处理器架构/ },
+  { reason: 'unavailable', test: /没有可安装|没有可验证|没有可用镜像|没有这台电脑能用的安装包|无法获取|不支持当前处理器架构/ },
 ]
 
 export function classifyCodexDesktopInstallFailure(detail: string): CodexDesktopInstallFailureReason {
@@ -97,7 +97,7 @@ export interface CodexDesktopInstallFailureContext {
   storeNoUpdate?: boolean
   /** 这台电脑没有微软商店，这次直接走的国内线路。缺省 = 不知道或有商店。 */
   storeUnavailable?: boolean
-  /** 商店之后还试过 OpenAI 官网的离线安装包，没下成才换的国内镜像。缺省 = 没走那一路。 */
+  /** 商店之后还试过 OpenAI 官网的离线安装包，没下成。缺省 = 没走那一路。 */
   officialTried?: boolean
   /** 本机已经装着一版，这次是更新。 */
   updating: boolean
