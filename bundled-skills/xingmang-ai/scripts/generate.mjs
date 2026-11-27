@@ -35,6 +35,13 @@ const SIZE_TIERS = { '1K': 1024, '2K': 2048, '4K': 3840 }
 // gpt-image-2 系列：宽高都是 16 的倍数，总像素在这两个数之间（4K 16:9 = 3840x2160 正好顶格）。
 const GPT_IMAGE_MIN_PIXELS = 655_360
 const GPT_IMAGE_MAX_PIXELS = 8_294_400
+// gpt-image-2 系列的长宽比最多 3:1，长边最多 3840。
+const GPT_IMAGE_MAX_RATIO = 3
+const GPT_IMAGE_MAX_SIDE = 3840
+// 改图时没写 --size，清晰度跟第一张原图走：长边取原图的长边，夹在这两个数之间（与画图工具 mcp-server.mjs 一致）。
+// 上限停在 2K：1K、2K 同价，4K 多收钱，要 4K 得写明 --size 4K。比 1K 还小的原图照旧按 1K 出。
+const EDIT_MIN_LONG_SIDE = 1024
+const EDIT_MAX_LONG_SIDE = 2048
 const QUALITIES = ['low', 'medium', 'high', 'auto']
 const BACKGROUNDS = ['opaque', 'transparent', 'auto']
 
@@ -275,8 +282,8 @@ function printUsage() {
     '',
     '选项：',
     '  --model       默认用登录时按当前账号挑好的 OpenAI 图片模型；也可以点名 Nano Banana、Grok（只走图片模型分组）',
-    '  --size        1K|2K|4K，或 宽x高（gpt-image-2 系列宽高须为 16 的倍数），默认 1K',
-    '  --aspect      16:9|9:16|1:1|4:3|3:4|3:2|2:3，配 1K/2K/4K 用，默认 1:1；--size 已经写了宽高时不用传',
+    '  --size        1K|2K|4K，或 宽x高（gpt-image-2 系列宽高须为 16 的倍数）。画新图默认 1K；改图不传就跟第一张原图的清晰度（长边最多 2048）',
+    '  --aspect      16:9|9:16|1:1|4:3|3:4|3:2|2:3，配 1K/2K/4K 用；--size 已经写了宽高时不用传。画新图默认 1:1；改图不传就跟第一张原图的比例',
     `  --quality     low|medium|high|auto，仅 gpt-image，默认 ${DEFAULT_QUALITY}`,
     '  --background  opaque|transparent|auto，仅 gpt-image；要透明底传 transparent',
     '  --image       参考图路径，改图用；可以给多张（最多 4 张）',
@@ -312,20 +319,74 @@ function greatestCommonDivisor(left, right) {
  * 总像素超了上限就等比缩、低于下限就等比放（1K 16:9 = 1280x720，4K 1:1 = 2880x2880）。
  */
 export function tierDimensions(tier, aspect) {
+  return aspectDimensions(aspect, SIZE_TIERS[tier])
+}
+
+// 同上，长边不限于三个档位：改图时长边跟原图走。
+export function aspectDimensions(aspect, longSide) {
   const [ratioWidth, ratioHeight] = aspect.split(':').map(Number)
   const unitWidth = 16 * ratioWidth
   const unitHeight = 16 * ratioHeight
-  let scale = Math.floor(SIZE_TIERS[tier] / Math.max(unitWidth, unitHeight))
+  let scale = Math.floor(longSide / Math.max(unitWidth, unitHeight))
   scale = Math.min(scale, Math.floor(Math.sqrt(GPT_IMAGE_MAX_PIXELS / (unitWidth * unitHeight))))
   while (unitWidth * unitHeight * scale * scale < GPT_IMAGE_MIN_PIXELS) scale += 1
   return { width: unitWidth * scale, height: unitHeight * scale }
 }
 
+function roundToSixteen(value) {
+  return Math.max(16, Math.round(value / 16) * 16)
+}
+
+/**
+ * 原图那种不在比例表里的比例（手机截图约 9:19.5）换成 gpt-image-2 系列能接的宽高：都是 16 的倍数（比例因此会差一点），
+ * 长宽比超过 3:1 的按 3:1，总像素不够下限就把长边往上加、超了上限就往下减。与画图工具的同名函数同一套，测试钉住。
+ */
+export function ratioDimensions(ratio, longSide) {
+  const stretch = Math.min(GPT_IMAGE_MAX_RATIO, Math.max(ratio, 1 / ratio))
+  function shortSideFor(long) {
+    const short = roundToSixteen(long / stretch)
+    return long > GPT_IMAGE_MAX_RATIO * short ? short + 16 : short
+  }
+  let long = roundToSixteen(Math.min(longSide, GPT_IMAGE_MAX_SIDE))
+  let short = shortSideFor(long)
+  while (long * short < GPT_IMAGE_MIN_PIXELS) {
+    long += 16
+    short = shortSideFor(long)
+  }
+  while (long * short > GPT_IMAGE_MAX_PIXELS) {
+    long -= 16
+    short = shortSideFor(long)
+  }
+  return ratio >= 1 ? { width: long, height: short } : { width: short, height: long }
+}
+
+function editLongSide(original) {
+  return Math.min(EDIT_MAX_LONG_SIDE, Math.max(EDIT_MIN_LONG_SIDE, original.width, original.height))
+}
+
+// Nano Banana 只收比例表里的比例：取跟原图最接近的那个（按宽高比的倍数差算，竖图不会选到横的）。
+export function nearestAspect(ratio) {
+  let nearest = '1:1'
+  let distance = Infinity
+  for (const aspect of ASPECT_RATIOS) {
+    const [ratioWidth, ratioHeight] = aspect.split(':').map(Number)
+    const gap = Math.abs(Math.log(ratio * ratioHeight / ratioWidth))
+    if (gap < distance) {
+      nearest = aspect
+      distance = gap
+    }
+  }
+  return nearest
+}
+
 /**
  * 把 --size / --aspect 按模型换成请求要的样子。OpenAI 要宽x高；Nano Banana 要 imageSize（1K/2K/4K）加比例；
  * Grok 不收尺寸（实测传 aspect_ratio 也照样出 1280x720），返回空的。
+ *
+ * original 是改图时第一张原图看上去的宽高（画新图、读不出宽高时为 null）。改图时没写的跟它走：没写比例就用原图的比例，
+ * 没写尺寸就用原图的清晰度（长边 1024～2048）。写了宽高，或者比例和档位都写了的，照写的出。
  */
-export function resolveImageSize(family, sizeInput = '', aspectInput = '') {
+export function resolveImageSize(family, sizeInput = '', aspectInput = '', original = null) {
   const size = String(sizeInput || '').trim().toUpperCase()
   const aspect = String(aspectInput || '').trim()
   if (aspect && !ASPECT_RATIOS.includes(aspect)) {
@@ -340,10 +401,15 @@ export function resolveImageSize(family, sizeInput = '', aspectInput = '') {
     fail(`--size 写的 ${width}x${height} 比例是 ${ratioText(width, height)}，--aspect 写的是 ${aspect}，两边不一致。请只保留其中一个，或把两边改成同一个比例。`)
   }
   const ratio = dimensions ? ratioOf(width, height) : ''
+  const follow = original && !dimensions && !(tier && aspect) ? original : null
 
   if (family === 'openai') {
     if (dimensions) return { text: `${width}x${height}`, width, height }
-    const picked = tierDimensions(tier || '1K', aspect || '1:1')
+    let picked = tierDimensions(tier || '1K', aspect || '1:1')
+    if (follow) {
+      const longSide = tier ? SIZE_TIERS[tier] : editLongSide(follow)
+      picked = aspect ? aspectDimensions(aspect, longSide) : ratioDimensions(follow.width / follow.height, longSide)
+    }
     return { text: `${picked.width}x${picked.height}`, ...picked }
   }
   if (family === 'grok') return {}
@@ -351,9 +417,9 @@ export function resolveImageSize(family, sizeInput = '', aspectInput = '') {
   if (dimensions && !aspect && !ASPECT_RATIOS.includes(ratio)) {
     fail(`这个模型按比例出图，${width}x${height} 不是能用的比例。改用 --size 1K|2K|4K 加 --aspect ${ASPECT_RATIOS.join('|')}`)
   }
-  const longSide = Math.max(width, height)
-  const imageSize = tier || (!dimensions ? '1K' : longSide <= 1536 ? '1K' : longSide <= 3072 ? '2K' : '4K')
-  return { imageSize, aspectRatio: aspect || ratio || '1:1' }
+  const longSide = dimensions ? Math.max(width, height) : follow ? editLongSide(follow) : 0
+  const imageSize = tier || (!longSide ? '1K' : longSide <= 1536 ? '1K' : longSide <= 3072 ? '2K' : '4K')
+  return { imageSize, aspectRatio: aspect || ratio || (follow ? nearestAspect(follow.width / follow.height) : '1:1') }
 }
 
 function ratioOf(width, height) {
@@ -408,6 +474,106 @@ export function outputPathFor(out, bytes) {
   if (!IMAGE_EXTENSIONS.has(lower)) return outputPath
   const same = lower === actual || (actual === '.jpg' && lower === '.jpeg')
   return same ? outputPath : `${outputPath.slice(0, -extension.length)}${actual}`
+}
+
+/**
+ * 读出图片的宽高（PNG 读 IHDR，JPEG 找 SOF 段，WebP 读画布大小），认不出返回 null。只看文件头，不解码。
+ * 与画图工具 mcp-server.mjs 的同名函数同一套。
+ */
+function readImageDimensions(bytes) {
+  const mimeType = imageMimeType(bytes)
+  if (mimeType === 'image/png' && bytes.length >= 24 && bytes.toString('latin1', 12, 16) === 'IHDR') {
+    return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) }
+  }
+  if (mimeType === 'image/jpeg') {
+    let offset = 2
+    while (offset + 9 < bytes.length) {
+      if (bytes[offset] !== 0xff) return null
+      const marker = bytes[offset + 1]
+      if (marker === 0xff) {
+        offset += 1
+        continue
+      }
+      // SOF0..SOF15, except DHT (C4), JPG (C8) and DAC (CC), carry the frame size.
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+        return { width: bytes.readUInt16BE(offset + 7), height: bytes.readUInt16BE(offset + 5) }
+      }
+      offset += 2 + bytes.readUInt16BE(offset + 2)
+    }
+    return null
+  }
+  if (mimeType === 'image/webp' && bytes.length >= 30) {
+    const format = bytes.toString('latin1', 12, 16)
+    if (format === 'VP8X') return { width: bytes.readUIntLE(24, 3) + 1, height: bytes.readUIntLE(27, 3) + 1 }
+    if (format === 'VP8L' && bytes[20] === 0x2f) {
+      const bits = bytes.readUInt32LE(21)
+      return { width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1 }
+    }
+    if (format === 'VP8 ' && bytes[23] === 0x9d && bytes[24] === 0x01 && bytes[25] === 0x2a) {
+      return { width: bytes.readUInt16LE(26) & 0x3fff, height: bytes.readUInt16LE(28) & 0x3fff }
+    }
+  }
+  return null
+}
+
+/**
+ * JPEG 里 Exif 记的拍摄方向（1～8），没有或读不出就是 1。只看 SOS 之前的 APP1 段，不解码。
+ */
+function jpegOrientation(bytes) {
+  let offset = 2
+  while (offset + 4 <= bytes.length) {
+    if (bytes[offset] !== 0xff) return 1
+    const marker = bytes[offset + 1]
+    if (marker === 0xff) {
+      offset += 1
+      continue
+    }
+    // Start of scan or end of image: the metadata segments are all before it.
+    if (marker === 0xda || marker === 0xd9) return 1
+    const length = bytes.readUInt16BE(offset + 2)
+    if (length < 2 || offset + 2 + length > bytes.length) return 1
+    if (marker === 0xe1 && length >= 16 && bytes.toString('latin1', offset + 4, offset + 10) === 'Exif\0\0') {
+      return exifOrientation(bytes.subarray(offset + 10, offset + 2 + length))
+    }
+    offset += 2 + length
+  }
+  return 1
+}
+
+// TIFF header, then IFD0; tag 0x0112 is the orientation, a SHORT stored in the first two value bytes.
+function exifOrientation(tiff) {
+  if (tiff.length < 8) return 1
+  const order = tiff.toString('latin1', 0, 2)
+  if (order !== 'II' && order !== 'MM') return 1
+  function short(at) {
+    return order === 'II' ? tiff.readUInt16LE(at) : tiff.readUInt16BE(at)
+  }
+  if (short(2) !== 42) return 1
+  const directory = order === 'II' ? tiff.readUInt32LE(4) : tiff.readUInt32BE(4)
+  if (directory + 2 > tiff.length) return 1
+  const count = short(directory)
+  for (let index = 0; index < count; index += 1) {
+    const entry = directory + 2 + index * 12
+    if (entry + 12 > tiff.length) return 1
+    if (short(entry) === 0x0112) {
+      const value = short(entry + 8)
+      return value >= 1 && value <= 8 ? value : 1
+    }
+  }
+  return 1
+}
+
+/**
+ * 原图看上去的宽高：手机竖拍的照片常常横着存（iPhone 是 4032x3024），靠 Exif 方向标记竖着显示，客户看到的是竖图。
+ * 方向 5～8 带 90 度旋转，宽高对调。读不出宽高返回 null，改图照旧按默认尺寸出。与画图工具同一套，测试钉住。
+ */
+export function originalDimensions(bytes) {
+  const dimensions = readImageDimensions(bytes)
+  if (!dimensions || !(dimensions.width > 0) || !(dimensions.height > 0)) return null
+  if (imageMimeType(bytes) === 'image/jpeg' && jpegOrientation(bytes) >= 5) {
+    return { width: dimensions.height, height: dimensions.width }
+  }
+  return dimensions
 }
 
 async function readInputImage(filePath) {
@@ -664,7 +830,10 @@ async function main() {
 
   const requested = options.model || config.model || DEFAULT_MODEL
   const family = modelFamily(requested)
-  const size = resolveImageSize(family, options.size, options.aspect)
+  // 先读原图：改图时没写的 --size、--aspect 要跟第一张走。
+  const images = []
+  for (const filePath of options.images) images.push(await readInputImage(filePath))
+  const size = resolveImageSize(family, options.size, options.aspect, images.length ? originalDimensions(images[0].bytes) : null)
   const models = modelsToTry(requested, family, defaultModelChain(config), (model) => {
     return !isGptImage2(model) || (size.width % 16 === 0 && size.height % 16 === 0)
   })
@@ -676,8 +845,6 @@ async function main() {
   if (keys.length === 0) {
     fail(`${requested} 只能用图片模型分组的 Key 出图，当前账号还没有。请打开管理工具重新登录；账号还没开通图片模型分组的，先开通再登录。`)
   }
-  const images = []
-  for (const filePath of options.images) images.push(await readInputImage(filePath))
   if (family === 'grok' && (options.size || options.aspect)) {
     process.stderr.write('Grok 不能指定尺寸和比例，按它自己的默认尺寸出图。\n')
   }

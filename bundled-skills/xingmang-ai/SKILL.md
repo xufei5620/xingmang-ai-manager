@@ -32,11 +32,13 @@ description: >-
 在 Codex 里调用画图工具时，照抄下面这段代码，只改参数。第二行把结果里的预览图和文字交给对话，不要删、不要改写：
 
 ```js
-const r = await tools.mcp__xingmang_image__generate_image({ prompt: "<描述>", images: ["<参考图完整路径，没有就删掉这一项>"], size: "1K", aspect: "1:1" });
+const r = await tools.mcp__xingmang_image__generate_image({ prompt: "<描述>", images: ["<参考图完整路径，没有就删掉这一项>"] });
 for (const c of (r?.content || [])) c.type === "image" ? image(c) : c.type === "text" ? text(c.text) : null;
 ```
 
 Claude Code 这类直接调用 MCP 工具的，不需要这段代码，直接调用即可。
+
+要指定尺寸或比例时，在参数里加上 `size`、`aspect`（例如 `size: "2K", aspect: "16:9"`）。不加时，画新图按 1K 正方形；改图按第一张原图的比例和清晰度出（长边最多 2048，价格不变）。改图时不要为了把参数写全而填 `1K`、`1:1`，否则竖图会被改成方图、清晰度也会下降。
 
 改图时把原图的完整路径放进 `images`，可以给几张参考图一起改。要接着改刚画好的图，就把结果里给出的文件路径放进 `images`。
 
@@ -54,8 +56,8 @@ node "<本技能目录>/scripts/generate.mjs" --prompt "一只橙色猫咪坐在
 
 | 参数 | 写法 |
 |---|---|
-| `--size` | `1K`、`2K`、`4K`，或 `宽x高`（gpt-image-2 系列宽高必须是 16 的倍数）。默认 1K |
-| `--aspect` | `16:9`、`9:16`、`1:1`、`4:3`、`3:4`、`3:2`、`2:3`，配 1K/2K/4K 用，默认 1:1。例：`--size 2K --aspect 16:9` = 2048x1152，`--size 4K --aspect 16:9` = 3840x2160 |
+| `--size` | `1K`、`2K`、`4K`，或 `宽x高`（gpt-image-2 系列宽高必须是 16 的倍数）。画新图默认 1K；改图不传就跟第一张原图的清晰度（长边最多 2048） |
+| `--aspect` | `16:9`、`9:16`、`1:1`、`4:3`、`3:4`、`3:2`、`2:3`，配 1K/2K/4K 用。画新图默认 1:1；改图不传就跟第一张原图的比例。例：`--size 2K --aspect 16:9` = 2048x1152，`--size 4K --aspect 16:9` = 3840x2160 |
 | `--quality` | `low`、`medium`、`high`、`auto`，默认 `high`（各档同价，不用为省钱调低） |
 | `--background` | `opaque`、`transparent`、`auto`；要透明底传 `transparent` |
 | `--image` | 参考图路径，改图用；可以给多张（最多 4 张），给了就是改图 |
