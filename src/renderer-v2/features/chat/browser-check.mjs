@@ -241,9 +241,9 @@ test('one menu lists the models of every group by vendor, each naming the group 
   const page = await open('theme=dark&preferredGroup=1')
   try {
     await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.group === 'GPT')
-    assert.equal(await page.getByTestId('chat-mode').getByRole('button', { name: '文本对话', exact: true }).getAttribute('aria-pressed'), 'true', '首次进入聊天应默认文本对话')
+    assert.equal(await page.getByTestId('chat-mode').getByRole('button', { name: '智能对话', exact: true }).getAttribute('aria-pressed'), 'true', '首次进入聊天应默认智能对话')
     await ready(page)
-    assert.deepEqual(await picked(page), { group: 'GPT', model: 'gpt-5.6-sol', label: 'gpt-5.6-sol' }, '首次进入文本对话应选择截图中的默认模型')
+    assert.deepEqual(await picked(page), { group: 'GPT', model: 'gpt-5.6-sol', label: 'gpt-5.6-sol' }, '首次进入智能对话应选择截图中的默认模型')
     await allPrepared(page)
     assert.deepEqual((await preparedGroups(page)).sort(), ['GPT', 'default'], 'opening chat reads the models of every group once')
     const menu = await modelMenu(page)
@@ -408,7 +408,7 @@ test('image controls use real model capabilities and asset actions use opaque id
   try {
     await ready(page)
     await allPrepared(page)
-    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成' }).click()
     assert.equal((await picked(page)).model, 'gpt-image-2')
     // 生成图片时菜单只列出图的模型，两个分组的都在；gpt-image-1.5 不在可选之列。
     assert.deepEqual(await menuSections(page), [
@@ -458,7 +458,7 @@ test('image settings are remembered once per account and follow into other conve
     const shared = (id = 7) => page.evaluate((key) => JSON.parse(localStorage.getItem(key) ?? 'null'), `xingmang-ui-v2:image-settings:xm-account:${id}`)
     const controls = async () => ({ ...(await picked(page)), size: await page.getByTestId('chat-image-size').getAttribute('data-value'), quality: await page.getByTestId('chat-image-quality').getAttribute('data-value'), resolution: await page.getByTestId('chat-image-resolution').getAttribute('data-value') })
     // 只是切到「生成图片」不算改过，还没有可记的。
-    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成' }).click()
     assert.equal(await shared(), null)
     await pickChoice(page, 'chat-image-quality', '画质', '高')
     await pickChoice(page, 'chat-image-size', '尺寸', '1536 × 1024')
@@ -477,12 +477,12 @@ test('image settings are remembered once per account and follow into other conve
 
     // 新开一段对话切到「生成图片」：就是刚才那一份，不回默认。
     await page.getByTestId('chat-conversation-new').click()
-    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成' }).click()
     assert.deepEqual(await controls(), { group: 'group-a', model: 'gpt-image-2', label: 'gpt-image-2', size: '1536x1024', quality: 'high', resolution: '1K' })
     // 文本对话那一档不跟着动，切回来还在。
-    await page.getByTestId('chat-mode').getByRole('button', { name: '文本对话' }).click()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '智能对话' }).click()
     assert.equal(await page.getByTestId('chat-image-size').count(), 0)
-    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成' }).click()
     assert.equal((await controls()).quality, 'high')
 
     // 别处改了这一份（视频工作台的出图框点了「生成图片」）：开着的这一段马上跟着变。
@@ -500,12 +500,12 @@ test('image settings are remembered once per account and follow into other conve
     await page.reload()
     await ready(page)
     await allPrepared(page)
-    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成' }).click()
     assert.equal(await page.getByTestId('chat-image-size').getAttribute('data-value'), '1024x1536')
     await page.evaluate(() => window.chatHarness.switchScope(8))
     await ready(page)
     await allPrepared(page)
-    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成' }).click()
     assert.deepEqual(await controls(), { group: 'group-a', model: 'gpt-image-2', label: 'gpt-image-2', size: '1024x1024', quality: 'low', resolution: '1K' })
     assert.equal(await shared(8), null)
   } finally { await page.close() }
@@ -517,7 +517,7 @@ test('a custom image size the model cannot draw is held back with its rule under
   try {
     await ready(page)
     await allPrepared(page)
-    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成' }).click()
     assert.equal((await picked(page)).model, 'gpt-image-2')
     await pickChoice(page, 'chat-image-size', '尺寸', '自定义尺寸')
     const rule = page.getByTestId('chat-image-size-rule')
@@ -556,7 +556,7 @@ test('says the picture is gone from the computer, instead of asking to retry, wh
   try {
     await ready(page)
     await allPrepared(page)
-    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成' }).click()
     const request = await send(page, 'A test scene')
     await page.evaluate((id) => window.chatHarness.completeImage(id), request.requestId)
     const preview = page.locator('.chat-asset-preview img[data-failed="true"]')
@@ -586,7 +586,7 @@ test('canceling paid image work requires acknowledgement and ignores a late asse
   const page = await open('cancelReject=1')
   try {
     await ready(page)
-    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成' }).click()
     const request = await send(page, 'A paid image')
     await page.getByTestId('chat-stop').click()
     const confirm = page.getByTestId('chat-confirm')
@@ -753,7 +753,7 @@ test('a late image from a previous account does not appear in the current accoun
   const page = await open()
   try {
     await ready(page)
-    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成' }).click()
     const request = await send(page, 'old owner image')
     await page.evaluate(() => window.chatHarness.switchScope(8))
     await page.waitForFunction(() => document.querySelector('[data-testid=page-chat]')?.getAttribute('data-account-scope') === 'xm-account:8')
@@ -1083,7 +1083,7 @@ test('generating an image takes reference pictures and a generated one to keep e
   try {
     await ready(page)
     await allPrepared(page)
-    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成' }).click()
     assert.equal((await picked(page)).model, 'gpt-image-2')
     const attach = page.getByTestId('chat-attach-image')
     assert.equal(await attach.getAttribute('title'), '添加参考图（也可直接粘贴截图）')
@@ -1107,10 +1107,10 @@ test('generating an image takes reference pictures and a generated one to keep e
     // 用户自己发的参考图上没有「基于此图继续编辑」，生成的图上有。
     assert.equal(await page.locator('[data-role="user"]').getByTestId('chat-asset-reuse').count(), 0)
     // 切回文本对话再点它：回到「生成图片」，这张图放进输入框当参考图。
-    await page.getByTestId('chat-mode').getByRole('button', { name: '文本对话' }).click()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '智能对话' }).click()
     await page.locator('[data-role="assistant"]').getByTestId('chat-asset-reuse').click()
     await page.locator('.chat-draft-image').first().waitFor()
-    assert.equal(await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).getAttribute('aria-pressed'), 'true')
+    assert.equal(await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成' }).getAttribute('aria-pressed'), 'true')
     await page.getByTestId('chat-composer-input').fill('再加一只海鸥')
     await page.getByTestId('chat-send').click()
     await page.waitForFunction(() => window.chatHarness.calls.filter((item) => item.method === 'image').length === 2)
@@ -1226,7 +1226,7 @@ test('text files picked in a text conversation go out with the message and stay 
     await ready(page)
     await page.getByTestId('chat-attach-file').click()
     await page.getByTestId('chat-draft-files').waitFor()
-    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成' }).click()
     assert.equal(await page.getByTestId('chat-attach-file').count(), 0)
     await page.getByTestId('chat-files-image-mode').waitFor()
     await page.getByTestId('chat-composer-input').fill('一只猫')
@@ -1356,7 +1356,10 @@ test('an empty chat says where conversations go, and its examples only fill the 
     const empty = page.getByTestId('chat-empty')
     await empty.getByRole('heading', { name: '今天想创作什么？', exact: true }).waitFor()
     await empty.getByText('提问、写作、绘图均可在下方输入框中完成，额度与工具共用同一账号。', { exact: true }).waitFor()
-    assert.deepEqual(await empty.getByRole('button').allTextContents(), ['帮我把这段话改得更通顺', '把下面的内容翻译成英文', '帮我写一条朋友圈文案，卖的是……', '这个 Excel 公式怎么写：我想……', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思'])
+    // 说明下面先是三个入口（这里没有出视频，只有两个），例句在它们下面。
+    const examples = empty.locator('.chat-empty-examples').getByRole('button')
+    assert.deepEqual(await empty.getByTestId('chat-start-modes').getByRole('button').allTextContents(), ['图片生成描述生成 · 参考图编辑', '智能对话问答 · 写作 · 翻译 · 编程'])
+    assert.deepEqual(await examples.allTextContents(), ['帮我把这段话改得更通顺', '把下面的内容翻译成英文', '帮我写一条朋友圈文案，卖的是……', '这个 Excel 公式怎么写：我想……', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思'])
     await page.getByTestId('chat-example-3').click()
     const input = page.getByTestId('chat-composer-input')
     // 半句话的示例填进去时不带省略号，光标在末尾，接着打就是客户自己的话。
@@ -1365,11 +1368,11 @@ test('an empty chat says where conversations go, and its examples only fill the 
     await page.waitForFunction(() => { const element = document.querySelector('#chatIn'); return element instanceof HTMLTextAreaElement && element.selectionStart === element.value.length && element.selectionEnd === element.value.length })
     assert.equal((await calls(page, 'start')).length, 0, 'an example is never sent on its own')
     // 输入框里有字了就不再摆例句：再点一颗会把打的字换掉。
-    assert.equal(await empty.getByRole('button').count(), 0)
+    assert.equal(await examples.count(), 0)
     await input.fill('')
-    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片', exact: true }).click()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成', exact: true }).click()
     await empty.getByText('提问、写作、绘图均可在下方输入框中完成，额度与工具共用同一账号。', { exact: true }).waitFor()
-    assert.equal(await empty.getByRole('button').count(), 0, 'the examples are questions, not pictures')
+    assert.equal(await examples.count(), 0, 'the examples are questions, not pictures')
   } finally { await page.close() }
 })
 
@@ -1759,7 +1762,7 @@ const videoUnconfirmedText = '视频提交结果不明确，服务端可能已�
 async function enterVideoMode(page) {
   await ready(page)
   await allPrepared(page)
-  await page.getByTestId('chat-mode').getByRole('button', { name: '生成视频' }).click()
+  await page.getByTestId('chat-mode').getByRole('button', { name: '视频生成' }).click()
   await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.model === 'grok-imagine-video-1.5')
 }
 async function askVideo(page, prompt) {
@@ -2036,13 +2039,13 @@ test('用此图生成视频 on a generated image switches to the video mode with
   try {
     await ready(page)
     await allPrepared(page)
-    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成' }).click()
     const image = await send(page, '一只橘猫坐在窗台上')
     await page.evaluate((id) => window.chatHarness.completeImage(id), image.requestId)
     await page.getByRole('button', { name: '查看生成图片' }).waitFor()
     const animate = page.getByTestId('chat-asset-animate')
     assert.equal((await animate.textContent()).trim(), '用此图生成视频')
-    assert.equal(await animate.getAttribute('title'), '以此图为开头生成视频，将切换至「生成视频」')
+    assert.equal(await animate.getAttribute('title'), '以此图为开头生成视频，将切换至「视频生成」')
     await animate.click()
     await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.model === 'grok-imagine-video-1.5')
     assert.equal(await page.getByTestId('chat-draft-images').locator('.chat-draft-image').count(), 1)
@@ -2058,17 +2061,54 @@ test('the video mode is greyed out with the reason when the account cannot use i
     const page = await open(`video=1&videoAccess=${access}`)
     try {
       await ready(page)
-      const option = page.getByTestId('chat-mode').getByRole('button', { name: '生成视频' })
+      const option = page.getByTestId('chat-mode').getByRole('button', { name: '视频生成' })
       assert.equal(await option.isDisabled(), true)
       assert.equal(await option.getAttribute('title'), reason)
       assert.equal(await page.getByTestId('chat-empty').getByText('做视频').count(), 0)
+      // 起始页的入口不放一个点不了的：视频那一个整个不出。
+      assert.deepEqual(await page.getByTestId('chat-start-modes').getByRole('button').evaluateAll((buttons) => buttons.map((button) => button.dataset.testid)), ['chat-start-mode-image', 'chat-start-mode-text'])
     } finally { await page.close() }
   }
   const plain = await open()
   try {
     await ready(plain)
-    assert.deepEqual(await plain.getByTestId('chat-mode').getByRole('button').allTextContents(), ['文本对话', '生成图片'])
+    assert.deepEqual(await plain.getByTestId('chat-mode').getByRole('button').allTextContents(), ['智能对话', '图片生成'])
+    assert.equal(await plain.getByTestId('chat-start-mode-video').count(), 0)
   } finally { await plain.close() }
+})
+
+// 全面方案第 30 件（yoyo 11-28 回「功能名入口」）：起始页标题下面三个入口，跟输入框下的切换是同一个值。
+test('the three entries under the start page title switch the mode below the box and put the cursor in it', async () => {
+  const page = await open('video=1')
+  try {
+    await ready(page)
+    await allPrepared(page)
+    const entries = page.getByTestId('chat-start-modes')
+    assert.deepEqual(await entries.getByRole('button').allTextContents(), ['图片生成描述生成 · 参考图编辑', '视频生成描述生成 · 图片转视频', '智能对话问答 · 写作 · 翻译 · 编程'])
+    const pressed = () => entries.getByRole('button').evaluateAll((buttons) => buttons.filter((button) => button.getAttribute('aria-pressed') === 'true').map((button) => button.dataset.testid))
+    assert.deepEqual(await pressed(), ['chat-start-mode-text'])
+    await page.getByTestId('chat-start-mode-image').click()
+    assert.equal(await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成', exact: true }).getAttribute('aria-pressed'), 'true')
+    assert.deepEqual(await pressed(), ['chat-start-mode-image'])
+    // 光标是下一帧才放进去的（同点示例）。
+    await page.waitForFunction(() => document.activeElement?.id === 'chatIn')
+    assert.equal(await page.getByTestId('chat-composer-input').getAttribute('placeholder'), '描述您想要的画面，例如：星空下的山野，一轮金色落日')
+    await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.model === 'gpt-image-2')
+    await page.getByTestId('chat-start-mode-video').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.model === 'grok-imagine-video-1.5')
+    assert.deepEqual(await pressed(), ['chat-start-mode-video'])
+    // 已经是这一档再点一下：不动选好的模型，只把光标放回框里。
+    await page.getByTestId('chat-model').focus()
+    await page.getByTestId('chat-start-mode-video').click()
+    await page.waitForFunction(() => document.activeElement?.id === 'chatIn')
+    assert.equal(await page.getByTestId('chat-model').getAttribute('data-model'), 'grok-imagine-video-1.5')
+    // 换了输入框下的切换，入口跟着按下。
+    await page.getByTestId('chat-mode').getByRole('button', { name: '智能对话', exact: true }).click()
+    assert.deepEqual(await pressed(), ['chat-start-mode-text'])
+    // 发了第一句以后不再显示。
+    await send(page, '你好')
+    await page.getByTestId('chat-start-modes').waitFor({ state: 'detached' })
+  } finally { await page.close() }
 })
 
 test('no more than three videos are made at once', async () => {

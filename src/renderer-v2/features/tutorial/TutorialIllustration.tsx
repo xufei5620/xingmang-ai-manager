@@ -14,7 +14,7 @@ const illustrationDescriptions: Record<TutorialIllustrationId, { title: string; 
   install: { title: '找到工具，点击安装', description: '在首页找到要使用的工具，点击卡片右下角的安装。所需的 Node.js 将自动准备，可在首页「运行环境」卡片中查看安装状态。', hint: '请先安装需要的工具，无需一次全部安装。' },
   config: { title: '确认来源、密钥和模型', description: '配置窗口内选择当前账号，确认密钥与默认模型，然后点击保存配置；其他自定义设置会保留。', hint: '点「保存配置」即可，其他自定义设置会保留。' },
   launch: { title: '在您选择的文件夹中开始', description: '点击工具卡片上的打开，按提示选择工作文件夹。工具将在该文件夹中打开，随后在工具窗口中输入任务。', hint: '先用测试文件夹练习，再让 AI 处理正式项目。' },
-  chat: { title: '无需打开终端，也可直接提问', description: '左侧选择创作，在输入框底部选择文本对话和模型，输入具体问题，再点击输入框右侧的发送消息。', hint: '请先确认模型，再描述您希望完成的任务。' },
+  chat: { title: '无需打开终端，也可直接提问', description: '左侧选择创作，在输入框底部选择智能对话和模型，输入具体问题，再点击输入框右侧的发送消息。', hint: '请先确认模型，再描述您希望完成的任务。' },
   canvas: { title: '将提示词连接到图像节点', description: '在画布中添加提示词和图像节点，连接两个节点，检查生成配置，再运行此节点。图中未执行生成。', hint: '连接节点后再运行；保存工作流不等于生成图片。' },
   extensions: { title: '在「插件」页选择，一次安装到多个工具', description: '在插件页的推荐中找到要使用的项，点击右侧的加号，在装到哪里中勾选要使用的工具后安装。服务方提供配置时，请点击右上角添加中的自定义连接。', hint: '安装前请先查看所需权限，仅安装任务确实需要的项。' },
   skills: { title: '导入一次，多个工具通用', description: '在插件页左侧点击技能，再点击右上角「添加」中的「从文件夹导入」，选择文件夹并勾选要使用的工具。列表中可查看技能已安装到哪些工具；Codex 自带的技能仅可查看。', hint: '已安装到一个工具的，点击该行的加号即可复制到其他工具。' },
@@ -123,7 +123,7 @@ function Diagram({ kind }: { kind: TutorialIllustrationId }) {
     case 'chat':
       return <div className="tutorial-illustration-chat">
         <div className="tutorial-illustration-row"><MessageSquare size={18} /><strong>创作</strong><span className="tutorial-illustration-muted">先从一个具体问题开始</span></div>
-        <div className="tutorial-illustration-options"><Marker>1</Marker><Control primary>文本对话</Control><Control>模型<ChevronDown size={14} /></Control></div>
+        <div className="tutorial-illustration-options"><Marker>1</Marker><Control primary>智能对话</Control><Control>模型<ChevronDown size={14} /></Control></div>
         <div className="tutorial-illustration-compose"><p>请帮我把这段工作笔记整理成一份清晰的待办清单。</p><span><Marker>2</Marker><Control primary>发送消息<ArrowUpRight size={15} /></Control></span></div>
       </div>
     case 'canvas':

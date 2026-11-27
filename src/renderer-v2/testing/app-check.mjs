@@ -4564,7 +4564,7 @@ test('a video made in a conversation is priced from the account price list, join
     // 起始页那句带上了「做视频」。价目先不读：不做视频的客户不用白读一次。
     await page.getByTestId('chat-empty').getByText('提问、写作、绘图、制作视频均可在下方输入框中完成，额度与工具共用同一账号。', { exact: true }).waitFor()
     assert.equal((await fixtureCalls(page, 'getAccountPriceList')).length, 0)
-    await page.getByTestId('chat-mode').getByRole('button', { name: '生成视频', exact: true }).click()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '视频生成', exact: true }).click()
     await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.model === 'grok-imagine-video-1.5')
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'getAccountPriceList'))
 
@@ -4757,9 +4757,11 @@ test('the start page offers a film and the canvas under the examples, and says o
     const empty = page.getByTestId('chat-empty')
     await empty.getByRole('heading', { name: '今天想创作什么？', exact: true }).waitFor()
     await empty.getByText('提问、写作、绘图、制作视频均可在下方输入框中完成，额度与工具共用同一账号。', { exact: true }).waitFor()
-    await page.getByTestId('create-start').getByText('复杂创作从这里开始', { exact: true }).waitFor()
-    assert.equal(await page.getByTestId('create-card-video').textContent(), '做一条带字幕的短视频输入创意，AI 将编写分镜、分段生成并合成为完整视频')
-    assert.equal(await page.getByTestId('create-card-canvas').textContent(), '在画布中分步创作支持多图、精修、模板，以及保持人物在各镜头中一致开在大窗口里')
+    // 标题下面三个入口（全面方案第 30 件，yoyo 11-28 回「功能名入口」）：出图、出视频、对话，按着的就是输入框下现在那一档。
+    assert.deepEqual(await empty.getByTestId('chat-start-modes').getByRole('button').allTextContents(), ['图片生成描述生成 · 参考图编辑', '视频生成描述生成 · 图片转视频', '智能对话问答 · 写作 · 翻译 · 编程'])
+    await page.getByTestId('create-start').getByText('进阶创作', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('create-card-video').textContent(), '分镜视频分镜编写 · 分段生成 · 字幕合成')
+    assert.equal(await page.getByTestId('create-card-canvas').textContent(), '无限画布多图组合 · 精修 · 模板 · 角色一致独立窗口')
 
     // 画布那张卡开的是画布窗口。
     await page.getByTestId('create-card-canvas').click()
@@ -4936,7 +4938,7 @@ test('a historical account gets conversations and canvas projects on the create 
     await page.getByTestId('create-start').waitFor()
     // No video models on this account: the start page keeps the sentence without 「做视频」 and the third mode is greyed out.
     await page.getByTestId('chat-empty').getByText('提问、写作、绘图均可在下方输入框中完成，额度与工具共用同一账号。', { exact: true }).waitFor()
-    const videoMode = page.getByTestId('chat-mode').getByRole('button', { name: '生成视频', exact: true })
+    const videoMode = page.getByTestId('chat-mode').getByRole('button', { name: '视频生成', exact: true })
     assert.equal(await videoMode.isDisabled(), true)
     assert.equal(await videoMode.getAttribute('title'), '当前账号不支持生成视频')
     assert.equal(await page.getByTestId('create-card-video').count(), 0)
@@ -5093,7 +5095,7 @@ test('a picture opened from the library is shown at full size and goes back into
     await detail.waitFor({ state: 'detached' })
     assert.equal(await page.getByTestId('create-library-pane').count(), 0)
     await page.getByTestId('chat-draft-images').locator('.chat-draft-image').first().waitFor()
-    assert.equal(await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片', exact: true }).getAttribute('aria-pressed'), 'true')
+    assert.equal(await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成', exact: true }).getAttribute('aria-pressed'), 'true')
     await page.getByTestId('chat-composer-input').fill('把背景换成蓝色')
     await page.getByTestId('chat-send').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'generateAiImage'))
@@ -5242,7 +5244,7 @@ test('the third start card joins clips picked from the library into a new film w
     await page.getByTestId('nav-chat').click()
     const card = page.getByTestId('create-card-clips')
     await card.waitFor()
-    assert.equal(await card.textContent(), '用已有片段合成视频从作品库选择片段，添加字幕和配乐，在本机合成，不产生费用')
+    assert.equal(await card.textContent(), '片段合成作品库片段 · 字幕 · 配乐本机合成，不产生费用')
     await card.click()
     const picker = page.getByTestId('create-library-picker')
     await picker.getByRole('heading', { name: '选择片段', exact: true }).waitFor()
@@ -5537,7 +5539,7 @@ test('a picture is added to a canvas project the user picks, or to a new one, fr
     await serveLibraryPictures(page)
     await page.getByTestId('nav-chat').click()
     await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.preparing === 'false')
-    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片', exact: true }).click()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成', exact: true }).click()
     await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.model === 'gpt-image-2')
     await page.getByTestId('chat-composer-input').fill('一只橘猫坐在窗台上，午后阳光，水彩风格，暖色调的光')
     await page.getByTestId('chat-send').click()
@@ -6108,7 +6110,7 @@ async function startHeldChatImage(page) {
   await page.getByTestId('tool-row-claude').waitFor()
   await page.getByTestId('nav-chat').click()
   await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.preparing === 'false')
-  await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片', exact: true }).click()
+  await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成', exact: true }).click()
   await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.model === 'gpt-image-2')
   await page.getByTestId('chat-composer-input').fill('一只橘猫')
   await page.getByTestId('chat-send').click()

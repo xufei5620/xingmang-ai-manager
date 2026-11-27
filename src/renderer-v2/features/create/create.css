@@ -12,6 +12,10 @@
 .chat-messages:has(> .xm-notice + .chat-empty[data-start='true']) > .create-start { gap: calc(10px - var(--chat-start-squeeze) / 40); }
 .chat-messages:has(> .xm-notice + .chat-empty[data-start='true']) > .chat-empty .xm-logo { height: calc(44px - var(--chat-start-squeeze) / 8); }
 .chat-messages:has(> .xm-notice + .chat-empty[data-start='true']) > .xm-notice { padding-block: calc(14px - var(--chat-start-squeeze) / 20) calc(12px - var(--chat-start-squeeze) / 20); }
+/* 标题下面的三个入口（全面方案第 30 件）多占了一行：有提示时它们的上下留白和图标也收得更狠，680 高时卡下面还留出两行多的余量。 */
+.chat-messages:has(> .xm-notice + .chat-empty[data-start='true']) .chat-start-modes { margin-top: calc(8px - var(--chat-start-squeeze) / 25); }
+.chat-messages:has(> .xm-notice + .chat-empty[data-start='true']) .chat-start-mode { padding-block: calc(12px - var(--chat-start-squeeze) / 20); }
+.chat-messages:has(> .xm-notice + .chat-empty[data-start='true']) .chat-start-mode-icon { width: calc(34px - var(--chat-start-squeeze) / 20); height: calc(34px - var(--chat-start-squeeze) / 20); }
 .create-start-label { color: var(--text-3); font-size: 12px; text-align: center; }
 .create-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
 /* 历史账号做不了视频，只剩「在画布中分步创作」一张：拉满整行像一条横幅，跟三张并排时一张一样宽、放在中间。 */
