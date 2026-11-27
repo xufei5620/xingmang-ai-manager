@@ -1,9 +1,0 @@
-## 开发
-
-- 给客户看的那句并进了 `chat-export-flush-first.md`（0.2.25 更新说明统一改为正式书面口吻、同类并条，复查第三轮第 8 条）。
-- 作品库按内容存图，同一张图的两份文件拿回同一个编号。`features/chat/state.ts` 的 `addDraftImages` 以前只跟输入框里已有的比，
-  同一批里的两份都进了草稿，发送时被 `ai-chat-protocol.ts` 的 `message images repeat` 拒掉，界面只给一句笼统的「再试一次」，
-  点哪张移除都是两张一起没。现在同一批也去重，保留第一份的顺序，上限按去重后的张数算（#1489 R28-6，0.2.25 总单第 44 项）。
-- 主进程 `electron/ai-chat-attachments.ts` 的 `storeFiles`（选图框和从文件夹复制来粘贴共用）也只回每个编号一次；
-  协议对重复编号的校验照旧保留。
-- 旧版本存下来的草稿里可能还留着两份，`storage.ts` 的 `readConversation` 读回草稿图片时按编号只留第一份，升级后不用手动移除。

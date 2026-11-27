@@ -166,7 +166,7 @@ import {
   resolveXingmangAiBundledSkillRoot,
   XINGMANG_IMAGE_MCP_NO_NODE_WARNING,
 } from './xingmang-ai-skill'
-import { buildXingmangImageMcpInvocation } from './xingmang-ai-mcp'
+import { buildXingmangImageMcpInvocation, resolveXingmangImageNodeExecutable } from './xingmang-ai-mcp'
 import { resolveClaudeStatusLineScriptPath } from './claude-status-line'
 import { cliHookEventsDirectory, resolveCliHookScriptPath } from './cli-hooks'
 import { resolveBundledCodexModelCatalogPath } from './codex-model-catalog'
@@ -2909,9 +2909,17 @@ if (!hasSingleInstanceLock) {
         bundledRoot: bundledXingmangAiSkillRoot,
         userHome: os.homedir(),
         syncImageMcp: async (input) => {
-          const nodeExecutable = await findExecutable('node', { env: process.env })
-          if (!nodeExecutable) return [XINGMANG_IMAGE_MCP_NO_NODE_WARNING]
-          const invocation = buildXingmangImageMcpInvocation(nodeExecutable, input.skillDirectory)
+          // 电脑上没装 Node.js 时改用 Codex 桌面端自带的那份；登录和每次开机恢复登录都会走到这里重新找一遍。
+          const node = await resolveXingmangImageNodeExecutable({
+            userHome: os.homedir(),
+            findSystemNode: () => findExecutable('node', { env: process.env }),
+            isExecutableFile: async (filePath) => Boolean(await findExecutable(filePath, { env: process.env })),
+          })
+          if (!node) return [XINGMANG_IMAGE_MCP_NO_NODE_WARNING]
+          if (node.source !== 'system') {
+            runtimeLog.log('info', 'account', 'xingmang-ai-skill.image-mcp.node', '画图工具改用 Codex 桌面端自带的 Node', { source: node.source })
+          }
+          const invocation = buildXingmangImageMcpInvocation(node.executable, input.skillDirectory)
           // 改的是 Codex、Grok 的 config.toml 和 Claude 的 settings.json、.claude.json，和保存配置排同一队（#1061 第 1 条）。
           const register = async () => syncXingmangImageMcpConfigs(rootedOptions.system.providerRoots, invocation, {
             codex: !input.officialCodex,

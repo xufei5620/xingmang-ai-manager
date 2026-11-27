@@ -35,6 +35,7 @@ import { claudeDesktopVmPlatformKey, claudeDesktopWorkspaceObjectKey } from './c
 import { desktopPackageBucketOrigin, fetchDesktopBucketResource } from './desktop-package-bucket'
 import { readDiskSpace, installMinimumFreeBytes, type DiskSpaceReading } from './disk-space'
 import { downloadWithResume, DownloadStalledError } from './download-retry'
+import { statForeignAsar } from './foreign-asar'
 import {
   assertNoReparseComponents, assertSafeDataFile, ensureSafeDataDirectory, readSafeUtf8FileSync, removeSafeDataFile,
   renameWithTransientRetry, writeAtomicSafeUtf8File,
@@ -228,7 +229,7 @@ export function createClaudeDesktopWorkspaceSeeder(options: ClaudeDesktopWorkspa
 
   async function manifestFor(asarPath: string): Promise<ClaudeDesktopComponentManifest> {
     let stats: fs.Stats
-    try { stats = await fs.promises.stat(asarPath) }
+    try { stats = await statForeignAsar(asarPath) }
     catch (error) {
       throw new WorkspaceSkip('asar-unreadable', '读不到 Claude Desktop 的程序文件', { asar: redact(asarPath), code: (error as NodeJS.ErrnoException).code })
     }
