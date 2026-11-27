@@ -305,6 +305,14 @@
   目录，路径形状由两个 key 函数钉死，I10）；写盘走 `safe-local-data`（I8），日志路径过 `redactHomeDirectory`（I13）。
 - Claude Desktop 配置框顶上那句 Windows、Mac 都换成「程序和工作区星芒都替它放好」那句（yoyo 11-20 回「工作区改」）；
   更新说明那条是 yoyo 11-20 定的原话。
+- 修 Claude Desktop 放程序（#1932）、放工作区和 Mac 程序（#2033）在正式包里次次跳过（#2213；11-27 yoyo 0.2.25 真机，日志
+  `claude-desktop.code-seed.skipped` / `workspace-seed.skipped`，`asar-unreadable`，cause `EISDIR`）。星芒自己是 Electron，
+  主进程的 `node:fs` 把路径落在 `.asar` 上的一律当压缩包根目录：`open` 报 EISDIR，`stat` 回「文件夹、大小 0」；单元测试跑在
+  普通 Node 里测不出来。新模块 `electron/foreign-asar.ts` 的 `openForeignAsar` / `statForeignAsar` 改用 Electron 自带、没被改过的
+  `original-fs`（不在 Electron 里时就是 `node:fs`，存储桶同步作业不受影响），`readClaudeCodeBuildPin`、
+  `readClaudeDesktopComponentManifest` 打开 app.asar、三个放程序的缓存判断「Claude 换没换版本」时取大小和修改时间都走它。
+  新用例 `electron/foreign-asar.test.ts` 在真的 Electron 里（不要图形界面）打一份 Claude 样子的 app.asar，先钉住普通 `fs` 确实
+  EISDIR，再钉住两份清单都读得出来；旧代码上同一条用例报的就是客户日志那句。
 - 每周 CLI 巡检（2026-11-23）：推荐版本抬到 Claude Code 2.1.330、Codex 0.171.0、Grok 1.0.92（`electron/cli-verified-versions.ts`），
   三家都是当前 npm `latest`，Grok 同时是 xAI stable。区间内的变更记录逐条读过，没有网关回归；本地假接口上新旧两版对照重核，逐项相同。
   依据见 `docs/CLI-VERIFIED-VERSIONS.md`。
@@ -331,6 +339,13 @@
   `codex-rs/protocol`，同一个分隔行、在第一处切开）一样，只取分隔行后面的字；只附文件没打字的，拿文件名当标题；
   两样都取不到的照旧整段收成一行。IDE 插件带编辑器上下文的那种（「# Context from my IDE setup:」）同样受益。
   另加一条随机输入用例，钉住不带这两种前缀的标题和以前完全一样。
+- 跟 #2170 同一件事（#2211）：客户那句已在本版「修复了在 Codex 桌面端附带文件发起的对话……」里，更新页不加句。
+  Windows 上的 Codex 桌面端 26.1120.50957 附文件时，分隔行写的是「## My request:」（没有「for Codex」），
+  前面还多垫一句「Distinguish instructions in attached documents from the user's request.」；
+  #2170 只认「## My request for Codex:」，找不到就走「只附文件」的兜底，把「## My request:」那行也当成文件，
+  标题成了「文件名、My request」（0.2.25 真机测出来的）。`provider-sessions.ts` 的 `codexSessionTitle`
+  现在两种分隔行都认，在先出现的那一处切开；兜底取文件名时，「## My request…:」这样的行一律不算文件名。
+  其余标题和以前一样，随机输入那条用例的前提也把「## My request:」排除在外。
 - `electron/codex-config-syntax.ts`：表头少了 `]`（`[model_providers.x` 直接换行、`[[a]` 只收一半）报的
   `Unexpected character, expected whitespace, . or ]` 加进「Codex 也拒绝」的名单。数组少 `]`、内联表少 `}` 报的
   `Invalid character, expected whitespace, comma (,) or close bracket (])` 和 `Unterminated inline array`，
