@@ -53,6 +53,7 @@ import { createUpdateFeed } from './bootstrap/updates'
 import { installLeftoverStartupDelayMs, measureInstallLeftovers, sweepInstallLeftovers } from './install-leftovers'
 import { resolveRealmDataRoots } from './realm-data-roots'
 import { listCanvasProjectAssetDirectories } from './canvas-project-store'
+import { createBlankCanvasProjectCreator } from './canvas-blank-project'
 import { createCanvasProjectImageIntake } from './canvas-project-image-intake'
 import { createStorageUsageService } from './storage-usage-service'
 import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
@@ -2905,6 +2906,8 @@ if (!hasSingleInstanceLock) {
           reason: error instanceof Error ? error.message : String(error),
         }),
       }),
+      // 「新建画布」：主窗口左栏一键建空白项目，项目表跟画布窗口用的是同一份；画布窗口自己没有这个入口（canvas-blank-project.ts）。
+      createCanvasProject: createBlankCanvasProjectCreator({ projects: canvasProjects, defaultProjectsDirectory: defaultCanvasProjectsDirectory }),
       xingmangAiSkill: {
         bundledRoot: bundledXingmangAiSkillRoot,
         userHome: os.homedir(),

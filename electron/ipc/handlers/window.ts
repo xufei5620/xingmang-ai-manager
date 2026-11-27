@@ -8,7 +8,7 @@ import { parseAppUninstallRequest, parseRendererActivity } from '../parsers/syst
 import type { IpcHandlerContext } from './context'
 
 export function registerWindowHandlers(ctx: IpcHandlerContext): void {
-  const { options, registerTrustedHandler, service, externalShell, readBackupAccountContext } = ctx
+  const { options, registerTrustedHandler, service, externalShell, readBackupAccountContext, accountService } = ctx
   registerTrustedHandler('window:set-mode', (event, mode: unknown) => {
     if (mode !== 'onboarding' && mode !== 'dashboard') throw new Error('未知的窗口模式')
     options.setWindowMode(event.sender, mode)
@@ -73,5 +73,13 @@ export function registerWindowHandlers(ctx: IpcHandlerContext): void {
   registerTrustedHandler('canvas:open-project', (_event, projectId: unknown) => {
     if (!options.openCanvasProject) throw new Error('画布项目暂时无法打开')
     return options.openCanvasProject(projectId)
+  })
+  // 「新建画布」：不收参数，名字和位置都由主进程定（canvas-blank-project.ts），建好只回编号和名字；打开它走上面那条。
+  registerTrustedHandler('canvas:create-project', () => {
+    if (!options.createCanvasProject) throw new Error('暂时无法新建画布项目，请稍后重试。')
+    const session = accountService.getSessionState()
+    const userId = session.authenticated ? session.account?.userId : undefined
+    if (!userId) throw new Error('请先登录星芒账号')
+    return options.createCanvasProject(userId)
   })
 }
