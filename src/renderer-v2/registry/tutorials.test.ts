@@ -165,7 +165,7 @@ describe('tutorial wording that follows the current app', () => {
     const text = JSON.stringify(tutorialTopics.find((topic) => topic.id === 'canvas'));
     expect(canvasApp).toContain('>导出工作流</button>');
     expect(canvasPreload).not.toContain('previewProjectExport');
-    expect(text).toContain('「更多操作」里选「导出工作流」，图片会一起导出');
+    expect(text).toContain('「更多操作」中选择「导出工作流」，图片将一并导出');
     expect(text).not.toContain('导出项目（含素材）');
   });
 
@@ -174,8 +174,8 @@ describe('tutorial wording that follows the current app', () => {
     expect(editor?.category).toBe('tools');
     expect(editor?.title).toBe('在 VS Code 或 Cursor 里用 Claude Code');
     const text = JSON.stringify(editor);
-    expect(text).toContain('不会再自己往编辑器里装插件');
-    expect(text).toContain('认准发布者是 Anthropic');
+    expect(text).toContain('不再自动向编辑器安装插件');
+    expect(text).toContain('确认发布者为 Anthropic');
     // 第 4 步的按钮名照首页卡片「…」菜单和配置弹窗上的字写。
     expect(step('editor', '回首页重新保存 Claude Code 配置').bullets).toContain('返回星芒首页，在 Claude Code 卡片的「…」中点击「配置…」，再点击「保存配置」。');
     for (const entry of editor?.steps ?? []) expect(entry.page, entry.action).toBe('home');
@@ -196,7 +196,7 @@ describe('tutorial wording that follows the current app', () => {
     const undo = tutorialTopics.find((topic) => topic.id === 'undo');
     expect(undo?.category).toBe('trouble');
     const text = JSON.stringify(undo);
-    for (const words of ['连按两下 Esc', '/rewind', 'Restore code and conversation', '无法恢复', '复制到其他位置']) expect(text).toContain(words);
+    for (const words of ['连按两次 Esc', '/rewind', 'Restore code and conversation', '无法恢复', '复制到其他位置']) expect(text).toContain(words);
   });
 
   it('offers the editor, phone remote and undo chapters on every system', () => {
@@ -232,15 +232,15 @@ describe('tutorial wording that follows the current app', () => {
     const entry = step('trouble', '回首页打开 Codex');
     expect(entry.detail).toContain('Work browser access requires an authenticated account');
     expect(entry.title).toContain('提交消息时出错');
-    expect(entry.bullets?.[0]).toContain('切到「Codex」');
+    expect(entry.bullets?.[0]).toContain('切换为「Codex」');
     expect(entry.extra?.[0].detail).toContain('「…」›「配置…」中选择「ChatGPT 账号」');
-    expect(step('start', '回首页打开 Codex').bullets?.[0]).toContain('切到「Codex」');
-    expect(step('launch', '返回首页打开桌面端').bullets?.[0]).toContain('切到「Codex」');
+    expect(step('start', '回首页打开 Codex').bullets?.[0]).toContain('切换为「Codex」');
+    expect(step('launch', '返回首页打开桌面端').bullets?.[0]).toContain('切换为「Codex」');
   });
 
   // WSL 里敲 claude、codex 读的是 WSL 自己家目录下的配置，星芒写的在 Windows 这一侧（D76）；Linux 版不提 Windows。
   it('tells Windows users that the tools typed inside WSL need their own setup', () => {
-    const wsl = '星芒管的是 Windows 这一侧；要用 AI 工具请在 Windows 的终端里打开，WSL 里的需要单独配置。';
+    const wsl = '星芒仅管理 Windows 系统中的工具；请在 Windows 的终端中打开 AI 工具，WSL 中的工具需单独配置。';
     expect(step('messages', '查看余额与额度').bullets).toContain(wsl);
     expect(JSON.stringify(tutorialTopicsFor('linux'))).not.toContain('WSL');
   });

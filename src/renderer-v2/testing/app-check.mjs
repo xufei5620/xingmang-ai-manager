@@ -11501,7 +11501,7 @@ test('the skills chapter explains importing for every tool and the card list com
     await entry.click()
     const article = tutorial.getByTestId('tutorial-article')
     await expect(article.getByRole('heading', { level: 2 })).toHaveText('技能')
-    await expect(article).toContainText('选一个本机的技能文件夹，勾上要给哪几家用。')
+    await expect(article).toContainText('选择本机的技能文件夹，勾选要使用的工具。')
     await expect(article.locator('details[data-extra-title="Claude Code、Grok CLI 没有导入按钮？"]')).toHaveCount(0)
     await tutorial.getByTestId('tutorial-back').click()
     await expect(entry).toBeFocused()
