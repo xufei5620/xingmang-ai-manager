@@ -189,6 +189,8 @@ Grok CLI 二进制**完全没有国内镜像**。`grok-installer.ts:20-21` 的 `
 
 > **待确认**：是否对 agentsmirror 基础设施有控制权、能否往上面放 Grok 二进制？
 
+> **更正（2026-11-24）**：上面「项目已有自建镜像基础设施」写错了。`codexapp.agentsmirror.com` / `codexapp-r2.agentsmirror.com` 是开源项目 Codex App Manager 作者的私人镜像，不归星芒，作者 11-24 找上门说被下了 270 次；「是否有控制权」的答案是没有。Codex 桌面端已经全部拿掉它，改为星芒存储桶 → 微软商店 → OpenAI 官网 → 清单过期的存储桶（见 `docs/RELEASING.md`「Codex Desktop 下载来源」）。Grok 在 Windows 上后来也是从星芒自己的存储桶下（`sync-grok-cos`）。
+
 **实现注意**：`grok-installer.ts` 有完整的 URL 白名单校验（`validateGrokArtifactResponseUrl`）和签名校验，新增镜像源必须**加进白名单而不是放宽校验**。
 
 ---
@@ -332,7 +334,7 @@ same-user 模式无需处理（未跨越完整性边界）。
 | 事项 | 说明 |
 |---|---|
 | ~~3.1 的 PATH 收窄~~ | ✅ 已定并落地（`8c6a476`，见 3.1 的横幅）：trusted-only 收窄、same-user 不收窄，AGENTS.md I2 已收录 |
-| 2.6 Grok 镜像 | 是否对 agentsmirror 基础设施有控制权、能否放 Grok 二进制？ |
+| ~~2.6 Grok 镜像~~ | 已答复：agentsmirror 不归星芒、没有控制权（2026-11-24，见 2.6 的更正）；Grok 改走星芒存储桶 |
 | 3.4 签名 DN 迁移 | 是否启动两个发布周期的迁移计划？需要版本分布数据支撑第二步的时机判断。 |
 
 ---
@@ -359,8 +361,8 @@ same-user 模式无需处理（未跨越完整性边界）。
 |---|---|---|---|
 | Node.js 运行时 | `nodejs.org/dist` | `npmmirror.com/mirrors/node`、`cdn.npmmirror.com/binaries/node` | 已接，顺序依赖区域探测 |
 | 四个 CLI 的 npm 包 | `registry.npmjs.org` | `registry.npmmirror.com` | 已接，但依赖图解析强制走官方 |
-| Codex 桌面端安装包 | `persistent.oaistatic.com` | `codexapp.agentsmirror.com` | **已接且是唯一源** |
-| Codex 桌面端清单 | `persistent.oaistatic.com` | `codexapp.agentsmirror.com` | 已接且已改镜像优先（1.3 已落地，`codex-desktop-service.ts`） |
+| Codex 桌面端安装包 | `persistent.oaistatic.com` | 星芒存储桶 `chatgpt/` | 桶第一路，过期的桶最后一路；第三方的 agentsmirror 2026-11-24 已拿掉 |
+| Codex 桌面端清单 | `persistent.oaistatic.com` | 星芒存储桶 `chatgpt/latest.json` | 首页「可更新」只看桶（2026-11-24 起） |
 | **Grok CLI 二进制** | `x.ai/cli` → `storage.googleapis.com` | **无** | 两个源都在境外（见 2.6） |
 | **区域探测** | `www.cloudflare.com/cdn-cgi/trace` | **无** | 见 1.2、2.5 |
 | MCP 扩展版本查询 | `registry.npmjs.org` / `pypi.org` | 部分 | 非关键路径 |

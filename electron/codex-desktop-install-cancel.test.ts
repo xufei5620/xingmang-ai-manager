@@ -1,12 +1,11 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  buildCodexDesktopOfficialPackageSource,
+  downloadCodexDesktopOfficialPackage,
   downloadCodexDesktopPackage,
-  downloadCodexDesktopPackageFromCandidates,
-  type CodexDesktopManifestCandidate,
 } from './codex-desktop-service'
 import { InstallCancelledError, isInstallCancelledError } from './install-cancellation'
 
@@ -23,21 +22,6 @@ function temporaryDestination(): string {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-desktop-cancel-'))
   temporaryDirectories.push(directory)
   return path.join(directory, 'Codex.msix')
-}
-
-function mirrorCandidate(
-  label: string,
-  packageUrl: string,
-  contentLength: number,
-  sha256Base64: string,
-): CodexDesktopManifestCandidate {
-  const version = '26.721.4979.0'
-  return {
-    source: { kind: 'mirror', label, url: `${new URL(packageUrl).origin}/latest/manifest` },
-    version,
-    release: { version, architecture: 'x64', contentLength, sha256Base64 },
-    packageSource: { label, url: packageUrl },
-  }
 }
 
 /**
@@ -72,12 +56,10 @@ function stallingResponse(
 }
 
 describe('cancelling a Codex Desktop download', () => {
-  it('stops the running download instead of moving on to the next mirror', async () => {
+  it('stops the running download and asks for nothing more', async () => {
     const destination = temporaryDestination()
     const total = 10 * 1024 * 1024
-    const sha256Base64 = createHash('sha256').update(Buffer.alloc(total, 0x41)).digest('base64')
-    const firstUrl = 'https://mirror-one.example/latest/win-x64'
-    const secondUrl = 'https://mirror-two.example/latest/win-x64'
+    const packageUrl = buildCodexDesktopOfficialPackageSource('x64').url
     const controller = new AbortController()
     const requested: string[] = []
     const fetchMock = vi.fn(async (value: string | URL | Request, init?: RequestInit) => {
@@ -86,18 +68,22 @@ describe('cancelling a Codex Desktop download', () => {
       return stallingResponse(url, Buffer.alloc(64 * 1024, 0x41), total, init?.signal)
     })
 
-    const download = downloadCodexDesktopPackageFromCandidates([
-      mirrorCandidate('主测试源', firstUrl, total, sha256Base64),
-      mirrorCandidate('备用测试源', secondUrl, total, sha256Base64),
-    ], destination, { fetchImplementation: fetchMock, signal: controller.signal })
+    const download = downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination,
+      installedVersion: null,
+      knownVersion: '26.721.4979.0',
+      fetchImplementation: fetchMock,
+      signal: controller.signal,
+    })
     const settled = download.catch((error: unknown) => error)
 
-    await vi.waitFor(() => expect(requested).toEqual([firstUrl]))
+    await vi.waitFor(() => expect(requested).toEqual([packageUrl]))
     controller.abort(new InstallCancelledError())
 
     expect(isInstallCancelledError(await settled)).toBe(true)
-    // 换一路镜像接着下就等于没取消。
-    expect(requested).toEqual([firstUrl])
+    // 断线续传那样再要一次就等于没取消。
+    expect(requested).toEqual([packageUrl])
     expect(fs.existsSync(destination)).toBe(false)
   })
 
@@ -107,10 +93,14 @@ describe('cancelling a Codex Desktop download', () => {
     const controller = new AbortController()
     controller.abort(new InstallCancelledError())
 
-    const error = await downloadCodexDesktopPackageFromCandidates([
-      mirrorCandidate('主测试源', 'https://mirror-one.example/latest/win-x64', 1024, 'x'),
-    ], destination, { fetchImplementation: fetchMock, signal: controller.signal })
-      .catch((cause: unknown) => cause)
+    const error = await downloadCodexDesktopOfficialPackage({
+      architecture: 'x64',
+      destination,
+      installedVersion: null,
+      knownVersion: null,
+      fetchImplementation: fetchMock,
+      signal: controller.signal,
+    }).catch((cause: unknown) => cause)
 
     expect(isInstallCancelledError(error)).toBe(true)
     expect(fetchMock).not.toHaveBeenCalled()
@@ -123,9 +113,8 @@ describe('cancelling a Codex Desktop download', () => {
     })
 
     await expect(downloadCodexDesktopPackage({
-      label: '测试镜像',
+      label: '测试源',
       url: 'https://mirror.example.cn/Codex.msix',
-      expectedContentLength: 1024,
     }, destination, () => undefined, fetchMock))
       .rejects.toThrow('连接或下载超时')
   })
@@ -139,9 +128,8 @@ describe('cancelling a Codex Desktop download', () => {
     })
 
     const error = await downloadCodexDesktopPackage({
-      label: '测试镜像',
+      label: '测试源',
       url: 'https://mirror.example.cn/Codex.msix',
-      expectedContentLength: 1024,
     }, destination, () => undefined, fetchMock, controller.signal)
       .catch((cause: unknown) => cause)
 

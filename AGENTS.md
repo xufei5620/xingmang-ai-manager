@@ -292,7 +292,7 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 - ❌ **不要给主进程上 bundler** — 会模糊信任链模块的边界，那是本项目的核心可审计资产
 - ❌ **不要为了让测试在非 Windows 通过而改断言** — 用平台门控，否则会弱化对 Windows 行为的验证；画布边界门禁脚本同理，不要为了让它过而改断言
 - ❌ **不要绕过 npm 官方源的 SHA-512 对账** — 那是防镜像投毒的核心设计
-- ❌ **不要动 Codex 桌面端的镜像实现** — 那是全项目网络处理做得最对的一块
+- ❌ **不要给 Codex 桌面端加第三方下载源，也不要放宽它的跳转校验** — 2026-11-24 拿掉了 `codexapp(-r2).agentsmirror.com`：那是开源项目 Codex App Manager 作者的私人镜像，不归星芒，带宽一直算人家的。国内下载只走星芒自己的存储桶（`desktop-package-bucket.ts`），官网两条地址的跳转只许落回同一个地址（`validateCodexDesktopResourceUrl`）。要加新来源先问 yoyo，并查清那个主机归谁
 - ❌ **不要"消除" 三个 preload 里重复的通道表** — 那是 sandbox 约束下的有意重复（I7），主窗口那份被 `satisfies` 类型钉死、另两份由测试钉死，拼错当场就红
 - ❌ **不要把 `config-files.ts` 的 `switch (provider)` 重构成策略类层级** — 无 `default` 分支正是新增 provider 时的穷尽性保障
 - ❌ **不要给 API Key 加 DPAPI / keytar 加密存储** — 本程序的全部职责就是把 Key 写进 CLI 的明文配置文件，再加密一份攻击面一点没变。⚠️ 这条针对的是 **relay API Key 的"以加密求保护"**；两个已实装的例外别拆：登录 session token 用 `safeStorage` 加密（`account-session-store.ts`）是正确做法；`managed-cli-key-store.ts` 对托管 CLI Key 的 safeStorage 缓存（PR #81）**目的不是保护而是复用**——new-api 列表只回掩码 Key，无本地缓存则每次登录/切账号都要重新签发或走服务端 reveal，缓存消除的是服务端 token 堆积与限流面

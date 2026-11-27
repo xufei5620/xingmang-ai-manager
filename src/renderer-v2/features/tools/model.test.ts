@@ -322,7 +322,7 @@ describe('renderer tool source', () => {
     expect(rows.find((row) => row.id === 'grok')?.error).toBeNull()
   })
 
-  it('offers a desktop update only when the mirror has a newer package than the official feed alone claims', () => {
+  it('offers a desktop update only when the domestic line has a newer package than the official feed alone claims', () => {
     const providers = Object.fromEntries((['claude', 'codex', 'grok', 'gemini'] as const).map((provider) => [provider, relayConfig()]))
     const cli = { installed: true, version: '1.0.0', path: '/fixture', updateAvailable: true, latestVersion: '1.1.0' }
     const desktopRow = (desktop: Record<string, unknown>) => {
@@ -335,10 +335,10 @@ describe('renderer tool source', () => {
       return presentTools(snapshot, memoryStorage())
     }
 
-    // 官方清单领先商店和国内镜像: 更新按钮装不到任何包, 所以不出现。
+    // 官方清单领先商店和国内下载线路: 更新按钮装不到任何包, 所以不出现。
     const storeCurrent = desktopRow({ updateState: 'available', mirrorUpdateAvailable: false, latestVersion: '1.1.0' })
     expect(storeCurrent.find((row) => row.id === 'codexDesktop')?.updateAvailable).toBe(false)
-    // CLI 走 npm, 不受镜像影响, 仍按原字段显示。
+    // CLI 走 npm, 不受这条线路影响, 仍按原字段显示。
     expect(storeCurrent.find((row) => row.id === 'codex')?.updateAvailable).toBe(true)
 
     expect(desktopRow({ updateState: 'available', mirrorUpdateAvailable: true, latestVersion: '1.1.0' })
@@ -493,7 +493,7 @@ describe('renderer update offer for the start guide', () => {
     expect(toolUpdateOffer(row({ versionAdvice: { ...pinnedOld, pinned: false, rollbackAvailable: false }, updateAvailable: false }))).toBeNull()
   })
 
-  it('offers the desktop app only a mirror build it can install and names no version for it', () => {
+  it('offers the desktop app only a bucket build it can install and names no version for it', () => {
     expect(toolUpdateOffer(row({ id: 'codexDesktop', versionAdvice: null }))).toEqual({ version: null, target: null, newer: true, knownIssue: false, manualHint: null })
     expect(toolUpdateOffer(row({ id: 'codexDesktop', versionAdvice: null, updateAvailable: false }))).toBeNull()
   })
