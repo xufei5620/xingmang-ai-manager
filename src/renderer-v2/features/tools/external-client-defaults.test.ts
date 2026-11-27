@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AppConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
 import { clientKeySources } from '../../registry/clients'
-import { configuredKeySources, configuredSourceModel, detectedClientModel, initialClientSource, modelFitsClient } from './external-client-defaults'
+import { alternativeClientSource, configuredKeySources, configuredSourceModel, detectedClientModel, initialClientSource, modelFitsClient } from './external-client-defaults'
 
 const native = (patch: { hasApiKey?: boolean; matchesRelay?: boolean; model?: string } = {}) => ({
   exists: true,
@@ -74,6 +74,24 @@ describe('external client defaults', () => {
     expect(initialClientSource('claudeDesktop', 'claude', clientKeySources, both(), [chatKey, ownKey], claudeCode)).toBe('configured:claude')
     // 只有 Claude Desktop 看 Claude Code 那个分组。
     expect(initialClientSource('workbuddy', 'codex', clientKeySources, providers(), [chatKey, ownKey], claudeCode)).toBe('account:40')
+  })
+
+  it('switches a rejected key to the next usable one, skipping its whole group and the tool that lent it', () => {
+    const codexOnly = providers({ codex: relay('gpt-6.1-sol') })
+    const claudeCode = { name: 'yoyo-Claude-MAX', group: 'Claude-MAX' }
+    const own = { id: 30, name: 'yoyo-Claude-MAX', group: 'Claude-MAX' }
+    const twin = { id: 29, name: 'my-max', group: 'Claude-MAX' }
+    const aws = { id: 31, name: 'my-aws', group: 'Claude AWS-B' }
+    // 同一分组的一样被拒，跳过，换到别的 Claude 分组。
+    expect(alternativeClientSource('claudeDesktop', 'claude', clientKeySources, codexOnly, [aws, own, twin], claudeCode, 'account:30')).toBe('account:31')
+    // 没有别的 Claude 分组：轮到借 Codex 那把（检测完它会说没有 Claude 型号）。
+    expect(alternativeClientSource('claudeDesktop', 'claude', clientKeySources, codexOnly, [own, twin], claudeCode, 'account:30')).toBe('configured:codex')
+    // 只剩自己填写：没得换。
+    expect(alternativeClientSource('claudeDesktop', 'claude', clientKeySources, providers(), [own, twin], claudeCode, 'account:30')).toBeNull()
+    // 借 Claude Code 那把被拒：跳过它，用账号里的。
+    expect(alternativeClientSource('claudeDesktop', 'claude', clientKeySources, both(), [own], claudeCode, 'configured:claude')).toBe('account:30')
+    expect(alternativeClientSource('workbuddy', 'codex', clientKeySources, both(), [], null, 'configured:codex')).toBe('configured:claude')
+    expect(alternativeClientSource('workbuddy', 'codex', clientKeySources, providers({ codex: relay('gpt-6.1-sol') }), [], null, 'configured:codex')).toBeNull()
   })
 
   it('falls back to another tool key without carrying a model Claude Desktop cannot use', () => {

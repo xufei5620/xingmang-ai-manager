@@ -882,6 +882,11 @@ export interface SystemServiceOptions {
    */
   bundledCodexModelCatalogPath?: string
   /**
+   * 随包的 Antigravity 中文词表（antigravity-desktop-chinese.ts）。缺省 = 从星芒打开 Antigravity 桌面端时不开调试口、
+   * 照旧英文，与从前一致。
+   */
+  antigravityChinesePackPath?: string
+  /**
    * 读型号名单的还有桌面端自带的那份 Codex，写之前要知道桌面端是哪一批。缺省 = Windows
    * 问 Appx 包、Mac 看应用包、其余平台算没装；测试里替换掉。
    */
@@ -1198,6 +1203,7 @@ export function createSystemService(
     withVendorDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
     launchWindowsTerminal: context.launchCliPowerShellForService,
     launchMacosTerminal: context.launchMacosTerminalForService,
+    ...(serviceOptions.antigravityChinesePackPath ? { desktopChinesePackPath: serviceOptions.antigravityChinesePackPath } : {}),
     log: (level, event, message, detail) => runtimeLog?.log(level, antigravityLogSource(event), event, message, detail),
   })
   // Owns the Codex Desktop version-probe caches and the install/uninstall/

@@ -993,7 +993,12 @@ const methods = {
       group: keyId === 201 ? 'Codex_pro' : keyId === 202 ? 'Custom group' : null },
       automatic: { name: automatic.keyName, group: automatic.group } }
   },
-  listAccountKeyModels: async (id: number) => id === 201 ? ['gpt-5.6-sol'] : query.has('emptyKeyModels') ? [] : ['fixture-model', 'fixture-other'],
+  // clientGroupRejected：Claude-MAX 那把一检测就是服务端删了分组（列表里还当它能用，比如分组是刚删的），Claude AWS-B 那把能用。
+  listAccountKeyModels: async (id: number) => {
+    if (query.has('clientGroupRejected') && id === 401) throw new Error('模型查询失败，服务返回 403：无权访问 Claude-MAX 分组 (request id: fixture-20261119)')
+    if (query.has('clientGroupRejected') && id === 402) return ['claude-fixture']
+    return id === 201 ? ['gpt-5.6-sol'] : query.has('emptyKeyModels') ? [] : ['fixture-model', 'fixture-other']
+  },
   saveConfigWithAccountKey: async (input) => {
     selectedKeyIds.set(input.provider, input.keyId)
     config.providers[input.provider] = { ...config.providers[input.provider], configurationOwnership: 'account', model: input.model, apiKeyPreview: input.keyId === 201 ? 'sk-se••••9012' : 'sk-ot••••1234' }

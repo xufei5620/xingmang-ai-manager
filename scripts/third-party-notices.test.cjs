@@ -217,7 +217,7 @@ test('writes every entry with its version, license, source and full license text
 test('registers by hand what no build step can see, each with text read from the repository', () => {
   const extras = buildBundledExtras(projectRoot)
   const byName = Object.fromEntries(extras.map((extra) => [extra.name.split(' ')[0], extra]))
-  assert.deepEqual(Object.keys(byName).sort(), ['@lobehub/icons', 'Chromium', 'Electron', 'Mihomo', 'Nsis7z', 'OpenAI', 'OpenCV'])
+  assert.deepEqual(Object.keys(byName).sort(), ['@lobehub/icons', 'Antigravity', 'Chromium', 'Electron', 'Mihomo', 'Nsis7z', 'OpenAI', 'OpenCV'])
   assert.equal(byName.Electron.version, require('../node_modules/electron/package.json').version)
   assert.match(byName.Electron.texts[0].text, /Electron contributors/)
   assert.match(byName['@lobehub/icons'].texts[0].text, /LobeHub/)
@@ -225,6 +225,8 @@ test('registers by hand what no build step can see, each with text read from the
   assert.deepEqual(byName.OpenAI.texts.map((entry) => entry.name), ['NOTICE', 'LICENSE'])
   assert.equal(byName.Nsis7z.license, 'LGPL-2.1')
   assert.equal(byName.Mihomo.license, 'GPL-3.0')
+  assert.equal(byName.Antigravity.license, 'GPL-3.0')
+  assert.match(byName.Antigravity.texts[0].text, /GNU GENERAL PUBLIC LICENSE\s+Version 3/)
   assert.ok(byName.Chromium.notes.some((note) => note.includes('LICENSES.chromium.html')))
 })
 

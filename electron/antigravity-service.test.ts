@@ -5,6 +5,8 @@ import fc from 'fast-check'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AntigravityManagedKey } from './account-cli-provisioner'
 import { staleAccountMessage, type QueuedAccountWork } from './account-work-gate'
+import type { AntigravityDesktopChineseOptions, AntigravityDesktopChineseWatch } from './antigravity-desktop-cdp'
+import { resolveBundledAntigravityChinesePackPath } from './antigravity-desktop-chinese'
 import type { AntigravityEnvironmentValues, AntigravityGatewayEnvironment } from './antigravity-gateway'
 import { readMacosAntigravityEnvironment, writeMacosAntigravityEnvironment } from './antigravity-macos-environment'
 import {
@@ -589,6 +591,107 @@ describe('createAntigravityService openDesktop on macOS', () => {
     expect(ours.commands.some((entry) => entry.spec.executable === '/usr/bin/open' && entry.spec.argv.join(' ') === `-a ${macBundle}`)).toBe(true)
 
     await expect(ours.service.openDesktop(() => Promise.resolve({ ...managedKey, models: ['gemini-4-argon'] }))).resolves.toEqual({ opened: false, closeFirst: true })
+  })
+})
+
+// yoyo 11-26「反重力调试口同意」「反重力默认中文」：从星芒打开时带一个本机调试口，起来以后换成中文。
+describe('createAntigravityService opening the desktop app in Chinese', () => {
+  const packPath = resolveBundledAntigravityChinesePackPath(process.cwd())
+
+  function chineseHarness(options: HarnessOptions = {}) {
+    const watches: Array<{ options: AntigravityDesktopChineseOptions, stop: ReturnType<typeof vi.fn> }> = []
+    const pickDebugPort = vi.fn(async () => 41234)
+    const watchDesktopChinese = vi.fn((watchOptions: AntigravityDesktopChineseOptions): AntigravityDesktopChineseWatch => {
+      const stop = vi.fn()
+      watches.push({ options: watchOptions, stop })
+      return { settled: new Promise(() => undefined), stop }
+    })
+    const h = harness({
+      platform: 'darwin', directories: [macBundle], files: [macExecutable], ...options,
+      overrides: { desktopChinesePackPath: packPath, pickDebugPort, watchDesktopChinese, ...options.overrides },
+    })
+    return Object.assign(h, { watches, pickDebugPort, watchDesktopChinese })
+  }
+
+  it('starts the app with a loopback debugging port and watches the process it started', async () => {
+    const h = chineseHarness()
+    await expect(h.service.openDesktop(resolveKey)).resolves.toEqual({ opened: true })
+    expect(h.launches).toHaveLength(1)
+    expect(h.launches[0].argv).toEqual(['--remote-debugging-port=41234'])
+    expect(h.launches[0].env).toEqual(expect.objectContaining(writtenEnvironment))
+    expect(h.watches).toHaveLength(1)
+    const watched = h.watches[0].options
+    expect(watched).toEqual(expect.objectContaining({ port: 41234, processId: 4242 }))
+    expect(watched.injection).toContain('"新建对话"')
+    expect(watched.injection).toContain('"depth":"deep"')
+    // The key travels in the environment only, never on the command line or in the injected script.
+    expect(h.launches[0].argv.join(' ')).not.toContain(managedKey.key)
+    expect(watched.injection).not.toContain(managedKey.key)
+
+    await expect(watched.resolveListeners(41234)).resolves.toEqual([])
+    const lookup = h.commands.find((entry) => entry.spec.executable === '/usr/sbin/lsof')
+    expect(lookup?.spec.argv).toEqual(['-nP', '-iTCP:41234', '-sTCP:LISTEN', '-Fpn'])
+  })
+
+  it('only focuses the app it already started, without a second port or watcher', async () => {
+    const h = chineseHarness()
+    await h.service.openDesktop(resolveKey)
+    h.setMacProcesses(`  4242 ${macExecutable}`)
+    await expect(h.service.openDesktop(resolveKey)).resolves.toEqual({ opened: true })
+    expect(h.launches).toHaveLength(1)
+    expect(h.pickDebugPort).toHaveBeenCalledTimes(1)
+    expect(h.watches).toHaveLength(1)
+    expect(h.watches[0].stop).not.toHaveBeenCalled()
+  })
+
+  it('stops the previous watcher when it starts the app again', async () => {
+    const h = chineseHarness()
+    await h.service.openDesktop(resolveKey)
+    await h.service.openDesktop(resolveKey)
+    expect(h.launches).toHaveLength(2)
+    expect(h.watches).toHaveLength(2)
+    expect(h.watches[0].stop).toHaveBeenCalledTimes(1)
+    expect(h.watches[1].stop).not.toHaveBeenCalled()
+  })
+
+  it('opens in English without a port when the word list cannot be read', async () => {
+    const h = chineseHarness({ overrides: { desktopChinesePackPath: path.join(os.tmpdir(), 'xingmang-missing-antigravity-zh-CN.json') } })
+    await expect(h.service.openDesktop(resolveKey)).resolves.toEqual({ opened: true })
+    expect(h.launches[0].argv).toEqual([])
+    expect(h.pickDebugPort).not.toHaveBeenCalled()
+    expect(h.watches).toEqual([])
+    expect(h.logs).toContainEqual(expect.objectContaining({ level: 'warn', event: 'antigravity.desktop.chinese.unavailable' }))
+  })
+
+  it('opens in English without a port when no free port can be picked', async () => {
+    const h = chineseHarness({ overrides: { pickDebugPort: async () => { throw new Error('EADDRINUSE') } } })
+    await expect(h.service.openDesktop(resolveKey)).resolves.toEqual({ opened: true })
+    expect(h.launches[0].argv).toEqual([])
+    expect(h.watches).toEqual([])
+    expect(h.logs).toContainEqual(expect.objectContaining({ event: 'antigravity.desktop.chinese.skipped', detail: expect.objectContaining({ reason: 'no-port' }) }))
+  })
+
+  it('sends nothing when it cannot tell which process it started', async () => {
+    const h = chineseHarness({ overrides: { launchProcess: async () => null } })
+    await expect(h.service.openDesktop(resolveKey)).resolves.toEqual({ opened: true })
+    expect(h.watches).toEqual([])
+    expect(h.logs).toContainEqual(expect.objectContaining({ event: 'antigravity.desktop.chinese.skipped', detail: { reason: 'no-process-id' } }))
+  })
+
+  it('leaves the app in English without a word list, as before', async () => {
+    const h = chineseHarness({ overrides: { desktopChinesePackPath: undefined } })
+    await h.service.openDesktop(resolveKey)
+    expect(h.launches[0].argv).toEqual([])
+    expect(h.pickDebugPort).not.toHaveBeenCalled()
+    expect(h.watches).toEqual([])
+  })
+
+  it('does not change the Windows launch, which goes through Explorer without arguments', async () => {
+    const h = chineseHarness({ platform: 'win32', directories: [], files: [windowsDesktop] })
+    await expect(h.service.openDesktop(resolveKey)).resolves.toEqual({ opened: true })
+    expect(h.launches[0].argv).toEqual([windowsDesktop])
+    expect(h.pickDebugPort).not.toHaveBeenCalled()
+    expect(h.watches).toEqual([])
   })
 })
 

@@ -140,6 +140,15 @@
   「服务暂时不可用」（`AntigravityServiceUnavailableError`，yoyo 11-23 定历史账号也照这一套）。
   缓存里哪几把能直接用的判断抽成了 `usableCachedKeys`，行为不变。
 - Antigravity 接中转第七步：主进程接线（`antigravity-service.ts`，门面上是 `SystemService.antigravity`）。检测命令行和桌面端装没装、设置是不是当前账号这条线路的；一键装以后按需签 Gemini 分组的密钥写设置；带着设置打开桌面端（Windows 交给资源管理器、按 yoyo 11-23 打字同意的「Antigravity 免核签名」不核程序签名，安装包照核；Mac 核谷歌签名后起主程序，设置只放在环境里）和命令行（核谷歌签名后在选的文件夹开终端）。开着的桌面端拿不到这次的设置时不打开，回 `closeFirst`。新加 4 条主窗口通道 `antigravity:inspect` / `antigravity:install` / `antigravity:open-desktop` / `antigravity:open-cli` 和进度事件 `antigravity:install-progress`（入参只有 `cli` / `desktop` 和项目文件夹，密钥不过通道），两条打开是 scoped-queued；远程开关加 `antigravityCli`、`antigravityDesktop` 两样。Windows 上「开没开着」那一问在受限语言模式（开着应用控制策略）下也能跑、路径里的中文读得回来，Windows 冒烟加了一条两种模式对照。界面还没接，下一步做。
+- Antigravity 桌面端中文界面（#2210，yoyo 11-27「全补进」赶进 0.2.25；yoyo 2026-11-26 亲手打「反重力调试口同意」「反重力默认中文」，深度）：
+  随包带上开源插件 yuhuan-dev/antigravity-usage-monitor v1.5.6 的简体中文词表（`bundled-catalog/antigravity-zh-CN/`，
+  GPL-3.0，原样不改，许可原文和来源同目录，也进了第三方许可清单），加星芒自己写的换字脚本
+  （`electron/antigravity-desktop-chinese.ts`），只改界面文字和提示文字，客户和 AI 写的内容、代码、终端、图标字体不碰。
+  插件本身不装、代码不用：它的更新不核签名、会改快捷方式和注册表，2026-11-26 读码评估过。
+- Mac 上星芒起 Antigravity 时加 `--remote-debugging-port=<本机空口>`，用 lsof 核对口上在听的全是刚起的进程、只听本机，
+  再经浏览器级 CDP 连接往它自己的界面页面挂新文档脚本并换当前页（`electron/antigravity-desktop-cdp.ts`）。连接一直挂着，
+  刷新和新窗口接着换；没换成照旧英文、只记日志，不加界面文字。Windows 上经资源管理器打开带不上参数，这一半没接。
+- 跟首页加 Antigravity 两张卡同一件事：客户那句并进本版「首页新增 Antigravity 命令行和 Antigravity 桌面端……」，更新页仍是 60 句。
 - `backups.test.ts`「restores the oldest backup even when pruning runs at the retention limit」占满 200 份配额时，
   只整份复制要恢复的那一份，其余 199 份建空文件夹（prune 只按文件夹名数配额），再断言第二旧的那份被清掉。
   以前 200 份都整份复制，Windows runner 上这一段偶尔慢十几倍，11-22 在 main 上撞了 30 秒（#2084）。
