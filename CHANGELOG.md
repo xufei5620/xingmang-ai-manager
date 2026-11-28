@@ -200,6 +200,8 @@
   - 节点名（任何已知节点的根 `settings.title`，分组名也是它）和漫剧圣经的「风格」（`drama-bible` 根 `settings.stylePrompt`）以前保存、重开时被内核两道检查悄悄丢掉：开头像网址、路径或「英文加冒号」（如 `Step1:`），或中间带 `https://`、`D:\`、`/Users/` 的都存不住，重开变回默认名。现在 `workflow-schema.ts` 和 `workflow-sanitizer.ts` 都经 `isLabelSetting` 只对这三项免掉「像不像位置」这一条。
 - 主进程 `electron/canvas-project-package.ts` 同一道检查一起放宽，否则内核不再丢这些名字后，自动保存会整份报「画布项目节点设置不安全」：`validateNodeSettings` 改成逐个根键过 `validateRootSetting`，便签正文照旧，根 `title`（任何节点）和 `drama-bible` 的根 `stylePrompt` 只留 1 万字上限，其余键、嵌套设置、别的节点上的 `stylePrompt` 照旧查位置，敏感键名照旧拒。
 - `electron/canvas-project-package.test.ts` 补三项各种开头都能存、上限和其余键照旧（旧代码上红），末尾加 `… with random inputs` 一节：任意节点类型的名字都收，除这三项和便签正文外任何根键上像位置的字都拒，嵌套在这几个键下面的照旧拒。
+- 画布内核同步到 xingmang-canvas kernel-v0.1.18（cf72fc1，`scripts/sync-canvas-kernel.mjs` 按 tag 原样同步，没有本地补丁），只带进 xc #62：「减少动画」的两条全局规则（`theme/brand-appearance.css` 的 `[data-reduced-motion='true'] *`、`theme.css` 的 `@media (prefers-reduced-motion: reduce)`）从 `transition-duration: 0.01ms !important` 改成 `transition: none !important`。原来的写法因为 `transition-property` 默认是 `all`，给每个元素的每个属性都开了一段过渡：换一次皮肤 250~350 段一起跑，两三帧后才收完；平移时 `.react-flow__viewport` 的位置也晚两帧左右。客户开了主窗口的「减少动画」或系统里关了动画才会碰到，晚的这两帧肉眼看不太出来，所以不写进更新说明。
+- `e2e/canvas-close-interactions.test.mjs`「canvas applies four skins…」时红时绿的根因就是这个（`docs/CI-RERUN-LEDGER.md` 11-20 #2000、11-21 #1936 两行）：换完皮肤立刻比两层底色，平时两层一样旧所以相等，偶尔一层的过渡先收完就红。用例没改，修好后换完皮肤同一刻读到的就是新底色。查法和写法记进 `docs/TEST-BASELINE.md`「画布换皮肤那条」。内核新加的 `theme/reduced-motion.test.ts` 随同步进 `canvas-v2/src/theme/`，在 vitest 的 canvas 项目里跑。
 - #1103：画布窗口有了自己的「中性灰工作台」配色，产品负责人在三套候选截图里选定。`src/renderer-v2/styles/tokens.css` 加 `:root[data-host="desktop"][data-theme="light|dark"]` 两段（只有画布窗口的 `<html>` 带 `data-host`，内核 `canvas-theme.ts` 的 `applyCanvasHost` 设的，主窗口不受影响），比 v3.1 皮肤规则多一级选择器，内核按深浅色标的 dawn / obsidian 都被盖住；按钮和强调色沿用主窗口两套。`electron/canvas-window.ts` 里画布绘制前的窗口底色跟着换成 `#e7e8eb` / `#1f2023`。`contrast-tokens.test.ts` 把画布两套也按默认主题那组对比度核（文字 4.5:1、输入框和次要按钮边 3:1），因此把输入框和次要按钮的边从 .52 / .38 加深到 .58 / .42。canvas-v2 不动。
 - 不写给客户看的更新说明（产品负责人 2026-11-22 回「不写说明」），只换颜色。
 - 画布崩溃或卡死后重新加载（自动重载、「界面没有响应」里点重新加载、再点「打开画布」时重载），换上来的是停在项目中心的新页面，
@@ -286,6 +288,16 @@
 - Claude Desktop 在 Claude Code 没配当前账号时，默认先挑星芒替 Claude Code 签密钥的那个分组（`account:get-key-options` 的
   `automatic`，同名的那把最先），没有再按分组名带 Claude 挑（`external-client-defaults.ts`）。以前只按分组名挑，
   落到账号里最新的那把 Claude-ANTI 上（yoyo 11-19 在 0.2.24 看到），#1045（10-16）起就是这样。
+- 检测模型遇到 new-api 403「无权访问 X 分组」或「分组 X 已被弃用」（rc.51 `middleware/auth.go` 的
+  `auth.token_group_forbidden` / `auth.token_group_deprecated`，中英两种说法）时，不再原样显示 403、分组名和请求号，
+  改说「该密钥所属的分组在当前账号下已不可用，请更换密钥。」，原话收进「查看详情」
+  （`relay-quota-failure.ts` 的 `isKeyGroupRejectionMessage`，`features/tools/key-group-rejection.tsx`）。
+- 外部客户端弹窗（Claude Desktop / WorkBuddy / OpenCode）旁边给「更换可用密钥」：跳过检测失败的那把和它所在的整个分组，
+  按原来的默认顺序挑下一把并立刻重新检测（`external-client-defaults.ts` 的 `alternativeClientSource`）；没得换时改说
+  「该密钥所属的分组在当前账号下已不可用。请在「访问密钥」中更换密钥后点击「检测模型」。」。工具配置框里这颗按钮换成
+  「自动准备（推荐）」，保存时在账号能用的分组里准备；自动准备用不了时只给那句话、不给按钮。
+- 主进程 `account-cli-provisioner.ts` 的 `isGroupRejection` 不动：它不在渲染层能值导入的名单上，认法也不一样
+  （不要求「模型查询失败」开头，只认中文说法）。
 - `electron/claude-desktop-model-topup.ts`、`electron/external-client-route-service.ts`：开机替 Claude Desktop 补型号（11-12「1 2 3 做」第 1 条那套）
   试到一半客户换了账号或退出登录，以前剩下的型号照样拿上一个账号的密钥一个个发过去试，只在最后写菜单那一步才发现账号变了
   （0.2.25 总单第 67 项，11-18 A03）；一个都没试通时还会替上一把密钥记一笔。`runClaudeDesktopModelTopUp` 加可选的
@@ -428,6 +440,19 @@
   `codex-desktop-cdp.ts` 新增 `isCodexDesktopActivationTimeout`，`buildCodexDesktopActivationFailureSummary` 多一项
   `windowsUpdateSuspect`；查不查由 `inspectWindowsUpdateBlocked` 注入，缺省不查，生产由 system-service 打开。
   先后：联网验证、激活坏了在前，已知坏版本在后。不改任何系统设置，没加 IPC 通道。（yoyo「更新框改」）
+- Codex 桌面端拿掉第三方「国内镜像」`codexapp.agentsmirror.com` / `codexapp-r2.agentsmirror.com`（yoyo 2026-11-24「全拿掉」）。
+  那是开源项目 Codex App Manager 作者的私人镜像，不归星芒，作者找上门说被下了 270 次。删了镜像的清单探测、
+  下载、`previous/*` 上一版兜底、测速和对象存储签名跳转白名单；`validateCodexDesktopResourceUrl` 现在只许跳回
+  同一主机同一路径、不带查询参数。Windows 安装顺序变成存储桶 → 微软商店 → OpenAI 官网 → 清单过期的存储桶。
+- Windows 首页「可更新」改看星芒存储桶 `chatgpt/latest.json` 里那一版（清单过期也照读），跟 Mac 10-27 起的做法一致；
+  `latest` 取官网清单和桶里新的那一版（`buildCodexDesktopManifestBundle`）。`DesktopAppStatus` 的
+  `mirrorVersion` / `mirrorUpdateAvailable` / `mirrorError` 字段名不变，意思换成国内下载线路（存储桶）。
+- 官网那一路只在后面还有过期的存储桶可退时才因为「还要 10 分钟以上」放弃（`abandonWhenSlow`）；后面没有路时多慢都下完。
+  回头用过期清单的那一次存储桶不再拿镜像测速，下得慢也不放弃。
+- 都没装上时交出存储桶那一路的原话，失败归类认了存储桶的几种说法（大小或 SHA-256 和清单不一致、没下完、清单里没有
+  这台电脑能用的包）；「已是最新」那条判断抽成 `resolveCodexDesktopUnchangedOutcome`，客户看到的字没变。
+- 文档：`docs/RELEASING.md`「Codex Desktop 下载来源（Windows）」重写，AGENTS.md 第 7 节那条「不要动 Codex 桌面端的
+  镜像实现」换成「不要加第三方下载源、不要放宽跳转校验」，`docs/IMPROVEMENT-PLAN.md` 2.6 补更正。
 - 手机遥控的用例文件 `electron/codex-remote-service.test.ts` 不再用 `vi.waitFor` 等写盘后面的事：帮手 `prompted()` 等
   `turn/start` 默认只等 1 秒，每句话交给 Codex 前要先原子写一次消息编号，Windows runner 写得慢时 #1949、#2038 各红一次。
   临时给原子写计数，找出等待期间写过盘的 74 处，全换成等事件本身（起 Codex、交出请求、发到手机、开始取图、推状态、删图），
@@ -457,6 +482,7 @@
 - 选「新建画布项目」：文件夹由主进程建在「文档 › 星芒画布」（`canvas-default-project-folder.ts`，跟画布里的「新建项目」一样），
   图先放进新文件夹、最后才登记项目（跟导入项目包一个顺序），中途出错把刚放的图和空文件夹收走，项目中心里不会多出空项目。
   主窗口因此多了「新建画布项目」这一个本事（方案 §2.5 里就有），名字由页面取那句描述开头的 20 个字。
+- 「创作」左栏加「新建画布」（yoyo 11-28 回「新建画布按钮」，赶进 0.2.25）：「＋ 新建」旁并排一颗，筛「画布」又一个项目都没有时再一颗。点了先走新加的主窗口通道 `canvas:create-project`（不收参数），主进程 `canvas-blank-project.ts` 在「文档 › 星芒画布」里新建一个文件夹、登记一个空白项目「未命名画布 11 月 27 日 14:30」（带点的那一刻，连建几个分得清），跟画布里点「新建项目」、「添加到画布 › 新建画布项目」是同一套建法；登记没成就把空文件夹收走。建好只回编号和名字，再走原有的 `canvas:open-project` 把画布开在它上面；画布开着别的项目、客户在关闭确认里选了留下，提示项目已在左侧列表。画布窗口的宿主通道一条没加，`canvas-v2/` 没动。0.2.25 已满 60 句，「## 用户」这一句留给最后的补收 PR 统一并句。
 - 界面（`features/create/canvas-intake.tsx`）：对话里生成的图下面、作品库里点开一张图下面各一颗「添加到画布」，点了是选项目的小菜单
   （「新建画布项目」加没归档的项目）；添加完右下角提示带「打开画布」。`CreatePage.tsx` 一次只发一张，项目清单内容没变时不换引用
   （`useSameCanvasTargets`），免得每次重读清单都把对话里的每一行重画一遍。
@@ -860,6 +886,8 @@
 - 画图工具没有工作目录时的保存位置，从系统图片文件夹里的「星芒AI」改名为「AI画图」（`mcp-server.mjs` 的
   `PICTURES_FOLDER_NAME`）：这个名字会出现在交给客户的文件路径里，不带品牌名。画图技能「脚本里不出现品牌名」的门禁
   去掉了上一个 PR 给这个常量开的例外，恢复成一处都不许出现。`SKILL.md` 的保存位置那句补上文件夹名。
+- 改图时没写的尺寸和比例跟第一张原图走（yoyo 11-27「改图保持原尺寸 赶进」）：画图工具 `mcp-server.mjs` 和脚本 `generate.mjs` 的 `resolveImageSize` 多收一个 `original`（`originalDimensions` 只读文件头，JPEG 按 Exif 方向 5～8 对调宽高，读不出照旧按默认出）。没写比例用原图比例（`ratioDimensions`：16 的倍数、长宽比最多 3:1、总像素在上下限之间），没写尺寸用原图长边、夹在 1024～2048（1K、2K 同价，要 4K 得写明）；写了宽高、`auto`，或档位和比例都写了的照写的出。Nano Banana 取比例表里最接近的比例。以前一律按 1024x1024 出，竖图改成方图、清晰度每改一次掉到 1K。`SKILL.md` 给 Codex 照抄的调用去掉了写死的 `size: "1K", aspect: "1:1"`（Codex 改图照抄它，工具这边改了也还是方图），旁边写明改图别为写全而填。两个脚本跑同一张用例表，另有随机输入测试钉住宽高合规、坏文件头不抛错。
+- 画图技能 `SKILL.md` 加「写描述」一节（yoyo 11-27「技能写描述」，含画图优化需求 B2「没有图片路径时先问」、E2「改图怎么写描述」「不追问客户没提的参数」两处文案）：具体的照原意整理、笼统的才补场景/构图/光线/风格，不加客户没提的人物、品牌、标语、配色，图上的字一字不改，按原话画就原样用；改图只写要改的地方并写明其余不变；只在缺图、缺客户专属文字、没说画什么时问一句；「完成后」附上这次用的描述。`mcp-server.mjs` 的工具说明和 `prompt` 参数说明带上短版。思路参考 OpenAI Codex 的 imagegen 技能（Apache-2.0）和 shinpr/mcp-image（MIT），没有照搬原文。技能文件靠清单里的旧摘要自动更新，客户改过的不覆盖。yoyo 11-28 回「全补进」赶进 0.2.25；这一版给客户看的已满 60 句，客户那句并进了 `edit-keeps-original-size.md` 的「## 用户」。
 - 启动检查超时后接着在后台查的那一次（`electron/updater.ts` 的 `startup()`），下不下改成按查完那一刻的自动更新设置定
   （11-18 复核 D23、0.2.25 总单第 30 项）。以前是在超时那一刻看设置、挂上回调，查完时不再看：超时到查完之间客户关掉了
   自动更新，迟到的结果照样在后台下安装包。现在关掉了就停在「有新版本」等客户自己点；反过来这段时间里刚打开的，

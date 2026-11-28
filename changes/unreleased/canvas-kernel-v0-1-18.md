@@ -1,4 +1,0 @@
-## 开发
-
-- 画布内核同步到 xingmang-canvas kernel-v0.1.18（cf72fc1，`scripts/sync-canvas-kernel.mjs` 按 tag 原样同步，没有本地补丁），只带进 xc #62：「减少动画」的两条全局规则（`theme/brand-appearance.css` 的 `[data-reduced-motion='true'] *`、`theme.css` 的 `@media (prefers-reduced-motion: reduce)`）从 `transition-duration: 0.01ms !important` 改成 `transition: none !important`。原来的写法因为 `transition-property` 默认是 `all`，给每个元素的每个属性都开了一段过渡：换一次皮肤 250~350 段一起跑，两三帧后才收完；平移时 `.react-flow__viewport` 的位置也晚两帧左右。客户开了主窗口的「减少动画」或系统里关了动画才会碰到，晚的这两帧肉眼看不太出来，所以不写进更新说明。
-- `e2e/canvas-close-interactions.test.mjs`「canvas applies four skins…」时红时绿的根因就是这个（`docs/CI-RERUN-LEDGER.md` 11-20 #2000、11-21 #1936 两行）：换完皮肤立刻比两层底色，平时两层一样旧所以相等，偶尔一层的过渡先收完就红。用例没改，修好后换完皮肤同一刻读到的就是新底色。查法和写法记进 `docs/TEST-BASELINE.md`「画布换皮肤那条」。内核新加的 `theme/reduced-motion.test.ts` 随同步进 `canvas-v2/src/theme/`，在 vitest 的 canvas 项目里跑。
