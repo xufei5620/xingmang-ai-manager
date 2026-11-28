@@ -206,6 +206,7 @@
 - `features/create/list.ts` — 纯函数：左边那一列怎么排（置顶的对话单独一段，其余按今天 / 昨天 / 更早，对话保持聊天页的先后、视频和画布项目按最后动过的时间插进去）、筛选那一排列哪几类、视频和画布项目按名字搜、时间怎么写。
 - `features/create/CreateLibrary.tsx` / `useCreateLibrary.ts` / `library.ts` — 主窗口的作品库（融合第 3 步）。`CreateLibrary.tsx` 是右边那一块（筛选、搜索、一格一格、「加载更多」）、点开一件的小框（大图或页面里直接放的视频）、和从别处叫出来的选择框 `LibraryPicker`（镜头上的「从作品库选图」「使用已有片段」、起始页第三张卡）；`useCreateLibrary.ts` 经 `library:list` 分页读当前账号的作品（主进程只列编号和时间、不读文件），页面露面、窗口回到前台、刚出完东西时再读第一页；第 5 步起主进程连画布项目里生成的一起列（每条带 `canvas`：哪个项目、是做出来的还是只是用过），`useCreateLibrary` 多传一个项目编号就只列那个项目的，`CanvasProjectWorks` / `CanvasProjectWorksView` 是项目卡下面那一块（同一套格子和点开的小框，不出「查看画布项目」）；`library.ts` 是纯函数：每件作品是哪段对话、哪条视频、哪个画布项目做出来的（`libraryEntryOrigin`：做出来的优先于只是用过的，对话和视频优先于画布）、哪些算成片、搜索时页面这边对得上的编号、标题和那行小字怎么写、作品怎么换成对话和视频工作台各自用的样子。
 - `features/create/canvas-intake.tsx` — 「添加到画布」（融合第 5 步）：对话里生成的图和作品库里的图共用的那颗按钮和选项目的小菜单 `AddToCanvasMenu`，加几个纯函数（菜单里列哪些项目、新项目叫什么、交给主进程的那一份、添加完和没添加成时说的话）。抄图在主进程（`canvas:add-project-image`），这里只交图片编号和选的项目；`CreatePage.tsx` 的 `addImageToCanvas` 一次只发一张，成了以后右下角带「打开画布」。
+- `features/create/image-upscale.tsx` — 「变清晰」（全面方案第 26 件）：对话里的图和作品库点开的图共用的那颗按钮和菜单 `ImageUpscaleMenu`（放大 2 倍、放大 4 倍、一句提醒），加 `useImageUpscale`：点了以后说「正在提升清晰度…」，做完说已另存并重读作品库，没成把主进程给的中文原因说出来；交出去的对象只在「正在做的那几张」变了时才换，对话里 memo 过的消息不跟着重画。界面上的字逐字照方案，放大本身在主进程（`chat:upscale-asset`）。
 - `features/create/index.ts` — 本目录出口，App 懒加载时从这里取 `CreatePage`。
 
 ## features/video-studio/ 视频剪辑（「创作」里一条视频的工作台和它的拼片引擎）

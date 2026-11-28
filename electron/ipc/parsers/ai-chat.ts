@@ -2,8 +2,8 @@
 import { AI_CHAT_LIMITS } from '../../ai-chat-protocol'
 import { parseImageGenerateInput } from '../../canvas-request-parser'
 import { isRecord } from '../../input-guards'
-import type { AiChatImageInput, AiChatStartInput } from '../../ipc-contract'
-import { requiredString } from './common'
+import type { AiChatImageInput, AiChatStartInput, AiChatUpscaleInput } from '../../ipc-contract'
+import { optionalString, requiredString } from './common'
 
 export function parseAiChatMessageImages(value: unknown, role: unknown): string[] | undefined {
   if (value === undefined) return undefined
@@ -70,4 +70,17 @@ export function parseAiChatImageInput(value: unknown): AiChatImageInput {
   })
   if (new Set(ids).size !== ids.length) throw new Error('生图参考图格式错误')
   return { ...input, sourceAssetIds: ids }
+}
+
+// 「变清晰」：图片只认主进程发过的编号（读的时候再按账号核一遍是谁的），倍数只认 2 和 4；
+// 描述只拿来给作品库里的清晰版当标题，跟生图提示词同一个长度上限。
+export function parseAiChatUpscaleInput(value: unknown): AiChatUpscaleInput {
+  if (!isRecord(value)) throw new Error('变清晰请求格式错误')
+  for (const key of Object.keys(value)) {
+    if (key !== 'assetId' && key !== 'scale' && key !== 'prompt') throw new Error('变清晰请求格式错误')
+  }
+  if (typeof value.assetId !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(value.assetId)) throw new Error('变清晰图片格式错误')
+  if (value.scale !== 2 && value.scale !== 4) throw new Error('放大倍数格式错误')
+  const prompt = optionalString(value.prompt, '图片描述', AI_CHAT_LIMITS.promptLength)
+  return { assetId: value.assetId, scale: value.scale, ...(prompt ? { prompt } : {}) }
 }

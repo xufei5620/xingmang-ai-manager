@@ -191,10 +191,11 @@ click stall evidence, taken 7004ms after the click started (each probe waits at 
 
 ## 本地绿、Windows 分片红的路径写法（2026-11-12，#1807）
 
-云端容器和 Mac 上都过、到 Windows `vitest-*` 才红的，多半是下面两种写法，写用例时就避开：
+云端容器和 Mac 上都过、到 Windows `vitest-*`（或 `windows-test (node)`）才红的，多半是下面几种写法，写用例时就避开：
 
 - **把显示出来的路径写死成斜杠**。手机遥控、诊断这类按本机分隔符显示路径（`remoteDisplayPath`、`redactHomeDirectory`），Windows 上是 `~\projects\demo`。期望值用 `path.join('~', 'projects', name)` 拼，别写 `'~/projects/demo'`。
 - **临时目录用 `fs.realpathSync` 取，又跟被测代码报回来的路径比**。Windows runner 的 `os.tmpdir()` 是短名 `C:\Users\RUNNER~1\…`，`fs.realpathSync`（JS 实现）不展开，卸载这类按真实路径核过目录的代码报回来的是长名 `C:\Users\runneradmin\…`，`toHaveBeenCalledWith` 就对不上（#1975）。要比路径的用 `fs.realpathSync.native`，Mac、Linux 上两者一样。
+- **用 `@electron/asar` 按 `a/b/c` 读 app.asar 里套了两层以上的文件**。它按 `path.sep` 切路径，Windows 上 `bundled-catalog/image-upscale/x.onnx` 会被当成一个叫 `bundled-catalog/image-upscale` 的文件夹去找，报「was not found in this archive」；只套一层的 `dist-electron/main.js` 碰巧能过。交给 `extractFile` / `statFile` 前先 `relativePath.split('/').join(path.sep)`（`verify-packaged-hardening.cjs` 的 `archiveEntry`，#2217）。本地复现：让 asar 的 `lib/filesystem.js` 拿到 `path.win32`（用 `Module._load` 只替它换掉 `path`）。
 - **服务里写死了 `platform: 'darwin'`，又拿真文件夹去撞路径规矩**。`codex-remote-service.test.ts` 的 `setup()` 缺省按 darwin 起服务；Windows 上真文件夹是 `C:\…`，按 darwin 的规矩不算绝对路径，「主目录不能当干活的文件夹」这类拦截根本不触发，用例期望的报错就不来。要验拦截的那条传 `setup({ platform: process.platform })`，跟直接测 `validateRemoteWorkspace` 那条一样按本机规矩。
 
 ## 看落盘的文件，要等写盘本身（2026-11-12）

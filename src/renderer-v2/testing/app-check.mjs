@@ -5066,6 +5066,34 @@ test('the library sits at the bottom of the create list and shows everything the
   } finally { await page.close() }
 })
 
+// 全面方案第 26 件「变清晰」：作品库里点开的图，放大 2 倍另存一张、带着原图那句描述；原图还在，作品库多一件、左下角的数跟着变。
+test('a picture opened from the library can be upscaled into a new piece next to the original', async () => {
+  const page = await openCreate('library=1')
+  try {
+    await serveLibraryPictures(page)
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('create-library-count').waitFor()
+    assert.equal(await page.getByTestId('create-library-count').textContent(), '5')
+    await page.getByTestId('create-library-open').click()
+    const pane = page.getByTestId('create-library-pane')
+    await pane.getByTestId(`create-library-item-${libraryPoster}`).click()
+    const detail = page.getByTestId('create-library-detail')
+    await detail.waitFor()
+    await detail.getByTestId('create-library-upscale-button').click()
+    const menu = page.getByRole('menu', { name: '变清晰' })
+    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['放大 2 倍', '放大 4 倍'])
+    assert.equal(await menu.locator('.xm-menu-note').textContent(), '小字或标识放大后可能变形，用于商品页面前请核对。')
+    await page.getByTestId('create-library-upscale-2x').click()
+    await waitForToast(page, '已另存为清晰版，原图保持不变。')
+    assert.deepEqual((await fixtureCalls(page, 'upscaleAiChatAsset')).at(-1), [{ assetId: libraryPoster, scale: 2, prompt: '双 11 促销海报，红金配色' }])
+    await page.waitForFunction(() => document.querySelector('[data-testid=create-library-count]')?.textContent === '6')
+    const tiles = await libraryTiles(pane)
+    assert.match(tiles[0], /^upscaled-2x-/)
+    assert.ok(tiles.includes(libraryPoster))
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a picture opened from the library is shown at full size and goes back into the composer to edit or to animate', async () => {
   const page = await openCreate('library=1&videoFilms=library&chatVideo=1&chatImage=1')
   try {
@@ -5081,7 +5109,7 @@ test('a picture opened from the library is shown at full size and goes back into
     await detail.getByRole('heading', { name: '双 11 主图', exact: true }).waitFor()
     await detail.getByText('今天 11:30 · 40 × 30', { exact: true }).waitFor()
     assert.equal(await detail.getByTestId('create-library-image').getAttribute('src'), `xingmang-asset://image/${libraryPoster}`)
-    assert.deepEqual(await detail.locator('footer').getByRole('button').allTextContents(), ['基于此图继续编辑', '用此图生成视频', '添加到画布', '另存图片'])
+    assert.deepEqual(await detail.locator('footer').getByRole('button').allTextContents(), ['基于此图继续编辑', '用此图生成视频', '添加到画布', '变清晰', '另存图片'])
     // 哪段对话、哪条视频都没记着它：不出「查看对话」。
     assert.equal(await detail.getByTestId('create-library-origin').count(), 0)
     assert.equal(await detail.getByText('放进画布').count(), 0)
@@ -5553,8 +5581,9 @@ test('a picture is added to a canvas project the user picks, or to a new one, fr
     assert.equal((await add.textContent()).trim(), '添加到画布')
     assert.equal(await add.getAttribute('title'), '将此图添加到画布项目的素材库')
     // 0.2.25 C2：这条回复只有一张图，「重新生成」「删除消息」接在这一排最后（testid 带消息 id，这里只比前缀）。
+    // 「变清晰」（全面方案第 26 件）跟在「添加到画布」后面。
     assert.deepEqual(await page.locator('.chat-asset-actions').first().locator('button').evaluateAll((buttons) => buttons.map((button) => button.getAttribute('data-testid').replace(/^(chat-message-(?:retry|delete))-.+$/, '$1'))),
-      ['chat-asset-reuse', 'chat-asset-animate', 'chat-asset-canvas', 'chat-asset-copy', 'chat-asset-save', 'chat-asset-menu', 'chat-message-retry', 'chat-message-delete'])
+      ['chat-asset-reuse', 'chat-asset-animate', 'chat-asset-canvas', 'chat-asset-upscale-button', 'chat-asset-copy', 'chat-asset-save', 'chat-asset-menu', 'chat-message-retry', 'chat-message-delete'])
     assert.deepEqual(await fixtureCalls(page, 'addImageToCanvasProject'), [])
 
     // 菜单：标题、「新建画布项目」、左边那一列里的画布项目和各自什么时候改的。

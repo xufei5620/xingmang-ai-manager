@@ -34,7 +34,7 @@ function clip(seed: string, durationSeconds = 5): AiVideoClip {
 }
 
 const actions: CreateLibraryActions = {
-  openFolder: nothing, openConversation: nothing, openFilm: nothing, openCanvasProject: nothing, reuseImage: nothing, animateImage: nothing, saveImage: nothing, saveVideo: nothing, openVideo: nothing, addClip: nothing, addToCanvas: nothing,
+  openFolder: nothing, openConversation: nothing, openFilm: nothing, openCanvasProject: nothing, reuseImage: nothing, animateImage: nothing, saveImage: nothing, saveVideo: nothing, openVideo: nothing, addClip: nothing, addToCanvas: nothing, upscale: { busy: new Set(), run: nothing },
 }
 
 function library(more: Partial<CreateLibrary> = {}): CreateLibrary {
@@ -155,6 +155,18 @@ describe('one piece opened from the library', () => {
     expect(detail(image('lost'), undefined, { canvasProjects: [] })).toContain('data-testid="create-library-canvas"')
     const clipOrigin: LibraryOrigin = { from: 'video', id: 'film-1', title: '橘猫回家', prompt: '', clip: clip('film', 75) }
     expect(detail(video('film'), clipOrigin, { film: true, canvasProjects: projects })).not.toContain('create-library-canvas')
+  })
+
+  it('offers to upscale a picture right before saving it, shows the one being upscaled as busy, and never offers it for a video', () => {
+    const html = detail(image('cat'), chatOrigin)
+    expect(html).toMatch(/data-testid="create-library-upscale-button"[^>]*>[^]*?变清晰/)
+    expect(html.indexOf('create-library-upscale')).toBeLessThan(html.indexOf('create-library-save-image'))
+    const busy = renderToStaticMarkup(<LibraryDetail entry={image('cat')} origin={chatOrigin} film={false} videoReady videoFilms={[]}
+      actions={{ ...actions, upscale: { busy: new Set([id('cat')]), run: nothing } }} onClose={nothing} />)
+    expect(busy).toMatch(/<button[^>]*disabled=""[^>]*aria-busy="true"[^>]*data-testid="create-library-upscale-button"|<button[^>]*data-testid="create-library-upscale-button"[^>]*disabled=""/)
+    expect(text(busy)).toContain('正在提升清晰度…')
+    const clipOrigin: LibraryOrigin = { from: 'video', id: 'film-1', title: '橘猫回家', prompt: '', clip: clip('film', 75) }
+    expect(detail(video('film'), clipOrigin, { film: true })).not.toContain('create-library-upscale')
   })
 
   it('leaves out making a video from a picture for an account that cannot make one now', () => {

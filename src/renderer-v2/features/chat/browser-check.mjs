@@ -448,6 +448,45 @@ test('image controls use real model capabilities and asset actions use opaque id
   } finally { await page.close() }
 })
 
+// 全面方案第 26 件「变清晰」：生成的图和客户自己发的图下面都有，菜单里放大 2 倍、放大 4 倍和那句提醒，字照方案逐字。
+// 生成的图带着当初那句描述去（清晰版在作品库里沿用）；做着的那张按钮转圈、点不了；没成把主进程那句话摆出来。
+test('a picture in the conversation can be upscaled into a separate copy, with the approved wording', async () => {
+  for (const variant of ['done', 'upscaleHold', 'upscaleFail']) {
+    const page = await open(variant === 'done' ? '' : `${variant}=1`)
+    try {
+      await ready(page)
+      await allPrepared(page)
+      await page.getByTestId('chat-mode').getByRole('button', { name: '图片生成' }).click()
+      const request = await send(page, 'A test scene')
+      await page.evaluate((id) => window.chatHarness.completeImage(id), request.requestId)
+      await page.getByRole('button', { name: '查看生成图片' }).waitFor()
+      const button = page.getByTestId('chat-asset-upscale-button')
+      assert.equal(await button.textContent(), '变清晰')
+      await button.click()
+      const menu = page.getByRole('menu', { name: '变清晰' })
+      assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['放大 2 倍', '放大 4 倍'])
+      assert.equal(await menu.locator('.xm-menu-note').textContent(), '小字或标识放大后可能变形，用于商品页面前请核对。')
+      if (variant === 'done') await page.screenshot({ path: path.join(output, 'image-upscale-menu-light.png') })
+      await page.getByTestId('chat-asset-upscale-4x').click()
+      assert.deepEqual((await calls(page, 'upscale-asset')).map((item) => item.input), [{ assetId: 'a'.repeat(43), scale: 4, prompt: 'A test scene' }])
+      if (variant === 'done') {
+        await page.getByText('已另存为清晰版，原图保持不变。', { exact: true }).waitFor()
+        assert.equal(await button.textContent(), '变清晰')
+        assert.equal(await button.isEnabled(), true)
+      } else if (variant === 'upscaleHold') {
+        await page.getByText('正在提升清晰度…', { exact: true }).first().waitFor()
+        assert.equal(await button.textContent(), '正在提升清晰度…')
+        assert.equal(await button.isDisabled(), true)
+        await page.screenshot({ path: path.join(output, 'image-upscale-working-light.png') })
+      } else {
+        await page.getByText('提升清晰度失败，请稍后重试；如持续失败，请联系客服。', { exact: true }).waitFor()
+        assert.equal(await page.getByText("Error invoking remote method", { exact: false }).count(), 0)
+        assert.equal(await button.isEnabled(), true)
+      }
+    } finally { await page.close() }
+  }
+})
+
 // 融合第 4 步：出图的型号、尺寸、画质、分辨率按账号记一份，对话里「生成图片」那一档和视频工作台的出图框共用。
 // 在一段对话里改了，另一段的「生成图片」跟着变；别处（出图框）改了，开着的这一段也跟着变；文本对话和别的账号不受影响。
 test('image settings are remembered once per account and follow into other conversations and changes made elsewhere', async () => {
